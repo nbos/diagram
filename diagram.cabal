@@ -58,13 +58,28 @@ executable diagram
     main-is:          Main.hs
 
     -- Modules included in this executable, other than Main.
-    -- other-modules:
+    other-modules:    Diagram
+                      Diagram.EM
+                      Diagram.Model
+                      Diagram.Progress
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
 
     -- Other library packages from which modules are imported.
-    build-depends:    base ^>=4.18.3.0
+    build-depends:    base
+                    , text
+                    , vector
+                    , random
+                    , filepath
+                    , directory
+                    , primitive
+                    , streaming
+                    , containers
+                    , math-functions
+                    , streaming-bytestring
+                    , optparse-applicative
+                    , terminal-progress-bar
 
     -- Directories containing source files.
     hs-source-dirs:   app
