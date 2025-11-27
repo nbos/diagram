@@ -1,0 +1,5 @@
+dist/
+dist-*
+data/
+*.png
+local/
