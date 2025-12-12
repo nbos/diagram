@@ -60,10 +60,13 @@ executable diagram
     -- Modules included in this executable, other than Main.
     other-modules:    Diagram
                       Diagram.EM
+                      Diagram.Type
                       Diagram.Model
                       Diagram.Joints
                       Diagram.Doubly
                       Diagram.Progress
+                      Diagram.TrainType
+                      Diagram.Information
                       Diagram.Util
 
     -- LANGUAGE extensions used by modules in this package.
@@ -75,11 +78,12 @@ executable diagram
                     , extra
                     , vector
                     , random
+                    , variety
                     , filepath
                     , directory
                     , primitive
                     , streaming
-                    , containers
+                    , containers >= 0.8 && < 0.9
                     , math-functions
                     , streaming-bytestring
                     , optparse-applicative
