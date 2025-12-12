@@ -49,5 +49,3 @@ main = do
 
   print as
   print bs
-
-

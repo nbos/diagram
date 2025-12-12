@@ -61,7 +61,10 @@ executable diagram
     other-modules:    Diagram
                       Diagram.EM
                       Diagram.Model
+                      Diagram.Joints
+                      Diagram.Doubly
                       Diagram.Progress
+                      Diagram.Util
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
@@ -69,6 +72,7 @@ executable diagram
     -- Other library packages from which modules are imported.
     build-depends:    base
                     , text
+                    , extra
                     , vector
                     , random
                     , filepath
