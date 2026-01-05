@@ -29,7 +29,7 @@ withCapacity = fmap (Dynamic 0) . MV.new
 {-# INLINE withCapacity #-}
 
 -- | Create an empty vector
-new :: (PrimMonad m, MVector v a) => m (Dynamic m v a) 
+new :: (PrimMonad m, MVector v a) => m (Dynamic m v a)
 new = withCapacity 0
 {-# INLINE new #-}
 

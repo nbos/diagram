@@ -13,21 +13,22 @@ import Streaming
 import qualified Streaming.Prelude as S
 
 data Model = Model {
+  -- modelTypes :: !Types,
   modelTotalCount :: !Int,
-  modelCounts :: !(U.Vector Int),
-  modelJointCounts :: !(Map (Sym,Sym) Int)
+  modelCounts :: !(U.Vector Int)
+  -- modelJointCounts :: !(Map (Sym,Sym) Int) -- why?
 }
 
 type Sym = Int
 
--- | Construction from bytes
-fromAtoms :: PrimMonad m => Stream (Of Word8) m r -> m (Model, r)
-fromAtoms ss = do
-  (ks,(jts,r)) <- countAtoms $
-                  countJointsM $ S.map fromEnum $
-                  S.copy ss
-  let n = U.foldl' (+) 0 ks
-  return (Model n ks jts, r)
+-- -- | Construction from bytes
+-- fromAtoms :: PrimMonad m => Stream (Of Word8) m r -> m (Model, r)
+-- fromAtoms ss = do
+--   (ks,(jts,r)) <- countAtoms $
+--                   countJointsM $ S.map fromEnum $
+--                   S.copy ss
+--   let n = U.foldl' (+) 0 ks
+--   return (Model n ks jts, r)
 
 -- | Histogram of the 256 bytes in a stream
 countAtoms :: PrimMonad m => Stream (Of Word8) m r -> m (U.Vector Int, r)
