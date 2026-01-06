@@ -60,14 +60,14 @@ executable diagram
     -- Modules included in this executable, other than Main.
     other-modules:    Diagram
                       Diagram.EM
-                      Diagram.Type
                       Diagram.Types
                       Diagram.Model
                       Diagram.Joints
                       Diagram.Doubly
                       Diagram.Dynamic
                       Diagram.Progress
-                      Diagram.TrainType
+                      Diagram.JointType
+                      Diagram.UnionType
                       Diagram.Information
                       Diagram.Util
 
