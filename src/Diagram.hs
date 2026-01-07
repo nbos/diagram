@@ -3,6 +3,7 @@ module Diagram (module Diagram) where
 
 import System.IO (openFile, hFileSize, IOMode(ReadMode))
 import Options.Applicative
+import Control.Monad.Random.Lazy (evalRand,mkStdGen)
 
 import qualified Data.Map.Strict as M
 
@@ -44,8 +45,8 @@ main = do
                       withPB sz "Counting joints" $
                       Q.unpack $ Q.fromHandle h
 
-  let (as, bs) = split (optSeed opts) $
-                 M.keys jointCounts
+  let (as, bs) = evalRand (split $ M.keys jointCounts)
+                 (mkStdGen $ optSeed opts)
 
   print as
   print bs

@@ -42,7 +42,7 @@ maintainer:         35620093+nbos@users.noreply.github.com
 build-type:         Simple
 
 -- Extra doc files to be distributed with the package, such as a CHANGELOG or a README.
-extra-doc-files:    CHANGELOG.md
+-- extra-doc-files:    CHANGELOG.md
 
 -- Extra source files to be distributed with the package, such as examples, or a tutorial module.
 -- extra-source-files:
@@ -86,6 +86,7 @@ executable diagram
                     , primitive
                     , streaming
                     , containers >= 0.8 && < 0.9
+                    , MonadRandom
                     , math-functions
                     , streaming-bytestring
                     , optparse-applicative

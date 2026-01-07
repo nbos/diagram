@@ -35,3 +35,8 @@ clean:
 # run-debug: debug
 # 	@echo "Running program with profiling and stack traces..."
 # 	cabal run diagram -- +RTS -xc -RTS
+
+# HTML Haddock documentation
+.PHONY: docs
+docs:
+	cabal haddock --haddock-executables --haddock-internal --haddock-hyperlink-source --haddock-html-location='https://hackage.haskell.org/package/$pkg-$version/docs' --open
