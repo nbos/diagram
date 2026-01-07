@@ -1,4 +1,5 @@
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE LambdaCase #-}
 module Diagram.Types (module Diagram.Types) where
 
 import Prelude hiding (length,read)
@@ -11,14 +12,14 @@ import qualified Data.IntSet as IS
 import Diagram.Dynamic (BoxedVec)
 import qualified Diagram.Dynamic as Dyn
 
-import Diagram.UnionType (UnionType)
 import Diagram.JointType (JointType)
 import qualified Diagram.JointType as J
 import Diagram.Model (Sym)
+import Diagram.Information
+import Diagram.Util
 
 -- | Forest of joint-of-unions type refinements
 data Types m = Types {
-  rootUnion  :: !UnionType, -- top union of atoms only
   tsParent   :: !(BoxedVec m (Maybe Sym)),
   tsChildren :: !(BoxedVec m IntSet),
   tsTypes    :: !(BoxedVec m JointType)
@@ -28,14 +29,13 @@ data Types m = Types {
 -- CONSTRUCTION --
 ------------------
 
--- | Length 0, given a top (union) type of atoms
-new :: PrimMonad m => UnionType -> m (Types m)
-new top = Types top <$> Dyn.new <*> Dyn.new <*> Dyn.new
+-- | Length 0 initialization
+new :: PrimMonad m => m (Types m)
+new = Types <$> Dyn.new <*> Dyn.new <*> Dyn.new
 
--- | Construction (empty) given a top (union) type of atoms and a
--- capacity
-withCapacity :: forall m. PrimMonad m => UnionType -> Int -> m (Types m)
-withCapacity top n = Types top <$> newDyn <*> newDyn <*> newDyn
+-- | Construction (empty) given a capacity
+withCapacity :: forall m. PrimMonad m => Int -> m (Types m)
+withCapacity n = Types <$> newDyn <*> newDyn <*> newDyn
   where newDyn = Dyn.withCapacity n :: m (BoxedVec m a)
 
 ------------
@@ -43,35 +43,52 @@ withCapacity top n = Types top <$> newDyn <*> newDyn <*> newDyn
 ------------
 
 length :: PrimMonad m => Types m -> Int
-length (Types _ _ _ ts) = Dyn.length ts
+length (Types _ _ ts) = Dyn.length ts
 
 parentOf :: PrimMonad m => Types m -> Sym -> m (Maybe Sym)
-parentOf (Types _ mps _ _) = Dyn.read mps
+parentOf (Types mps _ _) = Dyn.read mps . (+(-256))
 
 childrenOf :: PrimMonad m => Types m -> Sym -> m IntSet
-childrenOf (Types _ _ css _) = Dyn.read css
+childrenOf (Types _ css _) = Dyn.read css . (+(-256))
 
 read :: PrimMonad m => Types m -> Sym -> m JointType
-read (Types _ _ _ ts) = Dyn.read ts
+read (Types _ _ ts) = Dyn.read ts . (+(-256))
 
 ------------
 -- MODIFY --
 ------------
 
 push :: PrimMonad m => Types m -> Maybe Sym -> JointType -> m (Types m)
-push typs@(Types top mps css ts) mp t = do
+push typs@(Types mps css ts) mp t = do
   let s = length typs
   forM_ mp $ Dyn.modify css $ IS.insert s
-  Types top <$> Dyn.push mps mp
+  Types <$> Dyn.push mps mp
     <*> Dyn.push css IS.empty
     <*> Dyn.push ts t
+
+-----------------
+-- INFORMATION --
+-----------------
+
+information :: PrimMonad m => Types m -> m Double
+information typs@(Types mps _ _) = do
+  refineLen <- flip2 Dyn.ifoldM' 0 mps $ \acc i -> \case
+    Nothing -> let s = 256 + i in return $ acc + s
+    Just p -> (acc+) . J.refineLen <$> read typs p
+  return $ parentsInfo + fromIntegral refineLen
+  where
+    len = length typs
+    parentsInfo = iLogFactorial len
+
+
+
 
 -----------
 -- DEBUG --
 -----------
 
 checkIntegrity :: PrimMonad m => Types m -> a -> m a
-checkIntegrity typs@(Types _ mps css ts) a = do
+checkIntegrity typs@(Types mps css ts) a = do
   let err = error . ("Types.checkIntegrity: " ++)
       len = Dyn.length ts
 
@@ -79,11 +96,19 @@ checkIntegrity typs@(Types _ mps css ts) a = do
     err $ "field vectors are not the same length: "
     ++ show (Dyn.length mps, Dyn.length css, Dyn.length ts)
 
-  forM_ [0..len - 1] $ \s -> do
+  forM_ [0..len - 1] $ \i -> do
+    let s = 256 + i
     mp <- parentOf typs s
     t <- read typs s
-    -- unless (t `J.leq` top) $
-    --   err $ "type is not a subtype of top: " ++ show (s,t,top)
+    -- let J u0 u1 = t
+    -- unless (fst (IS.split 256 $ U.set u0)
+    --          `IS.isSubsetOf` U.set top) $
+    --   err $ "left union contains atoms not in top: "
+    --   ++ show (u0,top)
+    -- unless (fst (IS.split 256 $ U.set u1)
+    --         `IS.isSubsetOf` U.set top) $
+    --   err $ "right union contains atoms not in top: "
+    --   ++ show (u1,top)
 
     forM_ mp $ \p -> do
       pcs <- childrenOf typs p
