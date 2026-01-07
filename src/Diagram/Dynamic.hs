@@ -1,6 +1,6 @@
 module Diagram.Dynamic (module Diagram.Dynamic) where
 
-import Prelude hiding (read, length, replicate, null)
+import Prelude hiding (read, length, replicate, null, mapM_)
 import Control.Monad.Primitive (PrimMonad(PrimState))
 import qualified Data.Vector.Generic as G
 import qualified Data.Vector.Generic.Mutable as MV
@@ -66,7 +66,7 @@ pop dyn@(Dynamic len vec)
 
 -- | Convert a Dynamic vector to a list
 toList :: (G.Vector v a, PrimMonad m) => Dynamic m (G.Mutable v) a -> m [a]
-toList = fmap G.toList . freeze
+toList = MV.foldr' (:) [] . dynVector
 {-# INLINE toList #-}
 
 -- | Create a Dynamic vector from a list
@@ -141,3 +141,143 @@ toDynamic :: (PrimMonad m, MVector v a) =>
              v (PrimState m) a -> Dynamic m v a
 toDynamic vec = Dynamic (MV.length vec) vec
 {-# INLINE toDynamic #-}
+
+-----------
+-- FOLDS --
+-----------
+
+-- | O(n) Apply the monadic action to every element of the vector,
+-- discarding the results.
+mapM_ :: (PrimMonad m, MVector v a) => (a -> m b) -> Dynamic m v a -> m ()
+mapM_ f = MV.mapM_ f . fromDynamic
+{-# INLINE mapM_ #-}
+
+-- | O(n) Apply the monadic action to every element of the vector and
+-- its index, discarding the results.
+imapM_ :: (PrimMonad m, MVector v a) => (Int -> a -> m b) -> Dynamic m v a -> m ()
+imapM_ f = MV.imapM_ f . fromDynamic
+{-# INLINE imapM_ #-}
+
+-- | O(n) Apply the monadic action to every element of the vector,
+-- discarding the results.  It's the same as flip mapM_.
+forM_ :: (PrimMonad m, MVector v a) => Dynamic m v a -> (a -> m b) -> m ()
+forM_ = flip mapM_
+{-# INLINE forM_ #-}
+
+-- | O(n) Apply the monadic action to every element of the vector and
+-- its index, discarding the results.  It's the same as flip imapM_.
+iforM_ :: (PrimMonad m, MVector v a) => Dynamic m v a -> (Int -> a -> m b) -> m ()
+iforM_ = flip imapM_
+{-# INLINE iforM_ #-}
+
+-- Left folds
+
+-- | O(n) Pure left fold.
+foldl :: (PrimMonad m, MVector v a) =>
+         (b -> a -> b) -> b -> Dynamic m v a -> m b
+foldl f z = MV.foldl f z . fromDynamic
+{-# INLINE foldl #-}
+
+-- | O(n) Pure left fold with strict accumulator.
+foldl' :: (PrimMonad m, MVector v a) =>
+          (b -> a -> b) -> b -> Dynamic m v a -> m b
+foldl' f z = MV.foldl' f z . fromDynamic
+{-# INLINE foldl' #-}
+
+-- | O(n) Monadic fold.
+foldM :: (PrimMonad m, MVector v a) =>
+         (b -> a -> m b) -> b -> Dynamic m v a -> m b
+foldM f z = MV.foldM f z . fromDynamic
+{-# INLINE foldM #-}
+
+-- | O(n) Monadic fold with strict accumulator.
+foldM' :: (PrimMonad m, MVector v a) =>
+          (b -> a -> m b) -> b -> Dynamic m v a -> m b
+foldM' f z = MV.foldM' f z . fromDynamic
+{-# INLINE foldM' #-}
+
+-- Right folds
+
+-- | O(n) Pure right fold.
+foldr :: (PrimMonad m, MVector v a) =>
+         (a -> b -> b) -> b -> Dynamic m v a -> m b
+foldr f z = MV.foldr f z . fromDynamic
+{-# INLINE foldr #-}
+
+-- | O(n) Pure right fold with strict accumulator.
+foldr' :: (PrimMonad m, MVector v a) =>
+          (a -> b -> b) -> b -> Dynamic m v a -> m b
+foldr' f z = MV.foldr' f z . fromDynamic
+{-# INLINE foldr' #-}
+
+-- | O(n) Monadic right fold.
+foldrM :: (PrimMonad m, MVector v a) =>
+          (a -> b -> m b) -> b -> Dynamic m v a -> m b
+foldrM f z = MV.foldrM f z . fromDynamic
+{-# INLINE foldrM #-}
+
+-- | O(n) Monadic right fold with strict accumulator.
+foldrM' :: (PrimMonad m, MVector v a) =>
+           (a -> b -> m b) -> b -> Dynamic m v a -> m b
+foldrM' f z = MV.foldrM' f z . fromDynamic
+{-# INLINE foldrM' #-}
+
+-- Indexed left folds
+
+-- | O(n) Pure left fold using a function applied to each element and
+-- its index.
+ifoldl :: (PrimMonad m, MVector v a) =>
+          (b -> Int -> a -> b) -> b -> Dynamic m v a -> m b
+ifoldl f z = MV.ifoldl f z . fromDynamic
+{-# INLINE ifoldl #-}
+
+-- | O(n) Pure left fold with strict accumulator using a function
+-- applied to each element and its index.
+ifoldl' :: (PrimMonad m, MVector v a) =>
+           (b -> Int -> a -> b) -> b -> Dynamic m v a -> m b
+ifoldl' f z = MV.ifoldl' f z . fromDynamic
+{-# INLINE ifoldl' #-}
+
+-- | O(n) Monadic fold using a function applied to each element and its
+-- index.
+ifoldM :: (PrimMonad m, MVector v a) =>
+          (b -> Int -> a -> m b) -> b -> Dynamic m v a -> m b
+ifoldM f z = MV.ifoldM f z . fromDynamic
+{-# INLINE ifoldM #-}
+
+-- | O(n) Monadic fold with strict accumulator using a function applied
+-- to each element and its index.
+ifoldM' :: (PrimMonad m, MVector v a) =>
+           (b -> Int -> a -> m b) -> b -> Dynamic m v a -> m b
+ifoldM' f z = MV.ifoldM' f z . fromDynamic
+{-# INLINE ifoldM' #-}
+
+-- Indexed right folds
+
+-- | O(n) Pure right fold using a function applied to each element and
+-- its index.
+ifoldr :: (PrimMonad m, MVector v a) =>
+          (Int -> a -> b -> b) -> b -> Dynamic m v a -> m b
+ifoldr f z = MV.ifoldr f z . fromDynamic
+{-# INLINE ifoldr #-}
+
+-- | O(n) Pure right fold with strict accumulator using a function
+-- applied to each element and its index.
+ifoldr' :: (PrimMonad m, MVector v a) =>
+           (Int -> a -> b -> b) -> b -> Dynamic m v a -> m b
+ifoldr' f z = MV.ifoldr' f z . fromDynamic
+{-# INLINE ifoldr' #-}
+
+-- | O(n) Monadic right fold using a function applied to each element
+-- and its index.
+ifoldrM :: (PrimMonad m, MVector v a) =>
+           (Int -> a -> b -> m b) -> b -> Dynamic m v a -> m b
+ifoldrM f z = MV.ifoldrM f z . fromDynamic
+{-# INLINE ifoldrM #-}
+
+-- | O(n) Monadic right fold with strict accumulator using a function
+-- applied to each element and its index.
+ifoldrM' :: (PrimMonad m, MVector v a) =>
+            (Int -> a -> b -> m b) -> b -> Dynamic m v a -> m b
+ifoldrM' f z = MV.ifoldrM' f z . fromDynamic
+{-# INLINE ifoldrM' #-}
