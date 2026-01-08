@@ -1,17 +1,32 @@
-{-# LANGUAGE ScopedTypeVariables, TypeApplications #-}
 module Diagram.EM (module Diagram.EM) where
 
-import Control.Monad.Random (MonadRandom, getRandom)
+import System.IO
+import Control.Monad.Random (MonadRandom)
+import Control.Monad.IO.Class
 
--- | Randomly assign values to one of two sets
---
--- >>> import Control.Monad.Random.Lazy (evalRand,mkStdGen)
--- >>> evalRand (split [1::Int ..] >>= \(left, right) -> return (take 10 left, take 10 right)) (mkStdGen 123)
--- ([4,5,6,9,10,14,15,17,19,22],[1,2,3,7,8,11,12,13,16,18])
-split :: MonadRandom m => [a] -> m ([a], [a])
-split [] = return ([], [])
-split (a:as) = do
-  b <- getRandom @_ @Bool
-  ~(a0s, a1s) <- split as
-  return $ if b then (a:a0s, a1s) else (a0s, a:a1s)
+import qualified Data.Map as M
 
+import Diagram.Joints (Joints)
+-- import Diagram.Random (split)
+import qualified Diagram.JointType as JT
+
+em :: (MonadRandom m, MonadIO m) => Joints -> m ()
+em jts = go0
+  where
+    top = JT.fromJoints jts
+
+    go0 = do
+      t <- JT.genRefinement top
+      let jts' = M.filterKeys (`JT.member` t) jts
+          t' = JT.fromJoints jts'
+      liftIO $ if t == t' then putStr "0" else putStr "."
+      liftIO $ hFlush stdout
+      go0 -- loop
+
+    -- go1 = do
+    --   (jts0,jts1) <- split $ M.toAscList jts
+    --   let t0 = JT.fromJoints $ M.fromAscList jts0
+    --   if not $ any ((`JT.member` t0) . fst) jts1
+    --     then liftIO $ putStr "1"
+    --     else liftIO $ putStr "'"
+    --   go1

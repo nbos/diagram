@@ -25,6 +25,18 @@ data Types m = Types {
   tsTypes    :: !(BoxedVec m JointType)
 }
 
+length :: PrimMonad m => Types m -> Int
+length (Types _ _ ts) = Dyn.length ts
+
+parentOf :: PrimMonad m => Types m -> Sym -> m (Maybe Sym)
+parentOf (Types mps _ _) = Dyn.read mps . (+(-256))
+
+childrenOf :: PrimMonad m => Types m -> Sym -> m IntSet
+childrenOf (Types _ css _) = Dyn.read css . (+(-256))
+
+read :: PrimMonad m => Types m -> Sym -> m JointType
+read (Types _ _ ts) = Dyn.read ts . (+(-256))
+
 ------------------
 -- CONSTRUCTION --
 ------------------
@@ -38,21 +50,6 @@ withCapacity :: forall m. PrimMonad m => Int -> m (Types m)
 withCapacity n = Types <$> newDyn <*> newDyn <*> newDyn
   where newDyn = Dyn.withCapacity n :: m (BoxedVec m a)
 
-------------
--- ACCESS --
-------------
-
-length :: PrimMonad m => Types m -> Int
-length (Types _ _ ts) = Dyn.length ts
-
-parentOf :: PrimMonad m => Types m -> Sym -> m (Maybe Sym)
-parentOf (Types mps _ _) = Dyn.read mps . (+(-256))
-
-childrenOf :: PrimMonad m => Types m -> Sym -> m IntSet
-childrenOf (Types _ css _) = Dyn.read css . (+(-256))
-
-read :: PrimMonad m => Types m -> Sym -> m JointType
-read (Types _ _ ts) = Dyn.read ts . (+(-256))
 
 ------------
 -- MODIFY --
@@ -79,8 +76,6 @@ information typs@(Types mps _ _) = do
   where
     len = length typs
     parentsInfo = iLogFactorial len
-
-
 
 
 -----------

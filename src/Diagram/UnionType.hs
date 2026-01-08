@@ -21,9 +21,25 @@ data UnionType = U {
   set :: !IntSet  -- set of symbols
 } deriving (Eq,Show)
 
+fromList :: [Sym] -> UnionType
+fromList = fromSet . IS.fromList
+
+fromAscList :: [Sym] -> UnionType
+fromAscList = fromSet . IS.fromAscList
+
+toList :: UnionType -> [Sym]
+toList = toAscList
+
+toAscList :: UnionType -> [Sym]
+toAscList = IS.toAscList . set
+
 -- | Construction from a set of symbols
 fromSet :: IntSet -> UnionType
 fromSet ss = U (IS.size ss) ss
+
+-- | Is the symbol a member of the union?
+member :: Sym -> UnionType -> Bool
+member s = IS.member s . set
 
 -------------
 -- LATTICE --

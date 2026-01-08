@@ -39,4 +39,9 @@ clean:
 # HTML Haddock documentation
 .PHONY: docs
 docs:
-	cabal haddock --haddock-executables --haddock-internal --haddock-hyperlink-source --haddock-html-location='https://hackage.haskell.org/package/$pkg-$version/docs' --open
+	cabal haddock \
+		--haddock-executables \
+		--haddock-internal \
+		--haddock-hyperlink-source \
+		--haddock-html-location='https://hackage.haskell.org/package/$pkg-$version/docs' \
+		--open

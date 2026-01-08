@@ -63,6 +63,7 @@ executable diagram
                       Diagram.Types
                       Diagram.Model
                       Diagram.Joints
+                      Diagram.Random
                       Diagram.Doubly
                       Diagram.Dynamic
                       Diagram.Progress

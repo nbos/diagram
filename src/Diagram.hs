@@ -1,17 +1,15 @@
 {-# LANGUAGE TypeApplications #-}
 module Diagram (module Diagram) where
 
-import System.IO (openFile, hFileSize, IOMode(ReadMode))
+import System.IO
 import Options.Applicative
-import Control.Monad.Random.Lazy (evalRand,mkStdGen)
-
-import qualified Data.Map.Strict as M
+-- import Control.Monad.Random.Lazy (evalRand,mkStdGen)
 
 import qualified Streaming.Prelude as S
 import qualified Streaming.ByteString as Q
 
-import Diagram.EM
-import Diagram.Model
+import qualified Diagram.Joints as J
+import qualified Diagram.EM as EM
 import Diagram.Progress (withPB)
 
 data Options = Options
@@ -33,6 +31,8 @@ optionsParser = Options
 
 main :: IO ()
 main = do
+  hSetBuffering stdout NoBuffering
+
   opts <- execParser $ info (optionsParser <**> helper)
     ( fullDesc
       <> progDesc "Chunking with joints and unions"
@@ -40,13 +40,10 @@ main = do
 
   h <- openFile (optFilename opts) ReadMode
   sz <- fromInteger @Int <$> hFileSize h
-  (jointCounts, _) <- countJointsM $
+  (joints, _) <- J.fromStream $
+                      S.zip (S.enumFrom 0) $
                       S.map fromEnum $
                       withPB sz "Counting joints" $
                       Q.unpack $ Q.fromHandle h
 
-  let (as, bs) = evalRand (split $ M.keys jointCounts)
-                 (mkStdGen $ optSeed opts)
-
-  print as
-  print bs
+  EM.em joints

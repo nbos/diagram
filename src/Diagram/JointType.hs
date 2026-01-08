@@ -1,13 +1,18 @@
 module Diagram.JointType (module Diagram.JointType) where
 
-import Data.Bifunctor
+import Control.Monad.Random (MonadRandom)
+
+import Data.Tuple.Extra
 import qualified Data.List.Extra as L
+import qualified Data.Map as M
 
 import qualified Codec.Arithmetic.Variety as Variety
 import Codec.Arithmetic.Variety.BitVec (BitVec)
 import qualified Codec.Arithmetic.Variety.BitVec as BV
 
+import qualified Diagram.Random as R
 import Diagram.Model (Sym)
+import Diagram.Joints (Joints)
 import Diagram.UnionType (UnionType)
 import qualified Diagram.UnionType as U
 import Diagram.Information (log2)
@@ -18,6 +23,20 @@ data JointType = J {
   left :: !UnionType, -- s0s
   right :: !UnionType -- s1s
 } deriving (Eq,Show)
+
+fromJoints :: Joints -> JointType
+fromJoints = uncurry J . both U.fromList . unzip . M.keys
+
+-- | Is the symbol a member of the union?
+member :: (Sym,Sym) -> JointType -> Bool
+member (s0,s1) (J u0 u1) = U.member s0 u0 && U.member s1 u1
+
+-- | Generate a random refinement
+genRefinement :: MonadRandom m => JointType -> m JointType
+genRefinement (J u0 u1) = do
+  u0' <- U.fromAscList . fst <$> R.split (U.toAscList u0)
+  u1' <- U.fromAscList . fst <$> R.split (U.toAscList u1)
+  return $ J u0' u1'
 
 -------------
 -- LATTICE --
