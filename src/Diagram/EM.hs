@@ -16,7 +16,7 @@ em jts = go0
     top = JT.fromJoints jts
 
     go0 = do
-      t <- JT.genRefinement top
+      t <- JT.genRefinement_ top
       let jts' = M.filterKeys (`JT.member` t) jts
           t' = JT.fromJoints jts'
       liftIO $ if t == t' then putStr "0" else putStr "."

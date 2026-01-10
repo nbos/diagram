@@ -70,6 +70,7 @@ executable diagram
                       Diagram.JointType
                       Diagram.UnionType
                       Diagram.Information
+                      Diagram.TrainJointType
                       Diagram.Util
 
     -- LANGUAGE extensions used by modules in this package.
@@ -88,6 +89,7 @@ executable diagram
                     , streaming
                     , containers >= 0.8 && < 0.9
                     , MonadRandom
+                    , random-shuffle
                     , math-functions
                     , streaming-bytestring
                     , optparse-applicative
