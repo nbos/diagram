@@ -7,7 +7,7 @@ import qualified System.Random.Shuffle as Shuffle
 
 -- | Randomly assign values to one of two sets
 --
--- >>> import Control.Monad.Random.Lazy (evalRand,mkStdGen)
+-- >>> import Control.Monad.Random.Lazy (evalRandIO)
 -- >>> evalRandIO (split [1::Int ..] >>= \(left, right) -> return (take 10 left, take 10 right))
 -- ([2,4,5,6,7,9,11,14,17,18],[1,3,8,10,12,13,15,16,19,20])
 -- ([5,7,8,9,10,12,13,14,15,16],[1,2,3,4,6,11,18,21,22,23])
@@ -22,7 +22,7 @@ split (a:as) = do
 
 -- | Given list and its length, uniformly shuffle the list
 --
--- >>> import Control.Monad.Random.Lazy (evalRand,mkStdGen)
+-- >>> import Control.Monad.Random.Lazy (evalRandIO)
 -- >>> str = "Hello World"
 -- >>> evalRandIO (shuffle (length str) str)
 -- "W dloHrelol"
@@ -31,5 +31,7 @@ split (a:as) = do
 -- "elldo olrWH"
 -- " dHollreWlo"
 shuffle :: MonadRandom m => Int -> [a] -> m [a]
-shuffle len as = Shuffle.shuffle as <$>
-                 mapM (getRandomR . (0,)) [len-1,len-2..1]
+shuffle len as = Shuffle.shuffle as <$> shuffleKey len
+
+shuffleKey :: MonadRandom m => Int -> m [Int]
+shuffleKey len = mapM (getRandomR . (0,)) [len-1,len-2..1]

@@ -25,6 +25,9 @@ data JointType = JT {
   right :: !UnionType -- s1s
 } deriving (Eq,Show)
 
+size :: JointType -> (Int, Int)
+size (JT u0 u1) = (U.length u0, U.length u1)
+
 fromJoints :: Joints -> JointType
 fromJoints = uncurry JT . both U.fromList . unzip . M.keys
 

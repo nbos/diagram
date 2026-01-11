@@ -17,6 +17,7 @@ import qualified Streaming.Prelude as S
 
 import Diagram.Model (Sym)
 import Diagram.Joints (Joints)
+import qualified Diagram.Joints as Jts
 import qualified Diagram.UnionType as U
 import Diagram.JointType (JointType(JT))
 import qualified Diagram.JointType as JT
@@ -32,6 +33,15 @@ data TrainJointType = TJT {
 
 fromJoints :: Joints -> TrainJointType
 fromJoints jts = TJT jts (JT.fromJoints jts)
+
+-- | Check the LUB property
+isLUB :: TrainJointType -> Bool
+isLUB (TJT jts jt) = jt == JT.fromJoints jts
+
+join :: TrainJointType -> TrainJointType -> TrainJointType
+join (TJT jts0 jt0) (TJT jts1 jt1) = TJT jts jt
+  where jts = Jts.union jts0 jts1
+        jt = JT.join jt0 jt1
 
 -- | Generate a random refinement that is the least-upper-bound (LUB) of
 -- the joints it covers. This is different than a random refinement of
@@ -56,7 +66,8 @@ genRefinement (TJT jts jt) = do
     . go IM.empty =<< R.shuffle (length sel) sel
 
   let ru1 = U.fromSet rs1s
-  return (TJT jts' jt, TJT rjts $ JT ru0 ru1)
+      rjt = JT ru0 ru1
+  return (TJT jts' jt, TJT rjts rjt)
 
   where
     go :: IntMap () -> [[((Sym,Sym),(Int,IntSet))]] ->

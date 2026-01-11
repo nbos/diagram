@@ -3,18 +3,22 @@ module Diagram (module Diagram) where
 
 import System.IO
 import Options.Applicative
--- import Control.Monad.Random.Lazy (evalRand,mkStdGen)
+import qualified Control.Monad.Random.Lazy as R
+import Control.Monad.Random.Lazy (StdGen)
+import Control.Monad.Trans.Random.Lazy (RandT,evalRandT)
 
+import Streaming
 import qualified Streaming.Prelude as S
 import qualified Streaming.ByteString as Q
 
-import qualified Diagram.Joints as J
-import qualified Diagram.EM as EM
+import qualified Diagram.Joints as Jts
+import qualified Diagram.JointType as JT
+import qualified Diagram.TrainJointType as TJT
 import Diagram.Progress (withPB)
 
 data Options = Options
   { optFilename :: !FilePath
-  , optSeed     :: !Int
+  , optSeed     :: !(Maybe Int)
   } deriving (Show)
 
 optionsParser :: Parser Options
@@ -22,12 +26,12 @@ optionsParser = Options
   <$> argument str
   ( metavar "FILENAME"
     <> help "Input text file" )
-  <*> option auto
-  ( long "seed"
-    <> short 's'
-    <> metavar "SEED"
-    <> value 0
-    <> help "Random seed (default: 0)" )
+  <*> optional
+  (option auto
+    ( long "seed"
+      <> short 's'
+      <> metavar "SEED"
+      <> help "Set random seed" ))
 
 main :: IO ()
 main = do
@@ -39,11 +43,56 @@ main = do
       <> header "diagram" )
 
   h <- openFile (optFilename opts) ReadMode
-  sz <- fromInteger @Int <$> hFileSize h
-  (joints, _) <- J.fromStream $
-                      S.zip (S.enumFrom 0) $
-                      S.map fromEnum $
-                      withPB sz "Counting joints" $
-                      Q.unpack $ Q.fromHandle h
+  stdGen <- maybe R.initStdGen (return . R.mkStdGen) $
+            optSeed opts
 
-  EM.em joints
+  sz <- fromInteger @Int <$> hFileSize h
+  (jts, _) <- Jts.fromStream $
+              S.zip (S.enumFrom 0) $
+              S.map fromEnum $
+              withPB sz "Counting joints" $
+              Q.unpack $ Q.fromHandle h
+
+  let tjt = TJT.fromJoints jts
+
+  let go :: RandT StdGen IO ()
+      go = do
+        (tjt',rtjt) <- TJT.genRefinement tjt
+        lift $ putStrLn $
+          "generated refinement type with size "
+          ++ show (JT.size $ TJT.jointType rtjt)
+          ++ " covering " ++ show (Jts.size $ TJT.joints rtjt) ++ "joints"
+
+        lift $ putStr "refinement is "
+        if TJT.isLUB rtjt
+          then lift $ putStrLn $ green "LUB" ++ " of its joints"
+          else do lift $ putStrLn $ red "not LUB" ++ " of its joints"
+                  lift $ putStrLn $ "rtjt: " ++ show rtjt
+                  error "LUB error"
+
+        lift $ putStr "refinement is "
+        if TJT.jointType rtjt `JT.leq` TJT.jointType tjt'
+          then lift $ putStrLn $ green "subtype" ++ " of its parent"
+          else do lift $ putStrLn $ red "not subtype" ++ " of its parent"
+                  lift $ putStrLn $ "tjt: " ++ show tjt
+                    ++ "\ntjt': " ++ show tjt'
+                    ++ "\nrtjt: " ++ show rtjt
+                  error "subtype error"
+
+        lift $ putStr "split "
+        if TJT.joints tjt == (TJT.joints rtjt `Jts.union` TJT.joints tjt')
+          then lift $ putStrLn $ green "preserves" ++ " all joints"
+          else do lift $ putStrLn $ red "does not preserve" ++ " all joints"
+                  lift $ putStrLn $ "tjt: " ++ show tjt
+                    ++ "\ntjt': " ++ show tjt'
+                    ++ "\nrtjt: " ++ show rtjt
+                  error "joints split error"
+        go
+
+  evalRandT go stdGen
+
+red :: String -> String
+red s = "\ESC[31m+Error:" ++ s ++ "\ESC[0m"
+
+green :: String -> String
+green s = "\ESC[32m" ++ s ++ "\ESC[0m"

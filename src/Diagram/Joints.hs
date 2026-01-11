@@ -24,6 +24,13 @@ import Diagram.Util
 -- | Count and location of each candidate/joint symbol in the string
 type Joints = Map (Sym,Sym) (Int, IntSet)
 
+size :: Joints -> Int
+size = M.size
+
+------------------
+-- CONSTRUCTION --
+------------------
+
 type Doubly s = D.Doubly MVector s Sym
 -- | Construction using the indices of the doubly-linked list
 fromDoubly :: PrimMonad m => Doubly (PrimState m) -> m Joints
@@ -50,6 +57,10 @@ fromStreamOdd_ (i0,s0) !m iss = (S.next iss >>=) $ \case
               | otherwise            = fromStreamOdd_ i1s1 -- odd
     where m' = insert1 m (s0,s1) i0
 
+----------------
+-- OPERATIONS --
+----------------
+
 insert1 :: Joints -> (Sym,Sym) -> Index -> Joints
 insert1 jts s0s1 i = M.insertWith f s0s1 (1, IS.singleton i) jts
   where f _ (n,is) = (n + 1, IS.insert i is)
@@ -62,6 +73,10 @@ union = M.unionWith $ \(a,s) (b,t) -> (a + b, IS.union s t)
 difference :: Joints -> Joints -> Joints
 difference = M.mergeWithKey (const f) id id
   where f (a,s) (b,t) = nothingIf ((== 0) . fst) (a - b, IS.difference s t)
+
+-----------
+-- DEBUG --
+-----------
 
 -- | Re-compute the joint counts + locations to check the validity of a
 -- given joints map. Throws an error if they differ.
