@@ -55,7 +55,7 @@ genRefinement :: forall m. MonadRandom m => TrainJointType ->
 genRefinement (TJT jts jt) = do
   let jtsByFst = L.groupBy ((==) `on` (fst . fst)) $
                  M.toAscList jts
-  (notSel,sel) <- R.split jtsByFst
+  (notSel,sel) <- R.split jtsByFst -- sample each s0 with p 0.5
   let rs0s = fst . fst . head <$> sel
       ru0 = U.fromDistinctAscList rs0s
 
@@ -66,16 +66,15 @@ genRefinement (TJT jts jt) = do
     . go IM.empty =<< R.shuffle (length sel) sel
 
   let ru1 = U.fromSet rs1s
-      rjt = JT ru0 ru1
-  return (TJT jts' jt, TJT rjts rjt)
+  return ( TJT jts' jt -- old type with some joints stripped
+         , TJT rjts (JT ru0 ru1) ) -- refinement
 
   where
     go :: IntMap () -> [[((Sym,Sym),(Int,IntSet))]] ->
           Stream (Of (Joints,Joints)) m IntSet
     go s1s [] = return $ IM.keysSet s1s
     go s1s (jt0s:rest) = do
-      (notSel_,sel_) <- lift $ R.split toSampleL
-      (notSel,sel) <- if null sel_ && IM.disjoint s1s toSample
+      (notSel,sel) <- if null impliedSel
         then do -- LUB property broken, resample ensuring >= 1 sel
         let len = length toSampleL
         i <- lift $ getRandomR (0,len-1)
@@ -83,15 +82,19 @@ genRefinement (TJT jts jt) = do
         (notSelLT,selLT) <- lift $ R.split lt
         (notSelGT,selGT) <- lift $ R.split gt
         return (notSelLT ++ notSelGT, selLT ++ s1:selGT)
-        else return (notSel_,sel_) -- LUB not broken
+        else lift $ R.split toSampleL
 
-      S.yield ( M.fromDistinctAscList notSel
-              , M.fromDistinctAscList sel )
-      let sel1s = IM.fromDistinctAscList $ (,()) . snd . fst <$> sel
+      S.yield ( buildMap notSel
+              , buildMap sel `M.union` buildMap impliedSel )
+      let sel1s = IM.fromDistinctAscList ((,()) . fst <$> sel)
       go (s1s `IM.union` sel1s) rest
 
       where
         s0 = fst $ fst $ head jt0s
         jt0sBySnd = IM.fromDistinctAscList $ first snd <$> jt0s
+        impliedSel = IM.toAscList $ jt0sBySnd `IM.intersection` s1s
         toSample = jt0sBySnd IM.\\ s1s
-        toSampleL = first (s0,) <$> IM.toList toSample
+        toSampleL = IM.toAscList toSample
+
+        buildMap :: [(Sym,(Int,IntSet))] -> Joints
+        buildMap = M.mapKeysMonotonic (s0,) . M.fromDistinctAscList

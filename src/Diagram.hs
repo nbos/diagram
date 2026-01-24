@@ -61,7 +61,7 @@ main = do
         lift $ putStrLn $
           "generated refinement type with size "
           ++ show (JT.size $ TJT.jointType rtjt)
-          ++ " covering " ++ show (Jts.size $ TJT.joints rtjt) ++ "joints"
+          ++ " covering " ++ show (Jts.size $ TJT.joints rtjt) ++ " joints"
 
         lift $ putStr "refinement is "
         if TJT.isLUB rtjt
@@ -92,7 +92,7 @@ main = do
   evalRandT go stdGen
 
 red :: String -> String
-red s = "\ESC[31m+Error:" ++ s ++ "\ESC[0m"
+red s = "\ESC[31mError:" ++ s ++ "\ESC[0m"
 
 green :: String -> String
 green s = "\ESC[32m" ++ s ++ "\ESC[0m"
