@@ -67,6 +67,7 @@ executable diagram
                       Diagram.Doubly
                       Diagram.Dynamic
                       Diagram.Progress
+                      Diagram.Primitive
                       Diagram.JointType
                       Diagram.UnionType
                       Diagram.Information
