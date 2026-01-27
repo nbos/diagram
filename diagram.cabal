@@ -79,6 +79,8 @@ executable diagram
 
     -- Other library packages from which modules are imported.
     build-depends:    base
+                    , mtl
+                    , lens
                     , text
                     , extra
                     , vector
@@ -88,7 +90,7 @@ executable diagram
                     , directory
                     , primitive
                     , streaming
-                    , containers >= 0.8 && < 0.9
+                    , containers
                     , MonadRandom
                     , random-shuffle
                     , math-functions

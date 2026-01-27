@@ -43,13 +43,14 @@ join (TJT jts0 jt0) (TJT jts1 jt1) = TJT jts jt
   where jts = Jts.union jts0 jts1
         jt = JT.join jt0 jt1
 
--- | Generate a random refinement that is the least-upper-bound (LUB) of
--- the joints it covers. This is different than a random refinement of
--- each union type, because of the joints involved. Tries to be fancy
--- and shuffle so whatever bias in our enforcement of the invariants of
--- the LUB property is distributed across the lattice. The given joint
--- type is returned (fst) with the joints covered by the refinement
--- (snd) removed.
+-- | (DO NOT USE (CREATES LOBSIDED TYPES WITH U1'S ~50% BIGGER THAN U0
+-- ON JOINT SETS GREATER THAN TRIVIAL)) Generate a random refinement
+-- that is the least-upper-bound (LUB) of the joints it covers. This is
+-- different than a random refinement of each union type, because of the
+-- joints involved. Tries to be fancy and shuffle so whatever bias in
+-- our enforcement of the invariants of the LUB property is distributed
+-- across the lattice. The given joint type is returned (fst) with the
+-- joints covered by the refinement (snd) removed.
 genRefinement :: forall m. MonadRandom m => TrainJointType ->
                  m (TrainJointType, TrainJointType)
 genRefinement (TJT jts jt) = do

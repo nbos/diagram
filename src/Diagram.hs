@@ -61,7 +61,8 @@ main = do
         lift $ putStrLn $
           "generated refinement type with size "
           ++ show (JT.size $ TJT.jointType rtjt)
-          ++ " covering " ++ show (Jts.size $ TJT.joints rtjt) ++ " joints"
+          ++ " covering " ++ show (Jts.size $ TJT.joints rtjt)
+          ++ " joints out of " ++ show (Jts.size $ TJT.joints tjt)
 
         lift $ putStr "refinement is "
         if TJT.isLUB rtjt

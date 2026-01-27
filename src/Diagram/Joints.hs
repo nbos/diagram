@@ -1,19 +1,26 @@
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
 {-# LANGUAGE BangPatterns, LambdaCase #-}
 module Diagram.Joints (module Diagram.Joints) where
 
 import Control.Monad
 import Control.Monad.Primitive (PrimMonad(PrimState))
+import Control.Monad.ST
 
+import Data.Function
+import Data.Tuple.Extra
+import qualified Data.List.Extra as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Data.IntMap (IntMap)
+import qualified Data.IntMap as IM
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IS
 import qualified Data.Set as Set
 
+import qualified Data.Vector.Mutable as MV
 import Data.Vector.Unboxed.Mutable (MVector)
 
-import Streaming
+import Streaming hiding (first)
 import qualified Streaming.Prelude as S
 
 import Diagram.Model (Sym)
@@ -73,6 +80,48 @@ union = M.unionWith $ \(a,s) (b,t) -> (a + b, IS.union s t)
 difference :: Joints -> Joints -> Joints
 difference = M.mergeWithKey (const f) id id
   where f (a,s) (b,t) = nothingIf ((== 0) . fst) (a - b, IS.difference s t)
+
+-----------------
+-- RE-INDEXING --
+-----------------
+
+-- | Generic, given a `fromDistinctAscList` function
+curryWith :: (forall a. [(Int,a)] -> m a) -> Map (Int,Int) s -> m (m s)
+curryWith build = build
+  . fmap (fst . fst . head &&& build . fmap (first snd))
+  . L.groupBy ((==) `on` (fst . fst))
+  . M.toAscList
+
+-- | O(n) Convert a `(s0,s1) -> is` map into `s0 -> s1 -> is`
+curry :: Map (Int,Int) a -> IntMap (IntMap a)
+curry = curryWith IM.fromDistinctAscList
+
+-- | O(n) Convert the `(s0,s1) -> is` map into `s0 -> s1 -> is`
+byFst :: Joints -> IntMap (IntMap (Int, IntSet))
+byFst = Diagram.Joints.curry
+
+-- | O(n) Convert the `(s0,s1) -> is` map into `s0 -> s1 -> is`
+byFstSized :: Joints -> Map Int (Map Int (Int, IntSet))
+byFstSized = curryWith M.fromDistinctAscList
+
+-- | Generic, given a `fromDistinctAscList` function
+bySndWith :: (forall a. [(Int,a)] -> m a) ->
+             Int -> Joints -> m (m (Int, IntSet))
+bySndWith build numSymbols jts = runST $ do
+  mv <- MV.replicate numSymbols []
+  forM_ (M.toDescList jts) $ \((s0,s1),is) -> MV.modify mv ((s0,is):) s1
+  ims <- MV.ifoldr (\s1 l -> if null l then id else
+                       ((s1, build l):)) [] mv
+  return $ build ims
+
+-- | O(n + numSymbols) Given the number of symbols, convert the `(s0,s1)
+-- -> is` map into `s1 -> s0 -> is`
+bySnd :: Int -> Joints -> IntMap (IntMap (Int, IntSet))
+bySnd = bySndWith IM.fromDistinctAscList
+
+bySndSized :: Int -> Joints -> Map Int (Map Int (Int, IntSet))
+bySndSized = bySndWith M.fromDistinctAscList
+
 
 -----------
 -- DEBUG --

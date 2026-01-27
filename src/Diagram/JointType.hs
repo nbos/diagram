@@ -1,19 +1,32 @@
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
+{-# LANGUAGE TupleSections, LambdaCase #-}
+{-# LANGUAGE TypeApplications #-}
+
 module Diagram.JointType (module Diagram.JointType) where
 
-import Control.Monad.Random (MonadRandom)
 
+import Control.Monad as Monad
+import Control.Lens hiding (both,last1)
+import Control.Monad.State.Strict
+import Control.Monad.Random
 
+import Data.Maybe
 import Data.Tuple.Extra
 import qualified Data.List.Extra as L
-import qualified Data.Map as M
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as M
+import Data.IntSet (IntSet)
+import qualified Data.IntSet as IS
 
 import qualified Codec.Arithmetic.Variety as Variety
 import Codec.Arithmetic.Variety.BitVec (BitVec)
 import qualified Codec.Arithmetic.Variety.BitVec as BV
 
+import Diagram.Primitive
 import Diagram.Model (Sym)
 import Diagram.Joints (Joints)
-import Diagram.UnionType (UnionType)
+import Diagram.UnionType (UnionType(..))
 import qualified Diagram.UnionType as U
 import qualified Diagram.Random as R
 import Diagram.Information (log2)
@@ -34,6 +47,85 @@ fromJoints = uncurry JT . both U.fromList . unzip . M.keys
 -- | Is the symbol a member of the union?
 member :: (Sym,Sym) -> JointType -> Bool
 member (s0,s1) (JT u0 u1) = U.member s0 u0 && U.member s1 u1
+
+-- | State record to track the two maps and two sets
+data RefinementState a = RefinementState {
+  _jtsByFst :: !(Map Sym (Bool, Map Sym a)),
+  _jtsBySnd :: !(Map Sym (Bool, Map Sym a)),
+  -- NOTE: Map Int instead of IntMap because we want O(1) size
+  -- and O(log n) elemAt.
+  _fstUnion :: !IntSet,
+  _sndUnion :: !IntSet
+}
+makeLenses ''RefinementState
+
+-- | Generate a random refinement, given a set of joints indexed both
+-- ways
+genRefinement :: forall m a. (MonadRandom m, PrimMonad m) =>
+                 Map Sym (Map Sym a) ->
+                 Map Sym (Map Sym a) -> m JointType
+genRefinement byFst0 bySnd0 =
+  evalStateT go $ RefinementState ((False,) <$> byFst0)
+                                  ((False,) <$> bySnd0)
+                                  IS.empty IS.empty
+  where
+    go :: StateT (RefinementState a) m JointType
+    go = get >>= \case
+      (RefinementState byFst bySnd u0 u1)
+        | total == 0 -> return $ JT (U.fromSet u0) (U.fromSet u1) -- end
+        | otherwise -> do
+            i <- getRandomR (0, total-1) -- select a symbol
+            b <- getRandom @_ @Bool -- include/exclude it in the ref
+            if i < len0 then goIntroFst b (fst $ M.elemAt i byFst)
+              else goIntroSnd b (fst $ M.elemAt (i - len0) bySnd)
+            go -- rec
+              where len0 = M.size byFst -- O(1)
+                    len1 = M.size bySnd -- O(1)
+                    total = len0 + len1
+
+    -- | Eliminate a symbol, given its current entry in the byFst map,
+    -- and enforce invariants whether it has be `sel`ected or not
+    goIntroFst :: Bool -> Int -> StateT (RefinementState a) m ()
+    goIntroFst sel s0 = do
+      (_, m1) <- jtsByFst %%= deleteFind s0 -- remove from avail.
+      when sel $ fstUnion %= IS.insert s0 -- add to result
+      forM_ (M.keys m1) $ \s1 -> do -- remove from its joints
+        -- Monad.join runs the cont/rec call :: m (m a) -> m a
+        Monad.join $ jtsBySnd . at s1 %%= \case
+          Nothing -> error "impossible"
+          Just (free1, m0) ->
+            ( cont -- cont/rec call returned bc %%= wants a pure fn
+            , (free1', ) <$> nothingIf M.null m0' ) -- insert/delete
+            where
+              m0' = M.delete s0 m0
+              free1' = sel || free1
+              cont = when (M.size m0' == 1 && not free1') $
+                     getRandom >>= flip goIntroFst last0
+              last0 = head $ M.keys m0'
+
+    -- | Converse as above, could probably be factored into one, but
+    -- that might be too much
+    goIntroSnd :: Bool -> Int -> StateT (RefinementState a) m ()
+    goIntroSnd sel s1 = do
+      (_, m0) <- jtsBySnd %%= deleteFind s1 -- remove from avail.
+      when sel $ sndUnion %= IS.insert s1 -- add to result
+      forM_ (M.keys m0) $ \s0 -> do -- remove from its joints
+        -- Monad.join runs the cont/rec call :: m (m a) -> m a
+        Monad.join $ jtsByFst . at s0 %%= \case
+          Nothing -> error "impossible"
+          Just (free0, m1) ->
+            ( cont -- cont/rec call returned bc %%= wants a pure fn
+            , (free0', ) <$> nothingIf M.null m1' ) -- insert/delete
+            where
+              m1' = M.delete s1 m1
+              free0' = sel || free0
+              cont = when (M.size m1' == 1 && not free0') $
+                     getRandom >>= flip goIntroSnd last1
+              last1 = head $ M.keys m1'
+
+deleteFind :: Ord k => k -> Map k a -> (a, Map k a)
+deleteFind = first fromJust
+             .: M.updateLookupWithKey (\_ _ -> Nothing)
 
 -- | (DO NOT USE (NAIVE)) Generate a random refinement of a type. The
 -- produced type is not necessarily a valid refinement (least upper
