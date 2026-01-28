@@ -54,10 +54,12 @@ main = do
               Q.unpack $ Q.fromHandle h
 
   let tjt = TJT.fromJoints jts
+      byFst = Jts.byFstSized jts
+      bySnd = Jts.bySndSized 256 jts
 
   let go :: RandT StdGen IO ()
       go = do
-        (tjt',rtjt) <- TJT.genRefinement tjt
+        (tjt',rtjt) <- TJT.refine tjt <$> JT.genRefinement byFst bySnd
         lift $ putStrLn $
           "generated refinement type with size "
           ++ show (JT.size $ TJT.jointType rtjt)

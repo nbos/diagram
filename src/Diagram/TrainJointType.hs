@@ -10,7 +10,7 @@ import qualified Data.List.Extra as L
 import Data.IntSet (IntSet)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
-import qualified Data.Map as M
+import qualified Data.Map.Strict as M
 
 import Streaming hiding (first, second)
 import qualified Streaming.Prelude as S
@@ -42,6 +42,15 @@ join :: TrainJointType -> TrainJointType -> TrainJointType
 join (TJT jts0 jt0) (TJT jts1 jt1) = TJT jts jt
   where jts = Jts.union jts0 jts1
         jt = JT.join jt0 jt1
+
+-- | Refine a TrainJointType with a given JointType, returns the
+-- refinement (snd) and the given TrainJointType (fst) with joints
+-- covered by the refinement removed
+refine :: TrainJointType -> JointType -> (TrainJointType, TrainJointType)
+refine (TJT jts0 jt0) jt1 = (TJT jts0' jt0, TJT jts1 jt1)
+  where
+    jts1 = M.filterWithKey (\k _ -> k `JT.member` jt1) jts0
+    jts0' = jts0 M.\\ jts1
 
 -- | (DO NOT USE (CREATES LOBSIDED TYPES WITH U1'S ~50% BIGGER THAN U0
 -- ON JOINT SETS GREATER THAN TRIVIAL)) Generate a random refinement
