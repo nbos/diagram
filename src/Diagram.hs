@@ -3,9 +3,13 @@ module Diagram (module Diagram) where
 
 import System.IO
 import Options.Applicative
-import qualified Control.Monad.Random.Lazy as R
-import Control.Monad.Random.Lazy (StdGen)
-import Control.Monad.Trans.Random.Lazy (RandT,evalRandT)
+import System.Random (StdGen)
+import qualified System.Random as R
+import Control.Monad.Trans.Random.Lazy (RandT,evalRand,evalRandT)
+import Control.Monad.Random.Class
+
+import Data.Word
+import Data.Maybe
 
 import Streaming
 import qualified Streaming.Prelude as S
@@ -18,7 +22,7 @@ import Diagram.Progress (withPB)
 
 data Options = Options
   { optFilename :: !FilePath
-  , optSeed     :: !(Maybe Int)
+  , optSeed     :: !(Maybe Word64)
   } deriving (Show)
 
 optionsParser :: Parser Options
@@ -43,8 +47,14 @@ main = do
       <> header "diagram" )
 
   h <- openFile (optFilename opts) ReadMode
-  stdGen <- maybe R.initStdGen (return . R.mkStdGen) $
-            optSeed opts
+
+  -- can't inspect seed at init or deconstruct to seed, so we gen a
+  -- random StdGen seed with a StdGen
+  seedStdGen <- R.initStdGen
+  let seed = fromMaybe (evalRand getRandom seedStdGen)
+             (optSeed opts)
+      stdGen = R.mkStdGen64 seed
+  putStr "Using seed: " >> print seed
 
   sz <- fromInteger @Int <$> hFileSize h
   (jts, _) <- Jts.fromStream $
