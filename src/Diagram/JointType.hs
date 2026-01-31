@@ -146,9 +146,14 @@ makeLenses ''RefinementState
 
 -- | Generate a random refinement, given a set of joints indexed both
 -- ways
-genRefinement :: forall m a. (Show a, MonadRandom m, PrimMonad m) =>
+genRefinement :: (MonadRandom m, PrimMonad m) =>
                  Map Sym (Map Sym a) -> Map Sym (Map Sym a) -> m JointType
-genRefinement byFst0 bySnd0 =
+genRefinement = genRefinementWith 0.5
+
+-- | Generate a random refinement, given a sampling probability
+genRefinementWith :: forall m a. (MonadRandom m, PrimMonad m) =>
+  Double -> Map Sym (Map Sym a) -> Map Sym (Map Sym a) -> m JointType
+genRefinementWith r byFst0 bySnd0 =
   evalStateT go $ RefinementState ((False,) <$> byFst0)
                                   ((False,) <$> bySnd0)
                                   IS.empty IS.empty
@@ -159,7 +164,8 @@ genRefinement byFst0 bySnd0 =
         | total == 0 -> return $ JT (U.fromSet u0) (U.fromSet u1) -- end
         | otherwise -> do
             i <- getRandomR (0, total-1) -- select a symbol
-            b <- getRandom @_ @Bool -- include/exclude it in the ref
+            f <- getRandom @_ @Double -- include/exclude it in the ref
+            let b = f <= r
             if i < len0 then goElimFst b (fst $ M.elemAt i byFst)
               else goElimSnd b (fst $ M.elemAt (i - len0) bySnd)
             go -- rec
