@@ -146,7 +146,7 @@ makeLenses ''RefinementState
 
 -- | Generate a random refinement, given a set of joints indexed both
 -- ways
-genRefinement :: forall m a. (MonadRandom m, PrimMonad m) =>
+genRefinement :: forall m a. (Show a, MonadRandom m, PrimMonad m) =>
                  Map Sym (Map Sym a) -> Map Sym (Map Sym a) -> m JointType
 genRefinement byFst0 bySnd0 =
   evalStateT go $ RefinementState ((False,) <$> byFst0)
@@ -160,8 +160,8 @@ genRefinement byFst0 bySnd0 =
         | otherwise -> do
             i <- getRandomR (0, total-1) -- select a symbol
             b <- getRandom @_ @Bool -- include/exclude it in the ref
-            if i < len0 then goIntroFst b (fst $ M.elemAt i byFst)
-              else goIntroSnd b (fst $ M.elemAt (i - len0) bySnd)
+            if i < len0 then goElimFst b (fst $ M.elemAt i byFst)
+              else goElimSnd b (fst $ M.elemAt (i - len0) bySnd)
             go -- rec
               where len0 = M.size byFst -- O(1)
                     len1 = M.size bySnd -- O(1)
@@ -173,43 +173,49 @@ genRefinement byFst0 bySnd0 =
 
     -- | Eliminate a symbol, given its current entry in the byFst map,
     -- and enforce invariants whether it has be `sel`ected or not
-    goIntroFst :: Bool -> Int -> StateT (RefinementState a) m ()
-    goIntroFst sel s0 = do
-      (_, m1) <- jtsByFst %%= deleteFind s0 -- remove from avail.
-      when sel $ fstUnion %= IS.insert s0 -- add to result
-      forM_ (M.keys m1) $ \s1 -> do -- remove from its joints
-        -- Monad.join runs the cont/rec call :: m (m a) -> m a
-        Monad.join $ jtsBySnd . at s1 %%= \case
+    goElimFst :: Bool -> Int -> StateT (RefinementState a) m ()
+    goElimFst sel0 s0 = do
+      (free0, ns0s) <- jtsByFst %%= deleteFind s0 -- remove from avail.
+      when sel0 $ fstUnion %= IS.insert s0 -- add to result
+      deleted1 <- forM (M.keys ns0s) $ \s1 -> do -- unlink from neighbors
+        jtsBySnd . at s1 %%= \case
           Nothing -> error "impossible"
-          Just (free1, m0) ->
-            ( cont -- cont/rec call returned bc %%= wants a pure fn
-            , (free1', ) <$> nothingIf M.null m0' ) -- insert/delete
+          Just (free1, ns1s) -> ( if isNothing e then Just s1 else Nothing
+                                , e ) -- insert/delete
             where
-              m0' = M.delete s0 m0
-              free1' = sel || free1
-              cont = when (M.size m0' == 1 && not free1') $
-                     getRandom >>= flip goIntroFst last0
-              last0 = head $ M.keys m0'
+              ns1s' = M.delete s0 ns1s
+              free1' = sel0 || free1
+              e | not free1' && M.null ns1s' = Nothing -- delete
+                | otherwise = Just (free1', ns1s') -- update
 
-    -- | Converse as above, could probably be factored into one, but
+      when (sel0 && not free0) $ do
+        i <- getRandomR (0, M.size ns0s - 1) -- select a symbol
+        let (s1, _) = M.elemAt i ns0s
+        if Just s1 `elem` deleted1 then sndUnion %= IS.insert s1
+          else goElimSnd True s1 -- rec
+
+    -- | Symmetric with above, could probably be factored into one, but
     -- that might be too much
-    goIntroSnd :: Bool -> Int -> StateT (RefinementState a) m ()
-    goIntroSnd sel s1 = do
-      (_, m0) <- jtsBySnd %%= deleteFind s1 -- remove from avail.
-      when sel $ sndUnion %= IS.insert s1 -- add to result
-      forM_ (M.keys m0) $ \s0 -> do -- remove from its joints
-        -- Monad.join runs the cont/rec call :: m (m a) -> m a
-        Monad.join $ jtsByFst . at s0 %%= \case
+    goElimSnd :: Bool -> Int -> StateT (RefinementState a) m ()
+    goElimSnd sel1 s1 = do
+      (free1, ns1s) <- jtsBySnd %%= deleteFind s1 -- remove from avail.
+      when sel1 $ sndUnion %= IS.insert s1 -- add to result
+      deleted0 <- forM (M.keys ns1s) $ \s0 -> do -- unlink from neighbors
+        jtsByFst . at s0 %%= \case
           Nothing -> error "impossible"
-          Just (free0, m1) ->
-            ( cont -- cont/rec call returned bc %%= wants a pure fn
-            , (free0', ) <$> nothingIf M.null m1' ) -- insert/delete
+          Just (free0, ns0s) -> ( if isNothing e then Just s0 else Nothing
+                                , e ) -- insert/delete
             where
-              m1' = M.delete s1 m1
-              free0' = sel || free0
-              cont = when (M.size m1' == 1 && not free0') $
-                     getRandom >>= flip goIntroSnd last1
-              last1 = head $ M.keys m1'
+              ns0s' = M.delete s1 ns0s
+              free0' = sel1 || free0
+              e | not free0' && M.null ns0s' = Nothing -- delete
+                | otherwise = Just (free0', ns0s') -- update
+
+      when (sel1 && not free1) $ do
+        i <- getRandomR (0, M.size ns1s - 1) -- select a symbol
+        let (s0, _) = M.elemAt i ns1s
+        if Just s0 `elem` deleted0 then fstUnion %= IS.insert s0
+          else goElimFst True s0 -- rec
 
 -- | (DO NOT USE (NAIVE)) Generate a random refinement of a type. The
 -- produced type is not necessarily a valid refinement (least upper
