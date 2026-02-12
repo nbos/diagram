@@ -3,7 +3,7 @@
 {-# LANGUAGE TupleSections, LambdaCase, TypeApplications #-}
 {-# LANGUAGE InstanceSigs #-}
 
-module Diagram.JointType (module Diagram.JointType) where
+module Diagram.JointType (module Diagram.JointType, Sym) where
 
 import Control.Monad as Monad
 import Control.Lens hiding (both,last1)
@@ -23,9 +23,8 @@ import Codec.Arithmetic.Variety.BitVec (BitVec)
 import qualified Codec.Arithmetic.Variety.BitVec as BV
 
 import Diagram.Primitive
-import Diagram.Model (Sym)
 import Diagram.Joints (Joints)
-import Diagram.UnionType (UnionType(..))
+import Diagram.UnionType (Sym,UnionType(..))
 import qualified Diagram.UnionType as U
 import qualified Diagram.Random as R
 import Diagram.Information (log2)
@@ -136,13 +135,13 @@ refineLen :: JointType -> Int
 refineLen (JT u0 u1) = U.refineLen u0 + U.refineLen u1
 
 -- | k log(n0*n1)
-resolveInfo :: Int -> JointType -> Double
-resolveInfo k (JT u0 u1) = fromIntegral k * log2 base
+rInfo :: Int -> JointType -> Double
+rInfo k (JT u0 u1) = fromIntegral k * log2 base
   where base = fromIntegral (U.length u0 * U.length u1)
 
 -- | Length of a code to instantiate a type into `k` constructions
 resolveLen :: Int -> JointType -> Int
-resolveLen = ceiling .: resolveInfo
+resolveLen = ceiling .: rInfo
 
 ----------------
 -- REFINEMENT --
@@ -154,12 +153,24 @@ comb [] = [[]]
 comb (a:as) = ass ++ fmap (a:) ass
   where ass = comb as
 
--- | O(n^2) Generate all refinements given joints indexed s0 -> s1 ->
--- a. (enumerate u0s by powerset, then hitting set enumeration)
+-- | O(n^2) Generate all refinements given joints indexed both ways
+-- starting with the empty refinement, ending with the same as input
+--
+-- >>> import qualified Diagram.Joints as Jts
+-- >>> uncurry enumRefinements $
+--     Jts.byFstSized &&& Jts.bySndSized 256 $ Jts.fromList [1,2,3,2]
+-- [ fromLists ([],[])
+-- , fromLists ([3],[2])
+-- , fromLists ([2],[3])
+-- , fromLists ([2,3],[2,3])
+-- , fromLists ([1],[2])
+-- , fromLists ([1,3],[2])
+-- , fromLists ([1,2],[2,3])
+-- , fromLists ([1,2,3],[2,3]) ]
 enumRefinements :: forall a. Map Sym (Map Sym a) ->
   Map Sym (Map Sym a) -> [JointType]
 enumRefinements byFst0 bySnd0 = concatMap givenU0 u0s
-  where
+  where -- (enumerate u0 powerset, then hitting set enum)
     u0s :: [[(Sym, Map Sym a)]]
     u0s = comb $ M.toAscList byFst0 -- deconstruct, select
 

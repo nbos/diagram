@@ -12,9 +12,8 @@ import qualified Data.IntSet as IS
 import Diagram.Dynamic (BoxedVec)
 import qualified Diagram.Dynamic as Dyn
 
-import Diagram.JointType (JointType)
+import Diagram.JointType (Sym,JointType)
 import qualified Diagram.JointType as J
-import Diagram.Model (Sym)
 import Diagram.Information
 import Diagram.Util
 
@@ -49,7 +48,6 @@ new = Types <$> Dyn.new <*> Dyn.new <*> Dyn.new
 withCapacity :: forall m. PrimMonad m => Int -> m (Types m)
 withCapacity n = Types <$> newDyn <*> newDyn <*> newDyn
   where newDyn = Dyn.withCapacity n :: m (BoxedVec m a)
-
 
 ------------
 -- MODIFY --

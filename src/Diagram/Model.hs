@@ -12,23 +12,25 @@ import qualified Data.Vector.Generic.Mutable as MV
 import Streaming
 import qualified Streaming.Prelude as S
 
-data Model = Model {
-  -- modelTypes :: !Types,
-  modelTotalCount :: !Int,
-  modelCounts :: !(U.Vector Int)
-  -- modelJointCounts :: !(Map (Sym,Sym) Int) -- why?
+import Diagram.UnionType (Sym)
+import Diagram.JointType (JointType)
+import Diagram.Dynamic (BoxedVec, UnboxedVec)
+import qualified Diagram.Dynamic as Dyn
+
+data Model m = Model {
+  types :: !(BoxedVec m JointType), -- ts :: mutables types vec
+  totalCount :: !Int, -- N :: total count, i.e. string length
+  counts :: !(UnboxedVec m Int) -- ns :: mutable counts vector
 }
 
-type Sym = Int
-
--- -- | Construction from bytes
--- fromAtoms :: PrimMonad m => Stream (Of Word8) m r -> m (Model, r)
--- fromAtoms ss = do
---   (ks,(jts,r)) <- countAtoms $
---                   countJointsM $ S.map fromEnum $
---                   S.copy ss
---   let n = U.foldl' (+) 0 ks
---   return (Model n ks jts, r)
+-- | Construction from bytes
+emptyFromAtoms :: PrimMonad m => Stream (Of Word8) m r -> m (Model m, r)
+emptyFromAtoms ss = do
+  ts <- Dyn.new
+  (ks,r) <- countAtoms ss
+  let n = U.foldl' (+) 0 ks
+  mks <- Dyn.thaw ks
+  return (Model ts n mks, r)
 
 -- | Histogram of the 256 bytes in a stream
 countAtoms :: PrimMonad m => Stream (Of Word8) m r -> m (U.Vector Int, r)
@@ -39,6 +41,7 @@ countAtoms ss = do
   return (ks, r)
 
 -- | Count the constructable joints in a stream
+-- TODO: move to another module
 countJointsM :: Monad m => Stream (Of Int) m r -> m (Map (Sym,Sym) Int, r)
 countJointsM = countJointsM_ M.empty
 
@@ -56,3 +59,4 @@ countJointsM_ m0 ss0 = (S.next ss0 >>=) $ \case
                             countJointsM_ m' $ S.yield s2 >> ss'' -- even
                         | otherwise -> go m' s1 $ S.yield s2 >> ss'' -- odd
         where m' = M.insertWith (+) (s0,s1) 1 m
+

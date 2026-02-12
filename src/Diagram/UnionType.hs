@@ -11,9 +11,10 @@ import qualified Codec.Arithmetic.Variety as Variety
 import Codec.Arithmetic.Variety.BitVec (BitVec)
 import qualified Codec.Arithmetic.Variety.BitVec as BV
 
-import Diagram.Model (Sym)
 import Diagram.Information (log2)
 import Diagram.Util
+
+type Sym = Int
 
 -- | A sized union of symbols
 data UnionType = UT {

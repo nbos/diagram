@@ -1,6 +1,6 @@
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
 {-# LANGUAGE BangPatterns, LambdaCase #-}
-module Diagram.Joints (module Diagram.Joints) where
+module Diagram.Joints (module Diagram.Joints, Sym) where
 
 import Control.Monad
 import Control.Monad.Primitive (PrimMonad(PrimState))
@@ -23,7 +23,7 @@ import Data.Vector.Unboxed.Mutable (MVector)
 import Streaming hiding (first)
 import qualified Streaming.Prelude as S
 
-import Diagram.Model (Sym)
+import Diagram.UnionType (Sym)
 import Diagram.Doubly (Index)
 import qualified Diagram.Doubly as D
 import Diagram.Util

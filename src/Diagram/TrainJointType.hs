@@ -15,8 +15,7 @@ import qualified Data.Map.Strict as M
 import Streaming hiding (first, second)
 import qualified Streaming.Prelude as S
 
-import Diagram.Model (Sym)
-import Diagram.Joints (Joints)
+import Diagram.Joints (Sym,Joints)
 import qualified Diagram.Joints as Jts
 import qualified Diagram.UnionType as U
 import Diagram.JointType (JointType(JT))
