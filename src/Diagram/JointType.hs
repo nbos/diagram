@@ -1,6 +1,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
 {-# LANGUAGE TupleSections, LambdaCase, TypeApplications #-}
+{-# LANGUAGE InstanceSigs #-}
 
 module Diagram.JointType (module Diagram.JointType) where
 
@@ -34,13 +35,23 @@ import Diagram.Util
 data JointType = JT {
   left :: !UnionType, -- s0s
   right :: !UnionType -- s1s
-} deriving (Eq,Show)
+} deriving (Eq)
+
+instance Show JointType where
+  show :: JointType -> String
+  show = ("fromLists " ++) . show . toLists
 
 size :: JointType -> (Int, Int)
 size (JT u0 u1) = (U.length u0, U.length u1)
 
 fromJoints :: Joints -> JointType
 fromJoints = uncurry JT . both U.fromList . unzip . M.keys
+
+fromLists :: ([Sym],[Sym]) -> JointType
+fromLists (syms0, syms1) = JT (U.fromList syms0) (U.fromList syms1)
+
+toLists :: JointType -> ([Sym],[Sym])
+toLists (JT u0 u1) = (U.toAscList u0, U.toAscList u1)
 
 -- | Is the symbol a member of the union?
 member :: (Sym,Sym) -> JointType -> Bool
@@ -75,9 +86,9 @@ meet :: JointType -> JointType -> JointType
 meet (JT u0 u1) (JT u0' u1') =
   JT (U.meet u0 u0') (U.meet u1 u1')
 
------------------
--- INFORMATION --
------------------
+-----------
+-- CODEC --
+-----------
 
 -- | Refine a type with a bit mask
 refine :: JointType -> BitVec -> JointType
@@ -91,9 +102,12 @@ refine (JT u0 u1) bv
     len = BV.length bv
     (bv0,bv1) = BV.splitAt n0 bv
 
--- | Codelen (bits) of a refinement
-refineLen :: JointType -> Int
-refineLen (JT u0 u1) = U.refineLen u0 + U.refineLen u1
+-- | For a joint count, a type and a code, instantiate the type into
+-- specific joints. Returns Nothing if the given code is not long enough
+-- to fully specify a resolution. If code is long enough, returns the
+-- rest of the code with the resolution's code removed.
+resolve :: Int -> JointType -> BitVec -> Maybe ([(Sym,Sym)], BitVec)
+resolve k t bv = first (resolveIndexes t) <$> Variety.decode (bases k t) bv
 
 -- | For encoding/decoding, [n0,n1,n0,n1,n0,n1,...]
 bases :: Int -> JointType -> [Integer]
@@ -101,21 +115,25 @@ bases k (JT u0 u1) = concat $
   L.transpose [U.bases k u0, U.bases k u1]
 
 -- | For decoding
-fromIdxs :: JointType -> [Integer] -> [(Sym,Sym)]
-fromIdxs (JT u0 u1) is = zip s0s s1s
+resolveIndexes :: JointType -> [Integer] -> [(Sym,Sym)]
+resolveIndexes (JT u0 u1) is = zip s0s s1s
   where
     s0s = U.fromIdxs u0 is0
     s1s = U.fromIdxs u1 is1
     (is0,is1) = case L.transpose (L.chunksOf 2 is) of
                   [l0,l1] -> (l0,l1)
-                  _else -> err "fromIdxs: impossible"
+                  _else -> err "resolveIndexes: impossible"
 
--- | For a joint count, a type and a code, instantiate the type into
--- specific joints. Returns Nothing if the given code is not long enough
--- to fully specify a resolution. If code is long enough, returns the
--- rest of the code with the resolution's code removed.
-resolve :: Int -> JointType -> BitVec -> Maybe ([(Sym,Sym)], BitVec)
-resolve k t bv = first (fromIdxs t) <$> Variety.decode (bases k t) bv
+err :: String -> a
+err = error . ("JointType." ++)
+
+-----------------
+-- INFORMATION --
+-----------------
+
+-- | Codelen (bits) of a refinement
+refineLen :: JointType -> Int
+refineLen (JT u0 u1) = U.refineLen u0 + U.refineLen u1
 
 -- | k log(n0*n1)
 resolveInfo :: Int -> JointType -> Double
@@ -126,12 +144,50 @@ resolveInfo k (JT u0 u1) = fromIntegral k * log2 base
 resolveLen :: Int -> JointType -> Int
 resolveLen = ceiling .: resolveInfo
 
-err :: String -> a
-err = error . ("JointType." ++)
-
 ----------------
 -- REFINEMENT --
 ----------------
+
+-- | O(n^2) Generate all combinations
+comb :: [a] -> [[a]]
+comb [] = [[]]
+comb (a:as) = ass ++ fmap (a:) ass
+  where ass = comb as
+
+-- | O(n^2) Generate all refinements given joints indexed s0 -> s1 ->
+-- a. (enumerate u0s by powerset, then hitting set enumeration)
+enumRefinements :: forall a. Map Sym (Map Sym a) ->
+  Map Sym (Map Sym a) -> [JointType]
+enumRefinements byFst0 bySnd0 = concatMap givenU0 u0s
+  where
+    u0s :: [[(Sym, Map Sym a)]]
+    u0s = comb $ M.toAscList byFst0 -- deconstruct, select
+
+    givenU0 :: [(Sym, Map Sym a)] -> [JointType]
+    givenU0 s0ns0ss = JT u0 . U.fromDistinctAscList
+                      <$> go byFst (M.toAscList bySnd)
+      where
+        byFst = M.fromAscList s0ns0ss -- reconstruct
+        bySnd = fmap (`M.intersection` byFst) $ -- restrict to s0s
+                bySnd0 `M.intersection` s1s -- restrict to s1s
+        (u0,s1s) = U.fromDistinctAscList *** M.unions $ unzip s0ns0ss
+
+    go :: Map Sym (Map Sym a) -> [(Sym, Map Sym a)] -> [[Sym]]
+    go _ [] = [[]]
+    go byFst ((s1,s0s):bySnd)
+      | malformed = error "enumRefinements: malformed"
+      | notFree = sel
+      | otherwise = notSel ++ sel
+      where
+        ns1s = byFst `M.intersection` s0s
+        malformed = any (s1 `M.notMember`) ns1s
+        notFree = any ((== 1) . M.size) ns1s
+        sel = (s1:) <$> go byFst bySnd -- leave s1 in
+
+        -- remove s1 if not selected
+        ns1s' = M.delete s1 <$> ns1s
+        byFst' = ns1s' `M.union` byFst
+        notSel = go byFst' bySnd
 
 -- | State record to track the two maps and two sets
 data RefinementState a = RefinementState {
@@ -173,12 +229,13 @@ genRefinementWith r byFst0 bySnd0 =
                     len1 = M.size bySnd -- O(1)
                     total = len0 + len1
 
+    -- | Map.deleteFind
     deleteFind :: Ord k => k -> Map k b -> (b, Map k b)
     deleteFind = first fromJust
                  .: M.updateLookupWithKey (\_ _ -> Nothing)
 
-    -- | Eliminate a symbol, given its current entry in the byFst map,
-    -- and enforce invariants whether it has be `sel`ected or not
+    -- | Eliminate a symbol and enforce invariants whether it has be
+    -- `sel`ected or not
     goElimFst :: Bool -> Int -> StateT (RefinementState a) m ()
     goElimFst sel0 s0 = do
       (free0, ns0s) <- jtsByFst %%= deleteFind s0 -- remove from avail.

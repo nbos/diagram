@@ -38,6 +38,9 @@ size = M.size
 -- CONSTRUCTION --
 ------------------
 
+fromList :: [Sym] -> Joints
+fromList = fst . runIdentity . fromStream . S.each . zip [0..]
+
 type Doubly s = D.Doubly MVector s Sym
 -- | Construction using the indices of the doubly-linked list
 fromDoubly :: PrimMonad m => Doubly (PrimState m) -> m Joints

@@ -20,9 +20,9 @@ import Diagram.Util
 
 -- | Forest of joint-of-unions type refinements
 data Types m = Types {
-  tsParent   :: !(BoxedVec m (Maybe Sym)),
-  tsChildren :: !(BoxedVec m IntSet),
-  tsTypes    :: !(BoxedVec m JointType)
+  parents    :: !(BoxedVec m (Maybe Sym)),
+  children   :: !(BoxedVec m IntSet),
+  jointTypes :: !(BoxedVec m JointType)
 }
 
 length :: PrimMonad m => Types m -> Int
@@ -69,14 +69,13 @@ push typs@(Types mps css ts) mp t = do
 
 information :: PrimMonad m => Types m -> m Double
 information typs@(Types mps _ _) = do
-  refineLen <- flip2 Dyn.ifoldM' 0 mps $ \acc i -> \case
+  refineLens <- flip2 Dyn.ifoldM' 0 mps $ \acc i -> \case
     Nothing -> let s = 256 + i in return $ acc + s
     Just p -> (acc+) . J.refineLen <$> read typs p
-  return $ parentsInfo + fromIntegral refineLen
+  return $ parentsInfo + fromIntegral refineLens
   where
     len = length typs
     parentsInfo = iLogFactorial len
-
 
 -----------
 -- DEBUG --
