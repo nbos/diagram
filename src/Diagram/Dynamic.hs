@@ -33,6 +33,11 @@ new :: (PrimMonad m, MVector v a) => m (Dynamic m v a)
 new = withCapacity 0
 {-# INLINE new #-}
 
+-- | Clone the given vector
+clone :: (PrimMonad m, MVector v a) => Dynamic m v a -> m (Dynamic m v a)
+clone (Dynamic len vec) = Dynamic len <$> MV.clone vec
+{-# INLINE clone #-}
+
 -- | Create a vector and fill with the initial value.
 replicate :: (PrimMonad m, MVector v a) =>
              Int -> a -> m (Dynamic m v a)
