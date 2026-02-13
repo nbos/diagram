@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase, BangPatterns, TupleSections #-}
+{-# LANGUAGE LambdaCase, BangPatterns #-}
 module Diagram.Model (module Diagram.Model) where
 
 import Control.Monad
@@ -9,15 +9,13 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Generic.Mutable as MV
-import qualified Data.IntSet as IS
 import qualified Data.IntMap.Strict as IM
 
 import Streaming
 import qualified Streaming.Prelude as S
 
 import Diagram.UnionType (Sym)
-import qualified Diagram.UnionType as UT
-import Diagram.JointType (JointType(JT))
+import Diagram.JointType (JointType)
 import qualified Diagram.JointType as JT
 import Diagram.Dynamic (BoxedVec, UnboxedVec)
 import qualified Diagram.Dynamic as Dyn
@@ -92,12 +90,17 @@ codeLen mdl = (ml + tl + bl + nl +) <$> liftA2 (+) sl rl
 
 infoLoss :: PrimMonad m => Model m -> Int -> JointType ->
             Map (Sym,Sym) Int -> m Double
-infoLoss mdl k jt jts = do (ml + tl + bl + nl + rl +) <$> sl
+infoLoss mdl k jt jts = (ml + tl + bl + rl +) <$> nsl
   where ml = fromIntegral $ mDelta mdl
         tl = fromIntegral $ tsDelta mdl
         bl = fromIntegral $ bigNDelta mdl k
-        nl = nsInfoDelta mdl k
-        sl = ssInfoDelta mdl k jts
+        nsl = nssInfoDelta mdl k jts -- n * s splifies
+        rl = rsInfoDelta k jt
+
+nsrInfoLoss :: PrimMonad m => Model m -> Int -> JointType ->
+               Map (Sym,Sym) Int -> m Double
+nsrInfoLoss mdl k jt jts = (rl +) <$> nsl
+  where nsl = nssInfoDelta mdl k jts -- n * s simplifies
         rl = rsInfoDelta k jt
 
 -- m :: numSymbols
@@ -205,18 +208,40 @@ ssInfoDelta_ bigN dns k
                           - sum (iLogFactorial <$> ns'))
   where (ns,ns') = unzip dns
 
--- | Given the model, count of the introduced JointType and counts of
--- covered Joints
-ssInfoDelta :: PrimMonad m => Model m -> Int -> Map (Sym,Sym) Int -> m Double
-ssInfoDelta (Model _ bigN ns _) k jtnm = do
-  dns <- forM (IM.toAscList im) $ \(s,d) ->
+-- | Givne the model and counts of joints covered by a JointType, return
+-- the before/after values of the affected n-counts (unlabeled)
+deltaCounts :: PrimMonad m => Model m -> Map (Sym,Sym) Int -> m [(Int,Int)]
+deltaCounts (Model _ _ ns _) jtnm =
+  forM (IM.toAscList im) $ \(s,d) ->
     Dyn.read ns s >>= \n -> return (n, n-d)
-  return $ ssInfoDelta_ bigN dns k
   where
     jtns = M.toAscList jtnm
     im0 = IM.fromAscListWith (+) $ first fst <$> jtns
     im1 = IM.fromListWith (+) $ first snd <$> jtns
     im = IM.unionWith (+) im0 im1
+
+-- | Given the model, count of the introduced JointType and counts of
+-- covered Joints
+ssInfoDelta :: PrimMonad m => Model m -> Int -> Map (Sym,Sym) Int -> m Double
+ssInfoDelta mdl k jtnm = ssInfoDelta_ (stringLen mdl)
+                         <$> deltaCounts mdl jtnm
+                         <*> pure k
+
+-- ns * ss, Simplifications
+
+nssInfoDelta_ :: Int -> Int -> [(Int,Int)] -> Int -> Double
+nssInfoDelta_ m bigN dns k = log2e * ( iLogFactorial (bigN + m - k)
+                                       - iLogFactorial (bigN + m - 1)
+                                       - log (fromIntegral m)
+                                       + sum (iLogFactorial <$> ns)
+                                       - sum (iLogFactorial <$> ns')
+                                       - iLogFactorial k )
+  where (ns,ns') = unzip dns
+
+nssInfoDelta :: PrimMonad m => Model m -> Int -> Map (Sym,Sym) Int -> m Double
+nssInfoDelta mdl k jtnm = nssInfoDelta_ (numSymbols mdl) (stringLen mdl)
+                          <$> deltaCounts mdl jtnm
+                          <*> pure k
 
 -- rs :: Resolutions
 
