@@ -10,6 +10,7 @@ import Control.Monad.Random.Class
 
 import Data.Word
 import Data.Maybe
+import qualified Data.Map.Strict as M
 
 import Streaming
 import qualified Streaming.Prelude as S
@@ -69,7 +70,8 @@ main = do
 
   let go :: RandT StdGen IO ()
       go = do
-        (tjt',rtjt) <- TJT.refine tjt <$> JT.genRefinement byFst bySnd
+        ((tjt',rtjt),rjts) <- first (TJT.refine tjt)
+                           <$> JT.genRefinement byFst bySnd
         lift $ putStrLn $
           "generated refinement type with size "
           ++ show (JT.size $ TJT.jointType rtjt)
@@ -105,6 +107,14 @@ main = do
                     ++ "\ntjt': " ++ show tjt'
                     ++ "\nrtjt: " ++ show rtjt
                   error "joints split error"
+
+        lift $ putStr "returned joints "
+        if M.keys (TJT.joints rtjt) == M.keys rjts
+          then lift $ putStrLn $ green "match" ++ " joints covered by the refinement"
+          else do lift $ putStrLn $ red "don't match" ++ " joints covered by the refinement"
+                  lift $ putStrLn $ "rtjt: " ++ show (M.keys (TJT.joints rtjt))
+                    ++ "\nrjts: " ++ show (M.keys rjts)
+                  error "joints coverage error"
         go
 
   evalRandT go stdGen

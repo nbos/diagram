@@ -134,14 +134,18 @@ err = error . ("JointType." ++)
 refineLen :: JointType -> Int
 refineLen (JT u0 u1) = U.refineLen u0 + U.refineLen u1
 
+-- | Number of different joints covered by the type
+variety :: JointType -> Int
+variety (JT u0 u1) = U.length u0 * U.length u1
+
 -- | k log(n0*n1)
 rInfo :: Int -> JointType -> Double
-rInfo k (JT u0 u1) = fromIntegral k * log2 base
-  where base = fromIntegral (U.length u0 * U.length u1)
+rInfo k jt = fromIntegral k * log2 base
+  where base = fromIntegral $ variety jt
 
 -- | Length of a code to instantiate a type into `k` constructions
-resolveLen :: Int -> JointType -> Int
-resolveLen = ceiling .: rInfo
+rLen :: Int -> JointType -> Int
+rLen = ceiling .: rInfo
 
 ----------------
 -- REFINEMENT --
@@ -202,33 +206,36 @@ enumRefinements byFst0 bySnd0 = concatMap givenU0 u0s
 
 -- | State record to track the two maps and two sets
 data RefinementState a = RefinementState {
-  _jtsByFst :: !(Map Sym (Bool, Map Sym a)),
-  _jtsBySnd :: !(Map Sym (Bool, Map Sym a)),
   -- NOTE: Map Int instead of IntMap because we want O(1) size
   -- and O(log n) elemAt.
+  _jtsByFst :: !(Map Sym ([Sym], Map Sym a)),
+  _jtsBySnd :: !(Map Sym ([Sym], Map Sym a)),
   _fstUnion :: !IntSet,
-  _sndUnion :: !IntSet
+  _sndUnion :: !IntSet,
+  _refJoints :: !(Map (Sym,Sym) ())
 }
 makeLenses ''RefinementState
 
 -- | Generate a random refinement, given a set of joints indexed both
 -- ways
-genRefinement :: (MonadRandom m, PrimMonad m) =>
-                 Map Sym (Map Sym a) -> Map Sym (Map Sym a) -> m JointType
+genRefinement :: (MonadRandom m, PrimMonad m) => Map Sym (Map Sym a) ->
+                 Map Sym (Map Sym a) -> m (JointType, Map (Sym,Sym) ())
 genRefinement = genRefinementWith 0.5
 
 -- | Generate a random refinement, given a sampling probability
 genRefinementWith :: forall m a. (MonadRandom m, PrimMonad m) =>
-  Double -> Map Sym (Map Sym a) -> Map Sym (Map Sym a) -> m JointType
+  Double -> Map Sym (Map Sym a) -> Map Sym (Map Sym a) -> m ( JointType
+                                                            , Map (Sym,Sym) () )
 genRefinementWith r byFst0 bySnd0 =
-  evalStateT go $ RefinementState ((False,) <$> byFst0)
-                                  ((False,) <$> bySnd0)
-                                  IS.empty IS.empty
+  evalStateT go $ RefinementState (([],) <$> byFst0)
+                                  (([],) <$> bySnd0)
+                                  IS.empty IS.empty M.empty
   where
-    go :: StateT (RefinementState a) m JointType
+    go :: StateT (RefinementState a) m (JointType, Map (Sym,Sym) ())
     go = get >>= \case
-      (RefinementState byFst bySnd u0 u1)
-        | total == 0 -> return $ JT (U.fromSet u0) (U.fromSet u1) -- end
+      (RefinementState byFst bySnd u0 u1 ref)
+        | total == 0 -> return ( JT (U.fromSet u0) (U.fromSet u1)
+                               , ref ) -- end
         | otherwise -> do
             i <- getRandomR (0, total-1) -- select a symbol
             f <- getRandom @_ @Double -- include/exclude it in the ref
@@ -236,9 +243,10 @@ genRefinementWith r byFst0 bySnd0 =
             if i < len0 then goElimFst b (fst $ M.elemAt i byFst)
               else goElimSnd b (fst $ M.elemAt (i - len0) bySnd)
             go -- rec
-              where len0 = M.size byFst -- O(1)
-                    len1 = M.size bySnd -- O(1)
-                    total = len0 + len1
+        where
+          len0 = M.size byFst -- O(1)
+          len1 = M.size bySnd -- O(1)
+          total = len0 + len1
 
     -- | Map.deleteFind
     deleteFind :: Ord k => k -> Map k b -> (b, Map k b)
@@ -249,47 +257,61 @@ genRefinementWith r byFst0 bySnd0 =
     -- `sel`ected or not
     goElimFst :: Bool -> Int -> StateT (RefinementState a) m ()
     goElimFst sel0 s0 = do
-      (free0, ns0s) <- jtsByFst %%= deleteFind s0 -- remove from avail.
-      when sel0 $ fstUnion %= IS.insert s0 -- add to result
-      deleted1 <- forM (M.keys ns0s) $ \s1 -> do -- unlink from neighbors
+      (staged0, jt0s) <- jtsByFst %%= deleteFind s0 -- remove from avail.
+      when sel0 $ do
+        fstUnion %= IS.insert s0 -- add to JointType
+        forM_ staged0 $ \s1 -> -- add staged Joints
+          refJoints %= M.insert (s0,s1) ()
+
+      -- unlink from neighbors
+      deleted1 <- forM (M.keys jt0s) $ \s1 -> do
         jtsBySnd . at s1 %%= \case
           Nothing -> error "impossible"
-          Just (free1, ns1s) -> ( if isNothing e then Just s1 else Nothing
-                                , e ) -- insert/delete
+          Just (staged1, jt1s) -- -> (deleted, inserted)
+            | null staged1' && M.null jt1s' -> (Just s1, Nothing) -- delete
+            | otherwise -> (Nothing, Just (staged1', jt1s')) -- update
             where
-              ns1s' = M.delete s0 ns1s
-              free1' = sel0 || free1
-              e | not free1' && M.null ns1s' = Nothing -- delete
-                | otherwise = Just (free1', ns1s') -- update
+              staged1' | sel0 = s0:staged1 -- stage s0 on s1 if selected
+                       | otherwise = staged1
+              jt1s' = M.delete s0 jt1s
 
-      when (sel0 && not free0) $ do
-        i <- getRandomR (0, M.size ns0s - 1) -- select a symbol
-        let (s1, _) = M.elemAt i ns0s
-        if Just s1 `elem` deleted1 then sndUnion %= IS.insert s1
-          else goElimSnd True s1 -- rec
+      -- enforce invariant if necessary
+      when (sel0 && null staged0) $ do
+        i <- getRandomR (0, M.size jt0s - 1) -- select a symbol
+        let (s1, _) = M.elemAt i jt0s
+        if Just s1 `notElem` deleted1 then goElimSnd True s1 -- rec
+          else do sndUnion %= IS.insert s1
+                  refJoints %= M.insert (s0,s1) () -- null staged1
 
     -- | Symmetric with above, could probably be factored into one, but
     -- that might be too much
     goElimSnd :: Bool -> Int -> StateT (RefinementState a) m ()
     goElimSnd sel1 s1 = do
-      (free1, ns1s) <- jtsBySnd %%= deleteFind s1 -- remove from avail.
-      when sel1 $ sndUnion %= IS.insert s1 -- add to result
-      deleted0 <- forM (M.keys ns1s) $ \s0 -> do -- unlink from neighbors
+      (staged1, jt1s) <- jtsBySnd %%= deleteFind s1 -- remove from avail.
+      when sel1 $ do
+        sndUnion %= IS.insert s1 -- add to JointType
+        forM_ staged1 $ \s0 -> -- add staged Joints
+          refJoints %= M.insert (s0,s1) ()
+
+      -- unlink from neighbors
+      deleted0 <- forM (M.keys jt1s) $ \s0 -> do
         jtsByFst . at s0 %%= \case
           Nothing -> error "impossible"
-          Just (free0, ns0s) -> ( if isNothing e then Just s0 else Nothing
-                                , e ) -- insert/delete
+          Just (staged0, jt0s) -- -> (deleted, inserted)
+            | null staged0' && M.null jt0s' -> (Just s0, Nothing) -- delete
+            | otherwise -> (Nothing, Just (staged0', jt0s')) -- update
             where
-              ns0s' = M.delete s1 ns0s
-              free0' = sel1 || free0
-              e | not free0' && M.null ns0s' = Nothing -- delete
-                | otherwise = Just (free0', ns0s') -- update
+              staged0' | sel1 = s1:staged0 -- stage s1 on s0 if selected
+                       | otherwise = staged0
+              jt0s' = M.delete s1 jt0s
 
-      when (sel1 && not free1) $ do
-        i <- getRandomR (0, M.size ns1s - 1) -- select a symbol
-        let (s0, _) = M.elemAt i ns1s
-        if Just s0 `elem` deleted0 then fstUnion %= IS.insert s0
-          else goElimFst True s0 -- rec
+      -- enforce invariant if necessary
+      when (sel1 && null staged1) $ do
+        i <- getRandomR (0, M.size jt1s - 1) -- select a symbol
+        let (s0, _) = M.elemAt i jt1s
+        if Just s0 `notElem` deleted0 then goElimFst True s0 -- rec
+          else do fstUnion %= IS.insert s0
+                  refJoints %= M.insert (s0,s1) () -- null staged0
 
 -- | (DO NOT USE (NAIVE)) Generate a random refinement of a type. The
 -- produced type is not necessarily a valid refinement (least upper
