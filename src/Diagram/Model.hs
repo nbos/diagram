@@ -97,6 +97,12 @@ infoLoss mdl k jt jts = (ml + tl + bl + rl +) <$> nsl
         nsl = nssInfoDelta mdl k jts -- n * s splifies
         rl = rsInfoDelta k jt
 
+mtnDelta :: Model m -> Int -> Int
+mtnDelta mdl k = ml + tl + bl
+  where ml = mDelta mdl
+        tl = tsDelta mdl
+        bl = bigNDelta mdl k
+
 nsrInfoLoss :: PrimMonad m => Model m -> Int -> JointType ->
                Map (Sym,Sym) Int -> m Double
 nsrInfoLoss mdl k jt jts = (rl +) <$> nsl
@@ -223,9 +229,9 @@ deltaCounts (Model _ _ ns _) jtnm =
 -- | Given the model, count of the introduced JointType and counts of
 -- covered Joints
 ssInfoDelta :: PrimMonad m => Model m -> Int -> Map (Sym,Sym) Int -> m Double
-ssInfoDelta mdl k jtnm = ssInfoDelta_ (stringLen mdl)
+ssInfoDelta mdl k jtnm = flip (ssInfoDelta_ bigN) k
                          <$> deltaCounts mdl jtnm
-                         <*> pure k
+  where bigN = stringLen mdl
 
 -- ns * ss, Simplifications
 
@@ -239,9 +245,10 @@ nssInfoDelta_ m bigN dns k = log2e * ( iLogFactorial (bigN + m - k)
   where (ns,ns') = unzip dns
 
 nssInfoDelta :: PrimMonad m => Model m -> Int -> Map (Sym,Sym) Int -> m Double
-nssInfoDelta mdl k jtnm = nssInfoDelta_ (numSymbols mdl) (stringLen mdl)
+nssInfoDelta mdl k jtnm = flip (nssInfoDelta_ m bigN) k
                           <$> deltaCounts mdl jtnm
-                          <*> pure k
+  where m = numSymbols mdl
+        bigN = stringLen mdl
 
 -- rs :: Resolutions
 

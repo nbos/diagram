@@ -1,3 +1,4 @@
+{-# LANGUAGE InstanceSigs #-}
 module Diagram.UnionType (module Diagram.UnionType) where
 
 import Prelude hiding (length)
@@ -21,6 +22,14 @@ data UnionType = UT {
   length :: !Int, -- size of the set
   set :: !IntSet  -- set of symbols
 } deriving (Eq,Show)
+
+instance Semigroup UnionType where
+  (<>) :: UnionType -> UnionType -> UnionType
+  (<>) = join
+
+instance Monoid UnionType where
+  mempty :: UnionType
+  mempty = bot
 
 fromList :: [Sym] -> UnionType
 fromList = fromSet . IS.fromList
