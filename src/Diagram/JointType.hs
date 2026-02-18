@@ -327,13 +327,205 @@ genRefinement_ (JT u0 u1) = do
   (_,ss1) <- R.split (UT.toAscList u1)
   return $ JT (UT.fromDistinctAscList ss0) (UT.fromDistinctAscList ss1)
 
+data RefinementMut
+  = AddLeft  !Sym !(IntMap Int)
+  | AddRight !Sym !(IntMap Int)
+  | Add2     !Sym !Sym !Int
+  | DelLeft  !Sym !(IntMap Int)
+  | DelRight !Sym !(IntMap Int)
+  | Del2     !Sym !Sym !Int
+
+-- | log(x!)
+logFact :: Int -> Double
+logFact = iLogFactorial
+
+-- | Natural logarithm of an integer
+ilog :: Int -> Double
+ilog = log . fromIntegral
+
+optimize :: Int -> Int -> U.Vector Int ->
+  IntMap (IntMap Int) -> IntMap (IntMap Int) -> JointType -> JointType
+optimize m bigN ns byFst bySnd rjt@(JT u0 u1) = seq sortedMuts
+                                                undefined
+  where
+    (loss, mut) = head sortedMuts
+
+    rjt' = case mut of
+      AddLeft s0 jtns -> undefined
+      AddRight s1 jtns -> undefined
+      Add2 s0 s1 n01 -> undefined
+      DelLeft s0 jtns -> undefined
+      DelRight s1 jtns -> undefined
+      Del2 _ _ n01 -> undefined
+
+    allMuts = (uncurry AddLeft <$> IM.toList addLefts)
+      ++ (uncurry AddRight <$> IM.toList addRights)
+      ++ (uncurry (uncurry Add2) <$> M.toList add2s)
+      ++ (uncurry DelLeft <$> IM.toList delLefts)
+      ++ (uncurry DelRight <$> IM.toList delRights)
+      ++ (uncurry (uncurry Del2) <$> M.toList del2s)
+
+    sortedMuts = L.sortOn fst $
+                 toFst (evalMut m bigN ns ns' nm vm) <$> allMuts
+
+    ns' = IM.mapWithKey (\s dn -> (ns U.! s) - dn) $
+          IM.fromListWith (+) $
+          foldr (\((s0,s1),n01) l -> (s0,n01):(s1,n01):l)
+          [] byFstInInL
+
+    nm = sum $ snd <$> byFstInInL
+
+    vm = variety rjt
+
+    byFstInInL = byFstToAscList byFstInIn
+
+    addLefts  = byFstOutIn :: IntMap (IntMap Int)
+    addRights = bySndOutIn :: IntMap (IntMap Int)
+
+    add2s :: Map (Sym,Sym) Int
+    add2s = byFstToMap $
+            -- (Out x Out) that are not addable by themselves (either
+            -- from left or right)
+            flip IM.mapMaybe (byFstOutOut IM.\\ addLefts) $
+            nothingIf IM.null . (IM.\\ addRights)
+
+    isSingleton im | [_] <- IM.toList im = True
+                   | otherwise = False
+
+    byFstToAscList :: IntMap (IntMap Int) -> [((Sym,Sym),Int)]
+    byFstToAscList = concatMap (\(s0,im) -> first (s0,)
+                                            <$> IM.toAscList im)
+                     . IM.toAscList
+
+    byFstToMap :: IntMap (IntMap Int) -> Map (Sym,Sym) Int
+    byFstToMap = M.fromDistinctAscList . byFstToAscList
+
+    bySndToAscList :: IntMap (IntMap Int) -> [((Sym,Sym),Int)]
+    bySndToAscList = fmap (first swap) . byFstToAscList
+
+    bySndToMap :: IntMap (IntMap Int) -> Map (Sym,Sym) Int
+    bySndToMap = M.fromDistinctAscList . bySndToAscList
+
+    byFstInInPendant = IM.filter isSingleton byFstInIn
+    bySndInInPendant = IM.filter isSingleton bySndInIn
+
+    leftPendantRJts = byFstToMap byFstInInPendant
+    rightPendantRJts = bySndToMap bySndInInPendant
+
+    assertEq n n' | n /= n' = error $
+                              "Should be eq: " ++ show (n,n')
+                  | otherwise = n
+
+    del2s :: Map (Sym,Sym) Int
+    del2s = M.intersectionWith assertEq
+            leftPendantRJts rightPendantRJts
+
+    delLefts :: IntMap (IntMap Int)
+    delLefts = flip IM.mapMaybe byFstInIn $
+               nothingIf IM.null . (IM.\\ bySndInInPendant)
+
+    delRights :: IntMap (IntMap Int)
+    delRights = flip IM.mapMaybe bySndInIn $
+                nothingIf IM.null . (IM.\\ byFstInInPendant)
+
+    byFstIn = byFst `IM.restrictKeys` UT.set u0
+    byFstInIn = flip IM.mapMaybe byFstIn $
+                nothingIf IM.null . (`IM.restrictKeys` UT.set u1)
+    byFstInOut = flip IM.mapMaybe byFstIn $
+                 nothingIf IM.null . (`IM.withoutKeys` UT.set u1)
+
+    byFstOut = byFst `IM.withoutKeys` UT.set u0
+    byFstOutIn = flip IM.mapMaybe byFstOut $
+                 nothingIf IM.null . (`IM.restrictKeys` UT.set u1)
+    byFstOutOut = flip IM.mapMaybe byFstOut $
+                  nothingIf IM.null . (`IM.withoutKeys` UT.set u1)
+
+    bySndIn = bySnd `IM.restrictKeys` UT.set u1
+    bySndInIn = flip IM.mapMaybe bySndIn $
+                nothingIf IM.null . (`IM.restrictKeys` UT.set u0)
+    bySndInOut = flip IM.mapMaybe bySndIn $
+                 nothingIf IM.null . (`IM.withoutKeys` UT.set u0)
+
+    bySndOut = bySnd `IM.withoutKeys` UT.set u1
+    bySndOutIn = flip IM.mapMaybe bySndOut $
+                 nothingIf IM.null . (`IM.restrictKeys` UT.set u0)
+    bySndOutOut = flip IM.mapMaybe bySndOut $
+                  nothingIf IM.null . (`IM.withoutKeys` UT.set u0)
+
+evalMut :: Int -> Int -> U.Vector Int -> IntMap Int -> Int -> Int ->
+           RefinementMut -> Double
+evalMut m bigN ns ns' nm vm = go
+  where
+    dd :: Int -> [(Int,Int)] -> Int -> Double
+    dd nm' dns vm' = deltaDelta m bigN (nm,nm') dns (vm,vm')
+
+    go :: RefinementMut -> Double
+    go (AddLeft s0 jtns) = goAdd1 s0 jtns
+    go (AddRight s1 jtns) = goAdd1 s1 jtns
+    go (Add2 s0 s1 n01) = dd (nm+n01) dns (vm+2)
+      where n0 = ns U.! s0
+            n1 = ns U.! s1
+            dns = [(n0,n0-n01),(n1,n1-n01)]
+    go (DelLeft s0 jtns) = goDel1 s0 jtns
+    go (DelRight s1 jtns) = goDel1 s1 jtns
+    go (Del2 _ _ n01) = dd (nm-n01) dns (vm-2)
+      where dns = [(n01,0),(n01,0)]
+
+    -- | Factored; s0 can be either left or right, doesn't make a
+    -- difference
+    goAdd1 s0 jtns = dd nm' (IM.elems dns) (vm+1)
+      where
+        n01 = sum jtns -- INFO: this could be bookkept
+        nm' = nm + n01
+        n0 = ns U.! s0
+        adns = IM.insertWith (+) s0 n01 jtns -- absolute diffs
+        dns = IM.intersectionWith (\n' adn -> (n', n'-adn))
+              -- IM.keySet jtns `IS.isSubsetOf` IM.keySet ns'
+              -- (because each key of jtns is a staged symbol)
+              (IM.insertWith (\_ n0' -> n0') s0 n0 ns') adns
+              -- updates on s0 handle case where s0 also appears
+              -- (or doesn't) in jtns (i.e. on the other side)
+
+    -- | Factored; s0 can be either left or right, doesn't make a
+    -- difference
+    goDel1 s0 jtns = dd nm' (IM.elems dns) (vm+1)
+      where
+        n01 = sum jtns -- INFO: this could be bookkept
+        nm' = nm - n01
+        n0 = ns U.! s0
+        adns = IM.insertWith (+) s0 n01 jtns -- absolute diffs
+        dns = IM.intersectionWith (\n' adn -> (n', n'+adn))
+              -- IM.keySet jtns `IS.isSubsetOf` IM.keySet ns'
+              (IM.insertWith (\_ n0' -> n0') s0 n0 ns') adns
+              -- updates on s0 handle case where s0 also appears
+              -- (or doesn't) in jtns (i.e. on the other side)
+
+-- compute the difference in the info delta from changing
+-- parameters: joint type count n_m (before,after), symbol (new)
+-- counts ns (before,after), and joint type variety (before,after)
+deltaDelta :: Int -> Int -> (Int,Int) -> [(Int,Int)] -> (Int,Int) -> Double
+deltaDelta m bigN (nm,nm') dns (vm,vm') =
+  nDeltaDelta + sDeltaDelta + rDeltaDelta
+  where
+    mpN = m + bigN -- m + N
+    logFactNpmmnm = logFact $ mpN - nm
+    logFactNpmmnm' = logFact $ mpN - nm'
+    nDeltaDelta = logFactNpmmnm' - logFactNpmmnm
+    -- (logFactNpmm1 and logm cancel out)
+
+    sDeltaDelta = sDDltm + logFact nm - logFact nm'
+    sDDltm = sum $ (<$> dns) $ \(ni',ni'') ->
+      logFact ni' - logFact ni''
+      -- (logFact ni (old symbol count) cancel out)
+
+    rInfo' = fromIntegral nm' * ilog vm' -- rInfo == rDelta
+    rInfo = fromIntegral nm * ilog vm -- rInfo == rDelta
+    rDeltaDelta = rInfo' - rInfo
+
 optimize_ :: Int -> Int -> U.Vector Int ->
   IntMap (IntMap Int) -> IntMap (IntMap Int) -> JointType -> JointType
 optimize_ m bigN ns byFst_0 bySnd_0 (JT ru0_0 ru1_0) = undefined
   where
-    ilog :: Int -> Double
-    ilog = log . fromIntegral
-    logFact = iLogFactorial
     mpN = m + bigN
 
     -- from Diagram.Model ------------------------------------
@@ -355,7 +547,6 @@ optimize_ m bigN ns byFst_0 bySnd_0 (JT ru0_0 ru1_0) = undefined
 
     vm_0 = UT.length ru0_0 + UT.length ru1_0
     rInfo_0 = fromIntegral nm_0 * ilog vm_0
-
 
     insideU0_0 = (`IM.restrictKeys` UT.set ru0_0)
     outsideU0_0 = (`IM.withoutKeys` UT.set ru0_0)
@@ -398,27 +589,6 @@ optimize_ m bigN ns byFst_0 bySnd_0 (JT ru0_0 ru1_0) = undefined
           logFact ni - logFact ni'
 
         rDelta = fromIntegral nm * ilog vm
-
-    -- compute the difference in the info delta from changing
-    -- parameters: joint type count n_m (before,after), symbol (new)
-    -- counts ns (before,after), and joint type variety (before,after)
-    deltaDelta :: (Int,Int) -> [(Int,Int)] -> (Int,Int) -> Double
-    deltaDelta (nm,nm') dns (vm,vm') =
-      nDeltaDelta + sDeltaDelta + rDeltaDelta
-      where
-        logFactNpmmnm = logFact $ mpN - nm
-        logFactNpmmnm' = logFact $ mpN - nm'
-        nDeltaDelta = logFactNpmmnm' - logFactNpmmnm
-        -- (logFactNpmm1 and logm cancel out)
-
-        sDeltaDelta = sDDltm - logFact nm
-        sDDltm = sum $ (<$> dns) $ \(ni,ni') ->
-          logFact ni - logFact ni'
-          -- (logFact ni_0 (old symbol count) cancel out)
-
-        rDelta' = fromIntegral nm' * ilog vm'
-        rDelta = fromIntegral nm * ilog vm
-        rDeltaDelta = rDelta' - rDelta
 
     -- list and evaluate the difference in nsr-loss of introducing
     -- joints whose s1 \in ru1 but s0 \notin ru0 into the refinement
