@@ -152,9 +152,9 @@ resolutionInfo k jt = fromIntegral k * log2 base
 resolutionLen :: Int -> JointType -> Int
 resolutionLen = ceiling .: resolutionInfo
 
-----------------
--- REFINEMENT --
-----------------
+---------------------------
+-- REFINEMENT GENERATION --
+---------------------------
 
 -- | O(n^2) Generate all combinations
 comb :: [a] -> [[a]]
@@ -210,7 +210,7 @@ enumRefinements byFst0 bySnd0 = concatMap givenU0 u0s
         notSel = go byFst' bySnd
 
 -- | State record to track the two maps and two sets
-data RefinementState a = RefinementState {
+data RefinementSamplingState a = RefinementSamplingState {
   -- NOTE: Map Int instead of IntMap because we want O(1) size
   -- and O(log n) elemAt.
   _jtsByFst :: !(Map Sym ([Sym], Map Sym a)),
@@ -219,7 +219,7 @@ data RefinementState a = RefinementState {
   _sndUnion :: !IntSet,
   _refJoints :: !(Map (Sym,Sym) ())
 }
-makeLenses ''RefinementState
+makeLenses ''RefinementSamplingState
 
 -- | Generate a random refinement, given a set of joints indexed both
 -- ways
@@ -232,13 +232,13 @@ genRefinementWith :: forall m a. (MonadRandom m, PrimMonad m) =>
   Double -> Map Sym (Map Sym a) -> Map Sym (Map Sym a) -> m ( JointType
                                                             , Map (Sym,Sym) () )
 genRefinementWith r byFst0 bySnd0 =
-  evalStateT go $ RefinementState (([],) <$> byFst0)
-                                  (([],) <$> bySnd0)
-                                  IS.empty IS.empty M.empty
+  evalStateT go $ RefinementSamplingState
+  (([],) <$> byFst0)
+  (([],) <$> bySnd0) IS.empty IS.empty M.empty
   where
-    go :: StateT (RefinementState a) m (JointType, Map (Sym,Sym) ())
+    go :: StateT (RefinementSamplingState a) m (JointType, Map (Sym,Sym) ())
     go = get >>= \case
-      (RefinementState byFst bySnd u0 u1 ref)
+      (RefinementSamplingState byFst bySnd u0 u1 ref)
         | total == 0 -> return ( JT (UT.fromSet u0) (UT.fromSet u1)
                                , ref ) -- end
         | otherwise -> do
@@ -260,7 +260,7 @@ genRefinementWith r byFst0 bySnd0 =
 
     -- | Eliminate a symbol and enforce invariants whether it has be
     -- `sel`ected or not
-    goElimFst :: Bool -> Int -> StateT (RefinementState a) m ()
+    goElimFst :: Bool -> Int -> StateT (RefinementSamplingState a) m ()
     goElimFst sel0 s0 = do
       (staged0, jt0s) <- jtsByFst %%= deleteFind s0 -- remove from avail.
       when sel0 $ do
@@ -290,7 +290,7 @@ genRefinementWith r byFst0 bySnd0 =
 
     -- | Symmetric with above, could probably be factored into one, but
     -- ehhh
-    goElimSnd :: Bool -> Int -> StateT (RefinementState a) m ()
+    goElimSnd :: Bool -> Int -> StateT (RefinementSamplingState a) m ()
     goElimSnd sel1 s1 = do
       (staged1, jt1s) <- jtsBySnd %%= deleteFind s1 -- remove from avail.
       when sel1 $ do
@@ -327,6 +327,10 @@ genRefinement_ (JT u0 u1) = do
   (_,ss1) <- R.split (UT.toAscList u1)
   return $ JT (UT.fromDistinctAscList ss0) (UT.fromDistinctAscList ss1)
 
+-------------------------
+-- REFINEMENT MUTATION --
+-------------------------
+
 data RefinementMut
   = AddLeft  !Sym !(IntMap Int)
   | AddRight !Sym !(IntMap Int)
@@ -343,114 +347,188 @@ logFact = iLogFactorial
 ilog :: Int -> Double
 ilog = log . fromIntegral
 
-optimize :: Int -> Int -> U.Vector Int ->
-  IntMap (IntMap Int) -> IntMap (IntMap Int) -> JointType -> JointType
-optimize m bigN ns byFst bySnd rjt@(JT u0 u1) = seq sortedMuts
-                                                undefined
+data RefinementMutationState = RefinementMutationState
+  { _newSymCounts  :: !(IntMap Int)
+  , _jointCount    :: !Int
+
+  , _addLefts      :: !(IntMap (IntMap Int))
+  , _addRights     :: !(IntMap (IntMap Int))
+  , _add2s         :: !(Map (Sym,Sym) Int)
+
+  , _byFstOutOut   :: !(IntMap (IntMap Int))
+  , _bySndOutOut   :: !(IntMap (IntMap Int))
+
+  , _delLefts      :: !(IntMap (IntMap Int))
+  , _undelLefts    :: !(IntMap (IntMap Int))
+  , _rightPendants :: !(IntMap (Sym,Int))
+
+  , _delRights     :: !(IntMap (IntMap Int))
+  , _undelRights   :: !(IntMap (IntMap Int))
+  , _leftPendants  :: !(IntMap (Sym,Int))
+
+  , _del2s         :: !(Map (Sym,Sym) Int)
+  , _refinement    :: !JointType }
+makeLenses ''RefinementMutationState
+
+initRefinementMutationState :: U.Vector Int -> IntMap (IntMap Int) ->
+  IntMap (IntMap Int) -> JointType -> RefinementMutationState
+initRefinementMutationState ns byFst bySnd rjt@(JT u0 u1) =
+
+  RefinementMutationState
+  { _newSymCounts = ns'
+  , _jointCount = nm
+
+  , _addLefts = byFstOutIn -- Out --> In
+  , _addRights = bySndOutIn -- In <-- Out
+  , _add2s = byFstToMap $ -- (Out,Out) that are not addable individually
+             (byFstOutOutVar IM.\\ byFstOutIn) `fmapFilter` (IM.\\ bySndOutIn)
+
+  , _byFstOutOut = byFstOutOutVar
+  , _bySndOutOut = bySndOutOutVar
+
+  , _delLefts = delLefts_ -- In --> In (no dependents)
+  , _undelLefts = undelLefts_ -- In --> In (have >= 1 dependent)
+  , _rightPendants = rightDependents
+
+  , _delRights = delRights_ -- In <-- In (no dependents)
+  , _undelRights = undelRights_ -- In <-- In (have >= 1 dependent)
+  , _leftPendants = leftDependents
+
+  , _del2s = M.intersectionWith assertEq -- (In,In) co-dependent
+             leftPendantJts rightPendantJts
+  , _refinement = rjt } -- res
+
   where
-    (loss, mut) = head sortedMuts
-
-    rjt' = case mut of
-      AddLeft s0 jtns -> undefined
-      AddRight s1 jtns -> undefined
-      Add2 s0 s1 n01 -> undefined
-      DelLeft s0 jtns -> undefined
-      DelRight s1 jtns -> undefined
-      Del2 _ _ n01 -> undefined
-
-    allMuts = (uncurry AddLeft <$> IM.toList addLefts)
-      ++ (uncurry AddRight <$> IM.toList addRights)
-      ++ (uncurry (uncurry Add2) <$> M.toList add2s)
-      ++ (uncurry DelLeft <$> IM.toList delLefts)
-      ++ (uncurry DelRight <$> IM.toList delRights)
-      ++ (uncurry (uncurry Del2) <$> M.toList del2s)
-
-    sortedMuts = L.sortOn fst $
-                 toFst (evalMut m bigN ns ns' nm vm) <$> allMuts
-
     ns' = IM.mapWithKey (\s dn -> (ns U.! s) - dn) $
           IM.fromListWith (+) $
           foldr (\((s0,s1),n01) l -> (s0,n01):(s1,n01):l)
           [] byFstInInL
 
     nm = sum $ snd <$> byFstInInL
-
-    vm = variety rjt
-
     byFstInInL = byFstToAscList byFstInIn
 
-    addLefts  = byFstOutIn :: IntMap (IntMap Int)
-    addRights = bySndOutIn :: IntMap (IntMap Int)
+    err' = err . ("initRefinementMutationState: " ++)
+    assertEq n n'
+      | n /= n' = err' $ "should be eq: " ++ show (n,n')
+      | otherwise = n
 
-    add2s :: Map (Sym,Sym) Int
-    add2s = byFstToMap $
-            -- (Out x Out) that are not addable by themselves (either
-            -- from left or right)
-            flip IM.mapMaybe (byFstOutOut IM.\\ addLefts) $
-            nothingIf IM.null . (IM.\\ addRights)
+    (undelLefts_, delLefts_) = IM.disjoint rightDependents
+                               `IM.partition` byFstInIn
+    (undelRights_, delRights_) = IM.disjoint leftDependents
+                                 `IM.partition` bySndInIn
 
-    isSingleton im | [_] <- IM.toList im = True
-                   | otherwise = False
+    -- (de)pendant symbols --> (dependor, count)
+    leftDependents = IM.mapMaybe fromSingleton byFstInIn
+    rightDependents = IM.mapMaybe fromSingleton bySndInIn
+    fromSingleton im | [sn] <- IM.toList im = Just sn
+                     | otherwise = Nothing
 
-    byFstToAscList :: IntMap (IntMap Int) -> [((Sym,Sym),Int)]
-    byFstToAscList = concatMap (\(s0,im) -> first (s0,)
-                                            <$> IM.toAscList im)
-                     . IM.toAscList
+    leftPendantJts = M.fromDistinctAscList $
+      byFstSingletonToAscList leftDependents
+    rightPendantJts = M.fromDistinctAscList $
+      bySndSingletonToAscList rightDependents
 
-    byFstToMap :: IntMap (IntMap Int) -> Map (Sym,Sym) Int
-    byFstToMap = M.fromDistinctAscList . byFstToAscList
-
-    bySndToAscList :: IntMap (IntMap Int) -> [((Sym,Sym),Int)]
-    bySndToAscList = fmap (first swap) . byFstToAscList
-
-    bySndToMap :: IntMap (IntMap Int) -> Map (Sym,Sym) Int
-    bySndToMap = M.fromDistinctAscList . bySndToAscList
-
-    byFstInInPendant = IM.filter isSingleton byFstInIn
-    bySndInInPendant = IM.filter isSingleton bySndInIn
-
-    leftPendantRJts = byFstToMap byFstInInPendant
-    rightPendantRJts = bySndToMap bySndInInPendant
-
-    assertEq n n' | n /= n' = error $
-                              "Should be eq: " ++ show (n,n')
-                  | otherwise = n
-
-    del2s :: Map (Sym,Sym) Int
-    del2s = M.intersectionWith assertEq
-            leftPendantRJts rightPendantRJts
-
-    delLefts :: IntMap (IntMap Int)
-    delLefts = flip IM.mapMaybe byFstInIn $
-               nothingIf IM.null . (IM.\\ bySndInInPendant)
-
-    delRights :: IntMap (IntMap Int)
-    delRights = flip IM.mapMaybe bySndInIn $
-                nothingIf IM.null . (IM.\\ byFstInInPendant)
-
+    -- initial indexing --
     byFstIn = byFst `IM.restrictKeys` UT.set u0
-    byFstInIn = flip IM.mapMaybe byFstIn $
-                nothingIf IM.null . (`IM.restrictKeys` UT.set u1)
-    byFstInOut = flip IM.mapMaybe byFstIn $
-                 nothingIf IM.null . (`IM.withoutKeys` UT.set u1)
+    byFstInIn = byFstIn `fmapFilter` (`IM.restrictKeys` UT.set u1)
+    byFstInOut = byFstIn `fmapFilter` (`IM.withoutKeys` UT.set u1)
 
     byFstOut = byFst `IM.withoutKeys` UT.set u0
-    byFstOutIn = flip IM.mapMaybe byFstOut $
-                 nothingIf IM.null . (`IM.restrictKeys` UT.set u1)
-    byFstOutOut = flip IM.mapMaybe byFstOut $
-                  nothingIf IM.null . (`IM.withoutKeys` UT.set u1)
+    byFstOutIn = byFstOut `fmapFilter` (`IM.restrictKeys` UT.set u1)
+    byFstOutOutVar = byFstOut `fmapFilter` (`IM.withoutKeys` UT.set u1)
 
     bySndIn = bySnd `IM.restrictKeys` UT.set u1
-    bySndInIn = flip IM.mapMaybe bySndIn $
-                nothingIf IM.null . (`IM.restrictKeys` UT.set u0)
-    bySndInOut = flip IM.mapMaybe bySndIn $
-                 nothingIf IM.null . (`IM.withoutKeys` UT.set u0)
+    bySndInIn = bySndIn `fmapFilter` (`IM.restrictKeys` UT.set u0)
+    bySndInOut = bySndIn `fmapFilter` (`IM.withoutKeys` UT.set u0)
 
     bySndOut = bySnd `IM.withoutKeys` UT.set u1
-    bySndOutIn = flip IM.mapMaybe bySndOut $
-                 nothingIf IM.null . (`IM.restrictKeys` UT.set u0)
-    bySndOutOut = flip IM.mapMaybe bySndOut $
-                  nothingIf IM.null . (`IM.withoutKeys` UT.set u0)
+    bySndOutIn = bySndOut `fmapFilter` (`IM.restrictKeys` UT.set u0)
+    bySndOutOutVar = bySndOut `fmapFilter` (`IM.withoutKeys` UT.set u0)
+    --
+
+byFstSingletonToAscList :: IntMap (s1, a) -> [((Sym, s1), a)]
+byFstSingletonToAscList =
+  IM.foldrWithKey (\s0 s1n l -> first (s0,) s1n : l) []
+
+bySndSingletonToAscList :: IntMap (s0, a) -> [((s0, Sym), a)]
+bySndSingletonToAscList =
+  IM.foldrWithKey (\s1 s0n l -> first (,s1) s0n : l) []
+
+fmapFilter :: IntMap (IntMap a) -> (IntMap a -> IntMap a) ->
+              IntMap (IntMap a)
+fmapFilter = flip $ IM.mapMaybe . (nothingIf IM.null .)
+
+byFstToMap :: IntMap (IntMap Int) -> Map (Sym,Sym) Int
+byFstToMap = M.fromDistinctAscList . byFstToAscList
+
+byFstToAscList :: IntMap (IntMap Int) -> [((Sym,Sym),Int)]
+byFstToAscList = concatMap (\(s0,im) -> first (s0,)
+                                        <$> IM.toAscList im)
+                 . IM.toAscList
+
+bySndToMap :: IntMap (IntMap Int) -> Map (Sym,Sym) Int
+bySndToMap = M.fromDistinctAscList . bySndToAscList
+
+bySndToAscList :: IntMap (IntMap Int) -> [((Sym,Sym),Int)]
+bySndToAscList = fmap (first swap) . byFstToAscList
+
+optimize :: Int -> Int -> U.Vector Int -> RefinementMutationState
+  -> RefinementMutationState
+optimize m bigN ns (RefinementMutationState ns' nm addLeftsVar addRightsVar
+                    add2sVar byFstOutOutVar bySndOutOutVar
+                    delLeftsVar undelLeftsVar rightPendantsVar
+                    delRightsVar undelRightsVar leftPendantsVar
+                    del2sVar rjt@(JT u0 u1))
+  = seq sortedMuts undefined
+  where
+    vm = variety rjt
+
+    (minLoss, mut) = head sortedMuts
+    sortedMuts = L.sortOn fst $
+                 toFst (evalMut m bigN ns ns' nm vm)
+                 <$> allMuts
+
+    allMuts = (uc AddLeft <$> IM.toList addLeftsVar)
+      ++ (uc AddRight     <$> IM.toList addRightsVar)
+      ++ (uc (uc Add2)    <$>  M.toList add2sVar)
+      ++ (uc DelLeft      <$> IM.toList delLeftsVar)
+      ++ (uc DelRight     <$> IM.toList delRightsVar)
+      ++ (uc (uc Del2)    <$>  M.toList del2sVar)
+      where uc = uncurry
+
+    -- applying mutations, update maps --
+    rjt' = case mut of
+      AddLeft s0 in1s -> undefined
+        where
+          err str = error $ "AddLeft (" ++ str ++ "): collision"
+
+          addLefts' = IM.delete s0 addLeftsVar
+          addRights' = IM.unionWith (err "addRights") addRightsVar $
+                       IM.singleton s0 <$> out1s
+          out1s = fromMaybe IM.empty $ -- s0 * Out
+                  IM.lookup s0 byFstOutOutVar
+
+          add2s' = add2sVar -- no change
+
+          bySndUnorphaneable = IM.intersection rightPendantsVar in1s
+          noLongerUndelLeft = IS.fromList $
+                              fst <$> IM.elems bySndUnorphaneable
+          newDelLefts = undelLeftsVar `IM.restrictKeys` noLongerUndelLeft
+          undelLefts' = undelLeftsVar `IM.withoutKeys` noLongerUndelLeft
+          delLefts' = IM.insertWith (err "delLefts_s0") s0 in1s $
+                      IM.unionWith (err "delLefts_undel")
+                      newDelLefts delLeftsVar
+
+          delRights' = delRightsVar
+
+          del2s' = del2sVar -- no change
+
+      AddRight s1 jtns -> undefined
+      Add2 s0 s1 n01 -> undefined
+      DelLeft s0 jtns -> undefined
+      DelRight s1 jtns -> undefined
+      Del2 s0 s1 n01 -> undefined
+
 
 evalMut :: Int -> Int -> U.Vector Int -> IntMap Int -> Int -> Int ->
            RefinementMut -> Double
