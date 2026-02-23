@@ -70,6 +70,7 @@ executable diagram
                       Diagram.Primitive
                       Diagram.JointType
                       Diagram.UnionType
+                      Diagram.Refinement
                       Diagram.Information
                       Diagram.TrainJointType
                       Diagram.Util

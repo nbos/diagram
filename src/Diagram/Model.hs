@@ -23,6 +23,7 @@ import Diagram.Information
 
 import Diagram.Util
 
+
 data Model m = Model {
   types :: !(BoxedVec m JointType), -- :: [m - 256]JointType
   stringLen :: !Int,

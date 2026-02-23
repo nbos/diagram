@@ -19,6 +19,7 @@ import qualified Streaming.ByteString as Q
 import qualified Diagram.Joints as Jts
 import qualified Diagram.JointType as JT
 import qualified Diagram.TrainJointType as TJT
+import qualified Diagram.Refinement as Refinement
 import Diagram.Progress (withPB)
 
 data Options = Options
@@ -71,7 +72,7 @@ main = do
   let go :: RandT StdGen IO ()
       go = do
         ((tjt',rtjt),rjts) <- first (TJT.refine tjt)
-                           <$> JT.genRefinement byFst bySnd
+                           <$> Refinement.genRefinement byFst bySnd
         lift $ putStrLn $
           "generated refinement type with size "
           ++ show (JT.size $ TJT.jointType rtjt)
