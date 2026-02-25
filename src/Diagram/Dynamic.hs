@@ -95,11 +95,24 @@ read :: (PrimMonad m, MVector v a) => Dynamic m v a -> Int -> m a
 read = MV.read . dynVector
 {-# INLINE read #-}
 
+-- | Read an element at the given position.
+(!) :: (PrimMonad m, MVector v a) => Dynamic m v a -> Int -> m a
+(!) = read
+{-# INLINE (!) #-}
+infixl 9 !
+
 -- | Safely read an element at the given position. Returns Nothing if
 -- the index is out of bounds
 readMaybe :: (PrimMonad m, MVector v a) => Dynamic m v a -> Int -> m (Maybe a)
 readMaybe = MV.readMaybe . dynVector
 {-# INLINE readMaybe #-}
+
+-- | Safely read an element at the given position. Returns Nothing if
+-- the index is out of bounds
+(!?) :: (PrimMonad m, MVector v a) => Dynamic m v a -> Int -> m (Maybe a)
+(!?) = readMaybe
+{-# INLINE (!?) #-}
+infixl 9 !?
 
 -- | Write an element at the given position
 write :: (PrimMonad m, MVector v a) => Dynamic m v a -> Int -> a -> m ()
