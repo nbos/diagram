@@ -309,117 +309,101 @@ ilog = log . fromIntegral
 -- APPLICATION --
 
 type RefinementT m = StateT (RefinementState m) m
-
 data RefinementState m = RefinementState
   { _model :: !(Model m) -- for params: m, N, ns
   -- , _parent :: !JointType
   , _jointCount :: !Int -- :: nm
   , _refinement :: !JointType -- :: rjt
   , _newSymbolCounts :: !(IntMap Int) -- :: ns'
-  , _joints :: !JointsCoverageState }
+  , _joints :: !CoverageState }
 
-data JointsCoverageState = JointsCoverageState
-
-  -- {In,Out} x {In,Out} --------------------------------
-  { _byFstOutIn   :: !(IntMap (IntMap Int)) -- Out --> In
-  , _bySndOutIn   :: !(IntMap (IntMap Int)) -- In <-- Out
-  -------------------------------------------------------
-
-  -- (Out,Out) ----------------------------------------------------------------
-  , _outSubgraph :: !(Map (Sym,Sym) Int) -- (Out,Out) that can't be added alone
-
-  , _byFstOutOut  :: !(IntMap (IntMap Int)) -- Out --> Out
-  , _bySndOutOut  :: !(IntMap (IntMap Int)) -- Out <-- Out
-  -----------------------------------------------------------------------------
-
-  -- (In,In) ---------------------------------------------------------------------
-  , _byFstInInWithoutDeps :: !(IntMap (IntMap Int)) -- In (w/o dependents) --> In
-                                                    -- (can be deleted)
-
-  , _byFstInInWithDeps    :: !(IntMap (IntMap Int)) -- In (>= 1 dependent) --> In
-                                                    -- (can't be deleted)
-
-  , _rightDependents      :: !(IntMap (Sym,Int)) -- In (parent) <-- In (dependent)
-
-  , _bySndInInWithoutDeps :: !(IntMap (IntMap Int)) -- In <-- In (w/o dependents)
-                                                    -- (can be deleted)
-
-  , _bySndInInWithDeps    :: !(IntMap (IntMap Int)) -- In <-- In (>= 1 dependent)
-                                                    -- (can't be deleted)
-
-  , _leftDependents       :: !(IntMap (Sym,Int)) -- In (dependent) --> In (parent)
-
-  , _coDependents :: !(Map (Sym,Sym) Int) } -- (In,In) that can't be deleted alone
-  --------------------------------------------------------------------------------
+data CoverageState = CoverageState
+  { _byFstInIn   :: !(IntMap (IntMap Int))
+  , _byFstInOut  :: !(IntMap (IntMap Int))
+  , _byFstOutIn  :: !(IntMap (IntMap Int))
+  , _byFstOutOut :: !(IntMap (IntMap Int))
+  , _bySndInIn   :: !(IntMap (IntMap Int))
+  , _bySndInOut  :: !(IntMap (IntMap Int))
+  , _bySndOutIn  :: !(IntMap (IntMap Int))
+  , _bySndOutOut :: !(IntMap (IntMap Int)) }
 
 makeLenses ''RefinementState
-makeLenses ''JointsCoverageState
-
--- alternate naming --
-addLefts :: Lens' JointsCoverageState (IntMap (IntMap Int))
-addLefts = byFstOutIn
-
-addRights :: Lens' JointsCoverageState (IntMap (IntMap Int))
-addRights = bySndOutIn
-
-add2s :: Lens' JointsCoverageState (Map (Sym,Sym) Int)
-add2s = outSubgraph
-
-delLefts :: Lens' JointsCoverageState (IntMap (IntMap Int))
-delLefts = byFstInInWithoutDeps
-
-undelLefts :: Lens' JointsCoverageState (IntMap (IntMap Int))
-undelLefts = byFstInInWithDeps
-
-delRights :: Lens' JointsCoverageState (IntMap (IntMap Int))
-delRights = bySndInInWithoutDeps
-
-undelRights :: Lens' JointsCoverageState (IntMap (IntMap Int))
-undelRights = bySndInInWithDeps
-
-del2s :: Lens' JointsCoverageState (Map (Sym,Sym) Int)
-del2s = coDependents
---
+makeLenses ''CoverageState
 
 enumMutations :: Monad m => RefinementT m [Mutation]
-enumMutations = zoom joints $ do
-  als <- uses byFstOutIn           $ fmap (uc AddLeft)   . IM.toList
-  ars <- uses bySndOutIn           $ fmap (uc AddRight)  . IM.toList
-  a2s <- uses outSubgraph          $ fmap (uc (uc Add2)) .  M.toList
-  dls <- uses byFstInInWithoutDeps $ fmap (uc DelLeft)   . IM.toList
-  drs <- uses bySndInInWithoutDeps $ fmap (uc DelRight)  . IM.toList
-  d2s <- uses coDependents         $ fmap (uc (uc Del2)) .  M.toList
+enumMutations = do
+  (CoverageState byFstInIn_ _ byFstOutIn_ byFstOutOut_
+   bySndInIn_ _ bySndOutIn_ _) <- use joints
+
+  let als = uc AddLeft  <$> IM.toList byFstOutIn_ -- Out --> In
+      ars = uc AddRight <$> IM.toList bySndOutIn_ -- In <-- Out
+
+      -- (Out,Out) that can't be added one-by-one
+      a2s = uc (uc Add2) <$> M.toList outSubgraph
+      outSubgraph = byFstToMap $
+                    (byFstOutOut_ IM.\\ byFstOutIn_)
+                    `fmapFilter` (IM.\\ bySndOutIn_)
+
+      leftDependents = IM.mapMaybe fromSingleton byFstInIn_
+      rightDependents = IM.mapMaybe fromSingleton bySndInIn_
+      fromSingleton im | [sn] <- IM.toList im = Just sn
+                       | otherwise = Nothing
+
+      -- can be deleted yet: In (w/o dependents) --> In
+      dls = uc DelLeft <$> byFstInInWithoutDeps
+      byFstInInWithoutDeps = filter (IM.disjoint rightDependents . snd) $
+                             IM.toList byFstInIn_ -- In --> In
+
+      -- can be deleted yet: In <-- In (w/o dependents)
+      drs = uc DelRight <$> bySndInInWithoutDeps
+      bySndInInWithoutDeps = filter (IM.disjoint leftDependents . snd) $
+                             IM.toList bySndInIn_ -- In <-- In
+
+      -- (In,In) that can't be deleted one-by-one
+      d2s = uc (uc Del2) <$> M.toList coDependents
+      coDependents = M.intersectionWith assertEq
+                     leftPendantJts rightPendantJts
+
+      leftPendantJts = M.fromDistinctAscList $ toList leftDependents
+        where toList :: IntMap (s1, a) -> [((Sym, s1), a)]
+              toList = IM.foldrWithKey (\s0 s1n l -> first (s0,) s1n : l) []
+
+      rightPendantJts = M.fromDistinctAscList $ toList rightDependents
+        where toList :: IntMap (s0, a) -> [((s0, Sym), a)]
+              toList = IM.foldrWithKey (\s1 s0n l -> first (,s1) s0n : l) []
+
   return $ als ++ ars ++ a2s ++ dls ++ drs ++ d2s
-  where uc = uncurry
+    where
+      uc = uncurry
+      err' = err . ("enumMutations: " ++)
+      assertEq n n'
+        | n /= n' = err' $ "should be eq: " ++ show (n,n')
+        | otherwise = n
+
 
 -- APPLICATION --
 
 appMutation :: Monad m => Mutation -> RefinementT m ()
 appMutation (AddLeft s0 ins) = do
   zoom joints $ do
-    -- (Out,In): remove ({s0} --> ins) (already bound to `ins`)
-    byFstOutIn %= IM.delete s0
+    -- (In,In): insert ({s0} <--> ins)
+    byFstInIn %= IM.insertWith (err' "byFstInIn") s0 ins
+    bySndInIn %= IM.insertWith (err' "bySndInIn") s0 `atEvery` ins
     --
 
-    -- (Out,Out): remove (and lookup) ({s0} --> outs)
+    -- (Out,Out): remove ({s0} <--> outs)
     outs <- byFstOutOut %%= first (fromMaybe IM.empty) . deleteLookup s0
-    -- (Out,Out): remove ({s0} <-- outs)
-    bySndOutOut %= IM.delete s0 `atEvery` outs
+    bySndOutOut %= const (IM.delete s0) `atEvery` outs
     --
 
-    -- (In,Out): add ({s0} <-- outs) entries into bySndOutIn
-    let newSndOutIns = IM.singleton s0 <$> outs
-    bySndOutIn %= IM.unionWith (IM.unionWith (err' "bySndOutIn")) newSndOutIns
+    -- (Out,In): remove ({s0} <--> ins)
+    byFstOutIn %= IM.delete s0
+    bySndInOut %= const (IM.delete s0) `atEvery` ins
     --
 
-    -- (In,In)
-    exRightDependents <- uses rightDependents (`IM.intersection` ins)
-    -- let coParents = fst <$> IM.elems exRightDependents
-    -- newDelLefts <- uses byFstInInWithDeps (`IM.restrictKeys` parents)
-    forM_ (IM.toList exRightDependents) $ \(exDep1,(coParent0,_)) -> do
-      undefined
-
-    undefined
+    -- (In,Out): insert ({s0} <--> ins)
+    byFstInOut %= IM.insertWith (err' "byFstInOut") s0 outs
+    bySndOutIn %= IM.insertWith (err' "bySndOutIn") s0 `atEvery` outs
 
   where
     err' str = error $ "AddLeft (" ++ str ++ "): collision"
@@ -427,18 +411,13 @@ appMutation (AddLeft s0 ins) = do
     deleteLookup :: Sym -> IntMap a -> (Maybe a, IntMap a)
     deleteLookup = IM.updateLookupWithKey (\_ _ -> Nothing)
 
-    -- apply a function on inner-maps given a set of indexes
-    atEvery :: (IntMap a -> IntMap a) -> IntMap b ->
+    -- lift a function to inner-maps located at a set of indexes
+    atEvery :: (b -> IntMap a -> IntMap a) -> IntMap b ->
                IntMap (IntMap a) -> IntMap (IntMap a)
-    atEvery = flip . IM.differenceWith . flip . const . (nothingIf IM.null .)
-
-    deleteAtEvery :: Sym -> IntMap b -> IntMap (IntMap a) -> IntMap (IntMap a)
-    deleteAtEvery s = flip $ IM.differenceWith $
-                      \m _ -> nothingIf IM.null $ IM.delete s m
-
-
+    atEvery f = flip $ IM.differenceWith $ flip (nothingIf IM.null .: f)
 
 appMutation _ = undefined -- FIXME: TODO
+
 
 initRefinementState :: PrimMonad m => Model m -> IntMap (IntMap Int) ->
                        IntMap (IntMap Int) -> JointType -> m (RefinementState m)
@@ -454,78 +433,37 @@ initRefinementState mdl@(Model _ _ ns _) byFst bySnd rjt = do
                            , _newSymbolCounts = ns'
                            , _joints = coverage }
   where
-    coverage = initJointsCoverageState byFst bySnd rjt
+    coverage = initCoverageState byFst bySnd rjt
     nm = sum $ snd <$> byFstInInL
-    byFstInInL = byFstToAscList (coverage ^. byFstInInWithDeps)
-                 ++ byFstToAscList (coverage ^. byFstInInWithoutDeps)
+    byFstInInL = byFstToAscList $ coverage ^. byFstInIn
 
-initJointsCoverageState :: IntMap (IntMap Int) -> IntMap (IntMap Int) ->
-                           JointType -> JointsCoverageState
-initJointsCoverageState byFst bySnd (JT u0 u1) =
-  JointsCoverageState
-  { _byFstOutIn = byFstOutIn_
-  , _bySndOutIn = bySndOutIn_
-
-  , _outSubgraph = byFstToMap $
-                   (byFstOutOut_ IM.\\ byFstOutIn_)
-                   `fmapFilter` (IM.\\ bySndOutIn_)
-
-  , _byFstOutOut = byFstOutOut_
-  , _bySndOutOut = bySndOutOut_
-
-  , _byFstInInWithoutDeps = byFstInInWithoutDeps_
-  , _byFstInInWithDeps = byFstInInWithDeps_
-  , _rightDependents = rightDependents_
-
-  , _bySndInInWithoutDeps = bySndInInWithoutDeps_
-  , _bySndInInWithDeps = bySndInInWithDeps_
-  , _leftDependents = leftDependents_
-
-  , _coDependents = M.intersectionWith assertEq
-                    leftPendantJts rightPendantJts }
+initCoverageState :: IntMap (IntMap Int) -> IntMap (IntMap Int) ->
+                     JointType -> CoverageState
+initCoverageState byFst bySnd (JT u0 u1) =
+  CoverageState { _byFstInIn   = byFstInIn_
+                , _byFstInOut  = byFstInOut_
+                , _byFstOutIn  = byFstOutIn_
+                , _byFstOutOut = byFstOutOut_
+                , _bySndInIn   = bySndInIn_
+                , _bySndInOut  = bySndInOut_
+                , _bySndOutIn  = bySndOutIn_
+                , _bySndOutOut = bySndOutOut_ }
   where
-    err' = err . ("initJointsCoverageState: " ++)
-    assertEq n n'
-      | n /= n' = err' $ "should be eq: " ++ show (n,n')
-      | otherwise = n
-
-    ( byFstInInWithDeps_
-      , byFstInInWithoutDeps_ ) = IM.partition (IM.disjoint rightDependents_)
-                                  byFstInIn -- In --> In
-    ( bySndInInWithDeps_
-      , bySndInInWithoutDeps_ ) = IM.partition (IM.disjoint leftDependents_)
-                                  bySndInIn -- In <-- In
-
-    leftDependents_ = IM.mapMaybe fromSingleton byFstInIn
-    rightDependents_ = IM.mapMaybe fromSingleton bySndInIn
-    fromSingleton im | [sn] <- IM.toList im = Just sn
-                     | otherwise = Nothing
-
-    leftPendantJts = M.fromDistinctAscList $ toList leftDependents_
-      where toList :: IntMap (s1, a) -> [((Sym, s1), a)]
-            toList = IM.foldrWithKey (\s0 s1n l -> first (s0,) s1n : l) []
-
-    rightPendantJts = M.fromDistinctAscList $ toList rightDependents_
-      where toList :: IntMap (s0, a) -> [((s0, Sym), a)]
-            toList = IM.foldrWithKey (\s1 s0n l -> first (,s1) s0n : l) []
-
-    -- sorting joints --
     byFstIn = byFst `IM.restrictKeys` UT.set u0
-    byFstInIn = byFstIn `fmapFilter` (`IM.restrictKeys` UT.set u1)
-    byFstInOut = byFstIn `fmapFilter` (`IM.withoutKeys` UT.set u1)
+    byFstInIn_  = byFstIn `fmapFilter` (`IM.restrictKeys` UT.set u1)
+    byFstInOut_ = byFstIn `fmapFilter` (`IM.withoutKeys`  UT.set u1)
 
     byFstOut = byFst `IM.withoutKeys` UT.set u0
-    byFstOutIn_ = byFstOut `fmapFilter` (`IM.restrictKeys` UT.set u1)
-    byFstOutOut_ = byFstOut `fmapFilter` (`IM.withoutKeys` UT.set u1)
+    byFstOutIn_  = byFstOut `fmapFilter` (`IM.restrictKeys` UT.set u1)
+    byFstOutOut_ = byFstOut `fmapFilter` (`IM.withoutKeys`  UT.set u1)
 
     bySndIn = bySnd `IM.restrictKeys` UT.set u1
-    bySndInIn = bySndIn `fmapFilter` (`IM.restrictKeys` UT.set u0)
-    bySndInOut = bySndIn `fmapFilter` (`IM.withoutKeys` UT.set u0)
+    bySndInIn_  = bySndIn `fmapFilter` (`IM.restrictKeys` UT.set u0)
+    bySndInOut_ = bySndIn `fmapFilter` (`IM.withoutKeys`  UT.set u0)
 
     bySndOut = bySnd `IM.withoutKeys` UT.set u1
-    bySndOutIn_ = bySndOut `fmapFilter` (`IM.restrictKeys` UT.set u0)
-    bySndOutOut_ = bySndOut `fmapFilter` (`IM.withoutKeys` UT.set u0)
-    --
+    bySndOutIn_  = bySndOut `fmapFilter` (`IM.restrictKeys` UT.set u0)
+    bySndOutOut_ = bySndOut `fmapFilter` (`IM.withoutKeys`  UT.set u0)
 
 -- MAP OPERATIONS --
 
@@ -546,62 +484,7 @@ bySndToMap = M.fromDistinctAscList . bySndToAscList
 bySndToAscList :: IntMap (IntMap Int) -> [((Sym,Sym),Int)]
 bySndToAscList = fmap (first swap) . byFstToAscList
 
-stepMutation :: Int -> Int -> U.Vector Int -> RefinementState m -> RefinementState m
-stepMutation m bigN ns (RefinementState mdl nm rjt@(JT u0 u1) ns'
-                         (JointsCoverageState addLefts_ addRights_
-                          add2s_ byFstOutOut_ bySndOutOut_
-                          delLefts_ undelLefts_ rightPendants_
-                          delRights_ undelRights_ leftPendants_
-                          del2s_))
-  = seq sortedMuts undefined
-  where
-    vm = JT.variety rjt
-
-    (minLoss, mut) = head sortedMuts
-    sortedMuts = L.sortOn fst $
-                 toFst (evalMutation m bigN ns ns' nm vm)
-                 <$> allMuts
-
-    allMuts = (uc AddLeft <$> IM.toList addLefts_)
-      ++ (uc AddRight     <$> IM.toList addRights_)
-      ++ (uc (uc Add2)    <$>  M.toList add2s_)
-      ++ (uc DelLeft      <$> IM.toList delLefts_)
-      ++ (uc DelRight     <$> IM.toList delRights_)
-      ++ (uc (uc Del2)    <$>  M.toList del2s_)
-      where uc = uncurry
-
-    -- applying mutations, update maps --
-    rjt' = case mut of
-      AddLeft s0 in1s -> undefined
-        where
-          err' str = error $ "AddLeft (" ++ str ++ "): collision"
-
-          addLefts' = IM.delete s0 addLefts_
-          addRights' = IM.unionWith (err' "addRights") addRights_ $
-                       IM.singleton s0 <$> out1s
-          out1s = fromMaybe IM.empty $ -- s0 * Out
-                  IM.lookup s0 byFstOutOut_
-
-          add2s' = add2s_ -- no change
-
-          bySndUnorphaneable = IM.intersection rightPendants_ in1s
-          noLongerUndelLeft = IS.fromList $
-                              fst <$> IM.elems bySndUnorphaneable
-          newDelLefts = undelLefts_ `IM.restrictKeys` noLongerUndelLeft
-          undelLefts' = undelLefts_ `IM.withoutKeys` noLongerUndelLeft
-          delLefts' = IM.insertWith (err' "delLefts_s0") s0 in1s $
-                      IM.unionWith (err' "delLefts_undel")
-                      newDelLefts delLefts_
-
-          delRights' = delRights_
-
-          del2s' = del2s_ -- no change
-
-      AddRight s1 jtns -> undefined
-      Add2 s0 s1 n01 -> undefined
-      DelLeft s0 jtns -> undefined
-      DelRight s1 jtns -> undefined
-      Del2 s0 s1 n01 -> undefined
+--
 
 optimize_ :: Int -> Int -> U.Vector Int ->
              IntMap (IntMap Int) -> IntMap (IntMap Int) -> JointType -> JointType
