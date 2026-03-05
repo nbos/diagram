@@ -392,13 +392,13 @@ atEvery f = IM.mergeWithKey (Just .:. const f) err' id
   where err' = err "atEvery: key from first map missing in second map"
 
 appMutation :: Monad m => Mutation -> RefinementT m ()
-appMutation (AddLeft s0 ins) = zoom joints $ do
+appMutation (AddLeft s0 _) = zoom joints $ do
   -- (Out,Out): remove ({s0} <--> outs)
   outs <- byFstOutOut %%= deleteFind s0
   bySndOutOut %= const (IM.delete s0) `atEvery` outs
 
   -- (Out,In): remove ({s0} <--> ins)
-  byFstOutIn %= IM.delete s0
+  ins <- byFstOutIn %%= deleteFind s0
   bySndInOut %= const (IM.delete s0) `atEvery` ins
 
   -- (In,In): insert ({s0} <--> ins)
@@ -412,13 +412,13 @@ appMutation (AddLeft s0 ins) = zoom joints $ do
     err' str k a a' = error $ "AddLeft (" ++ str ++ "):\n"
                       ++ "  collision: " ++ show (k,(a,a'))
 
-appMutation (AddRight s1 ins) = zoom joints $ do
+appMutation (AddRight s1 _) = zoom joints $ do
   -- (Out,Out): remove (outs <--> {s1})
   outs <- bySndOutOut %%= deleteFind s1
   byFstOutOut %= const (IM.delete s1) `atEvery` outs
 
   -- (In,Out): remove (ins <--> {s1})
-  bySndOutIn %= IM.delete s1
+  ins <- bySndOutIn %%= deleteFind s1
   byFstInOut %= const (IM.delete s1) `atEvery` ins
 
   -- (In,In): insert (ins <--> {s1})
@@ -459,13 +459,13 @@ appMutation (Add2 s0 s1 n01) = zoom joints $ do
     err' str k a a' = error $ "Add2 (" ++ str ++ "):\n"
                       ++ "  collision: " ++ show (k,(a,a'))
 
-appMutation (DelLeft s0 ins) = zoom joints $ do
+appMutation (DelLeft s0 _) = zoom joints $ do
   -- (In,Out): remove ({s0} <--> outs)
   outs <- byFstInOut %%= deleteFind s0
   bySndOutIn %= const (IM.delete s0) `atEvery` outs
 
   -- (In,In): remove ({s0} <--> ins)
-  byFstInIn %= IM.delete s0
+  ins <- byFstInIn %%= deleteFind s0
   bySndInIn %= const (IM.delete s0) `atEvery` ins
 
   -- (Out,Out): insert ({s0} <--> outs)
@@ -479,13 +479,13 @@ appMutation (DelLeft s0 ins) = zoom joints $ do
     err' str k a a' = error $ "DelLeft (" ++ str ++ "):\n"
                       ++ "  collision: " ++ show (k,(a,a'))
 
-appMutation (DelRight s1 ins) = zoom joints $ do
+appMutation (DelRight s1 _) = zoom joints $ do
   -- (Out,In): remove (outs <--> {s1})
   outs <- bySndInOut %%= deleteFind s1
   byFstOutIn %= const (IM.delete s1) `atEvery` outs
 
   -- (In,In): remove (ins <--> {s1})
-  bySndInIn %= IM.delete s1
+  ins <- bySndInIn %%= deleteFind s1
   byFstInIn %= const (IM.delete s1) `atEvery` ins
 
   -- (Out,Out): insert (outs <--> {s1})
