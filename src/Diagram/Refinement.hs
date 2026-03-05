@@ -377,7 +377,6 @@ enumMutations = do
         | n /= n' = err' $ "should be eq: " ++ show (n,n')
         | otherwise = n
 
-
 -- APPLICATION --
 
 deleteLookup :: Sym -> IntMap a -> (Maybe a, IntMap a)
@@ -387,56 +386,63 @@ deleteFind :: Sym -> IntMap a -> (a, IntMap a)
 deleteFind = first fromJust .: IM.updateLookupWithKey (\_ _ -> Nothing)
 
 -- | Lift a function to inner-maps located at a set of indexes
-atEvery :: (b -> a -> a) -> IntMap b -> IntMap a -> IntMap a
-atEvery f = IM.mergeWithKey (Just .:. const f) err' id
-  where err' = err "atEvery: key from first map missing in second map"
+atEvery :: forall a b. (b -> IntMap a -> IntMap a) -> IntMap b ->
+           IntMap (IntMap a) -> IntMap (IntMap a)
+atEvery f = IM.mergeWithKey g h id
+  where
+    -- apply f to map (ignore index), Nothing if result is null
+    g :: Int -> b -> IntMap a -> Maybe (IntMap a)
+    g _ = nothingIf IM.null .: f
+    -- apply f to every value in the key map with an empty map
+    h :: IntMap b -> IntMap (IntMap a)
+    h = fmap (`f` IM.empty)
 
 appMutation :: Monad m => Mutation -> RefinementT m ()
 appMutation (AddLeft s0 _) = zoom joints $ do
-  -- (Out,Out): remove ({s0} <--> outs)
+  -- (Out,Out): remove (Out[s0] <--> Out[outs])
   outs <- byFstOutOut %%= deleteFind s0
   bySndOutOut %= const (IM.delete s0) `atEvery` outs
 
-  -- (Out,In): remove ({s0} <--> ins)
+  -- (Out,In): remove (Out[s0] <--> In[ins])
   ins <- byFstOutIn %%= deleteFind s0
   bySndInOut %= const (IM.delete s0) `atEvery` ins
 
-  -- (In,In): insert ({s0} <--> ins)
-  byFstInIn %= IM.insertWithKey (err' "byFstInIn") s0 ins
-  bySndInIn %= IM.insertWithKey (err' "bySndInIn") s0 `atEvery` ins
+  -- (In,In): insert (In[s0] <--> In[ins])
+  byFstInIn %= IM.insertWithKey (col "byFstInIn") s0 ins
+  bySndInIn %= IM.insertWithKey (col "bySndInIn") s0 `atEvery` ins
 
-  -- (In,Out): insert ({s0} <--> outs)
-  byFstInOut %= IM.insertWithKey (err' "byFstInOut") s0 outs
-  bySndOutIn %= IM.insertWithKey (err' "bySndOutIn") s0 `atEvery` outs
+  -- (In,Out): insert (In[s0] <--> Out[outs])
+  byFstInOut %= IM.insertWithKey (col "byFstInOut") s0 outs
+  bySndOutIn %= IM.insertWithKey (col "bySndOutIn") s0 `atEvery` outs
   where
-    err' str k a a' = error $ "AddLeft (" ++ str ++ "):\n"
-                      ++ "  collision: " ++ show (k,(a,a'))
+    col str k a a' = error $ "AddLeft (" ++ str ++ "):\n"
+                     ++ "  collision: " ++ show (k,(a,a'))
 
 appMutation (AddRight s1 _) = zoom joints $ do
-  -- (Out,Out): remove (outs <--> {s1})
+  -- (Out,Out): remove (Out[outs] <--> Out[s1])
   outs <- bySndOutOut %%= deleteFind s1
   byFstOutOut %= const (IM.delete s1) `atEvery` outs
 
-  -- (In,Out): remove (ins <--> {s1})
+  -- (In,Out): remove (In[ins] <--> Out[s1])
   ins <- bySndOutIn %%= deleteFind s1
   byFstInOut %= const (IM.delete s1) `atEvery` ins
 
-  -- (In,In): insert (ins <--> {s1})
-  bySndInIn %= IM.insertWithKey (err' "bySndInIn") s1 ins
-  byFstInIn %= IM.insertWithKey (err' "byFstInIn") s1 `atEvery` ins
+  -- (In,In): insert (In[ins] <--> In[s1])
+  bySndInIn %= IM.insertWithKey (col "bySndInIn") s1 ins
+  byFstInIn %= IM.insertWithKey (col "byFstInIn") s1 `atEvery` ins
 
-  -- (Out,In): insert (outs <--> {s1})
-  bySndInOut %= IM.insertWithKey (err' "bySndInOut") s1 outs
-  byFstOutIn %= IM.insertWithKey (err' "byFstOutIn") s1 `atEvery` outs
+  -- (Out,In): insert (Out[outs] <--> In[s1])
+  bySndInOut %= IM.insertWithKey (col "bySndInOut") s1 outs
+  byFstOutIn %= IM.insertWithKey (col "byFstOutIn") s1 `atEvery` outs
   where
-    err' str k a a' = error $ "AddRight (" ++ str ++ "):\n"
-                      ++ "  collision: " ++ show (k,(a,a'))
+    col str k a a' = error $ "AddRight (" ++ str ++ "):\n"
+                     ++ "  collision: " ++ show (k,(a,a'))
 
 appMutation (Add2 s0 s1 n01) = zoom joints $ do
-  -- (Out,Out): remove ({s0} <--> out0s)
+  -- (Out,Out): remove (Out[s0] <--> Out[out0s])
   out0s <- byFstOutOut %%= deleteFind s0
   bySndOutOut %= const (IM.delete s0) `atEvery` out0s
-  -- (Out,Out): remove (out1s <--> {s1})
+  -- (Out,Out): remove (Out[out1s] <--> Out[s1])
   out1s <- bySndOutOut %%= deleteFind s1
   byFstOutOut %= const (IM.delete s1) `atEvery` out1s
 
@@ -444,86 +450,86 @@ appMutation (Add2 s0 s1 n01) = zoom joints $ do
   let in0s = IM.singleton s1 n01
       in1s = IM.singleton s0 n01
 
-  -- (In,In): insert ({s0} <--> {s1})
-  byFstInIn %= IM.insertWithKey (err' "byFstInIn") s0 in0s
-  bySndInIn %= IM.insertWithKey (err' "bySndInIn") s1 in1s
+  -- (In,In): insert (In[s0] <--> In[s1])
+  byFstInIn %= IM.insertWithKey (col "byFstInIn") s0 in0s
+  bySndInIn %= IM.insertWithKey (col "bySndInIn") s1 in1s
 
-  -- (In,Out): insert ({s0} <--> out0s)
-  byFstInOut %= IM.insertWithKey (err' "byFstInOut") s0 out0s
-  bySndOutIn %= IM.insertWithKey (err' "bySndOutIn") s0 `atEvery` out0s
+  -- (In,Out): insert (In[s0] <--> Out[out0s])
+  byFstInOut %= IM.insertWithKey (col "byFstInOut") s0 out0s
+  bySndOutIn %= IM.insertWithKey (col "bySndOutIn") s0 `atEvery` out0s
 
-  -- (Out,In): insert (out1s <--> {s1})
-  bySndInOut %= IM.insertWithKey (err' "bySndInOut") s1 out1s
-  byFstOutIn %= IM.insertWithKey (err' "byFstOutIn") s1 `atEvery` out1s
+  -- (Out,In): insert (Out[out1s] <--> In[s1])
+  bySndInOut %= IM.insertWithKey (col "bySndInOut") s1 out1s
+  byFstOutIn %= IM.insertWithKey (col "byFstOutIn") s1 `atEvery` out1s
   where
-    err' str k a a' = error $ "Add2 (" ++ str ++ "):\n"
-                      ++ "  collision: " ++ show (k,(a,a'))
+    col str k a a' = error $ "Add2 (" ++ str ++ "):\n"
+                     ++ "  collision: " ++ show (k,(a,a'))
 
 appMutation (DelLeft s0 _) = zoom joints $ do
-  -- (In,Out): remove ({s0} <--> outs)
+  -- (In,Out): remove (In[s0] <--> Out[outs])
   outs <- byFstInOut %%= deleteFind s0
   bySndOutIn %= const (IM.delete s0) `atEvery` outs
 
-  -- (In,In): remove ({s0} <--> ins)
+  -- (In,In): remove (In[s0] <--> In[ins])
   ins <- byFstInIn %%= deleteFind s0
   bySndInIn %= const (IM.delete s0) `atEvery` ins
 
-  -- (Out,Out): insert ({s0} <--> outs)
-  byFstOutOut %= IM.insertWithKey (err' "byFstOutOut") s0 outs
-  bySndOutOut %= IM.insertWithKey (err' "bySndOutOut") s0 `atEvery` outs
+  -- (Out,Out): insert (Out[s0] <--> Out[outs])
+  byFstOutOut %= IM.insertWithKey (col "byFstOutOut") s0 outs
+  bySndOutOut %= IM.insertWithKey (col "bySndOutOut") s0 `atEvery` outs
 
-  -- (Out,In): insert ({s0} <--> ins)
-  byFstOutIn %= IM.insertWithKey (err' "byFstOutIn") s0 ins
-  bySndInOut %= IM.insertWithKey (err' "bySndInOut") s0 `atEvery` ins
+  -- (Out,In): insert (Out[s0] <--> In[ins])
+  byFstOutIn %= IM.insertWithKey (col "byFstOutIn") s0 ins
+  bySndInOut %= IM.insertWithKey (col "bySndInOut") s0 `atEvery` ins
   where
-    err' str k a a' = error $ "DelLeft (" ++ str ++ "):\n"
-                      ++ "  collision: " ++ show (k,(a,a'))
+    col str k a a' = error $ "DelLeft (" ++ str ++ "):\n"
+                     ++ "  collision: " ++ show (k,(a,a'))
 
 appMutation (DelRight s1 _) = zoom joints $ do
-  -- (Out,In): remove (outs <--> {s1})
+  -- (Out,In): remove (Out[outs] <--> In[s1])
   outs <- bySndInOut %%= deleteFind s1
   byFstOutIn %= const (IM.delete s1) `atEvery` outs
 
-  -- (In,In): remove (ins <--> {s1})
+  -- (In,In): remove (In[ins] <--> In[s1])
   ins <- bySndInIn %%= deleteFind s1
   byFstInIn %= const (IM.delete s1) `atEvery` ins
 
-  -- (Out,Out): insert (outs <--> {s1})
-  bySndOutOut %= IM.insertWithKey (err' "bySndOutOut") s1 outs
-  byFstOutOut %= IM.insertWithKey (err' "byFstOutOut") s1 `atEvery` outs
+  -- (Out,Out): insert (Out[outs] <--> Out[s1])
+  bySndOutOut %= IM.insertWithKey (col "bySndOutOut") s1 outs
+  byFstOutOut %= IM.insertWithKey (col "byFstOutOut") s1 `atEvery` outs
 
-  -- (In,Out): insert (ins <--> {s1})
-  bySndOutIn %= IM.insertWithKey (err' "bySndOutIn") s1 ins
-  byFstInOut %= IM.insertWithKey (err' "byFstInOut") s1 `atEvery` ins
+  -- (In,Out): insert (In[ins] <--> Out[s1])
+  bySndOutIn %= IM.insertWithKey (col "bySndOutIn") s1 ins
+  byFstInOut %= IM.insertWithKey (col "byFstInOut") s1 `atEvery` ins
   where
-    err' str k a a' = error $ "DelRight (" ++ str ++ "):\n"
-                      ++ "  collision: " ++ show (k,(a,a'))
+    col str k a a' = error $ "DelRight (" ++ str ++ "):\n"
+                     ++ "  collision: " ++ show (k,(a,a'))
 
 appMutation (Del2 s0 s1 n01) = zoom joints $ do
-  -- (In,Out): remove ({s0} <--> out0s)
+  -- (In,Out): remove (In[s0] <--> Out[out0s])
   out0s <- byFstInOut %%= deleteFind s0
   bySndOutIn %= const (IM.delete s0) `atEvery` out0s
 
-  -- (Out,In): remove (out1s <--> {s1})
+  -- (Out,In): remove (Out[out1s] <--> In[s1])
   out1s <- bySndInOut %%= deleteFind s1
   byFstOutIn %= const (IM.delete s1) `atEvery` out1s
 
-  -- (In,In): remove ({s0} <--> {s1})
+  -- (In,In): remove (In[s0] <--> In[s1])
   byFstInIn %= IM.delete s0 -- singleton by definition
   bySndInIn %= IM.delete s1 -- singleton by definition
 
-  let out0s' = IM.insertWithKey (err' "s0-->s1") s1 n01 out0s
-      out1s' = IM.insertWithKey (err' "s0<--s1") s0 n01 out1s
+  let out0s' = IM.insertWithKey (col "s0-->s1") s1 n01 out0s
+      out1s' = IM.insertWithKey (col "s0<--s1") s0 n01 out1s
 
-  -- (Out,Out): insert ({s0} <--> out0s)
-  byFstOutOut %= IM.insertWithKey (err' "byFstOutOut") s0 out0s'
-  bySndOutOut %= IM.insertWithKey (err' "bySndOutOut") s0 `atEvery` out0s
-  -- (Out,Out): insert (out1s <--> {s1})
-  bySndOutOut %= IM.insertWithKey (err' "bySndOutOut") s1 out1s'
-  byFstOutOut %= IM.insertWithKey (err' "byFstOutOut") s1 `atEvery` out1s
+  -- (Out,Out): insert (Out[s0] <--> Out[out0s])
+  byFstOutOut %= IM.insertWithKey (col "byFstOutOut") s0 out0s'
+  bySndOutOut %= IM.insertWithKey (col "bySndOutOut") s0 `atEvery` out0s
+  -- (Out,Out): insert (Out[out1s] <--> Out[s1])
+  bySndOutOut %= IM.insertWithKey (col "bySndOutOut") s1 out1s'
+  byFstOutOut %= IM.insertWithKey (col "byFstOutOut") s1 `atEvery` out1s
   where
-    err' str k a a' = error $ "Del2 (" ++ str ++ "):\n"
-                      ++ "  collision: " ++ show (k,(a,a'))
+    col str k a a' = error $ "Del2 (" ++ str ++ "):\n"
+                     ++ "  collision: " ++ show (k,(a,a'))
 
 initRefinementState :: PrimMonad m => Model m -> IntMap (IntMap Int) ->
                        IntMap (IntMap Int) -> JointType -> m (RefinementState m)
