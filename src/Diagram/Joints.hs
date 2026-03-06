@@ -20,7 +20,7 @@ import qualified Data.Set as Set
 import qualified Data.Vector.Mutable as MV
 import Data.Vector.Unboxed.Mutable (MVector)
 
-import Streaming hiding (first)
+import Streaming hiding (first,second)
 import qualified Streaming.Prelude as S
 
 import Diagram.UnionType (Sym)
@@ -125,6 +125,15 @@ bySnd = bySndWith IM.fromDistinctAscList
 bySndSized :: Int -> Joints -> Map Int (Map Int (Int, IntSet))
 bySndSized = bySndWith M.fromDistinctAscList
 
+m2im :: Map Int (Map Int a) -> IntMap (IntMap a)
+m2im = IM.fromDistinctAscList
+       . fmap (second $ IM.fromDistinctAscList . M.toAscList)
+       . M.toAscList
+
+im2m :: IntMap (IntMap a) -> Map Int (Map Int a)
+im2m = M.fromDistinctAscList
+       . fmap (second $ M.fromDistinctAscList . IM.toAscList)
+       . IM.toAscList
 
 -----------
 -- DEBUG --

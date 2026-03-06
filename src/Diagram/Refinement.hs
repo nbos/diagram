@@ -22,7 +22,7 @@ import qualified Data.Vector.Unboxed as U
 
 import Diagram.Primitive
 import Diagram.Information
-import qualified Diagram.Random as R
+-- import qualified Diagram.Random as R
 import qualified Diagram.Dynamic as Dyn
 
 import Diagram.UnionType (Sym)
@@ -38,12 +38,6 @@ err = error . ("Refinement." ++)
 -- ----------------------- --
 -- -- RANDOM GENERATION -- --
 -- ----------------------- --
-
--- | O(n^2) Generate all combinations
-combs :: [a] -> [[a]]
-combs [] = [[]]
-combs (a:as) = ass ++ fmap (a:) ass
-  where ass = combs as
 
 -- | O(n^2) Generate all refinements given joints indexed both ways
 -- starting with the empty refinement, ending with the same as input
@@ -92,6 +86,12 @@ enumRefinements byFst0 bySnd0 = concatMap givenU0 u0s
         byFst' = ns1s' `M.union` byFst
         notSel = go byFst' bySnd
 
+-- | O(n^2) Generate all combinations
+combs :: [a] -> [[a]]
+combs [] = [[]]
+combs (a:as) = ass ++ fmap (a:) ass
+  where ass = combs as
+
 -- | State record to track the two maps and two sets
 data GenerationState a = GenerationState {
   -- NOTE: Map Int instead of IntMap because we want O(1) size
@@ -122,10 +122,10 @@ genRefinementWith r byFst0 bySnd0 =
     go :: StateT (GenerationState a) m (JointType, Map (Sym,Sym) ())
     go = get >>= \case
       (GenerationState byFst bySnd u0 u1 ref)
-        | total == 0 -> return ( JT (UT.fromSet u0) (UT.fromSet u1)
-                               , ref ) -- end
+        | remaining == 0 -> return ( JT (UT.fromSet u0) (UT.fromSet u1)
+                                   , ref ) -- end
         | otherwise -> do
-            i <- getRandomR (0, total-1) -- select a symbol
+            i <- getRandomR (0, remaining-1) -- select a symbol
             f <- getRandom @_ @Double -- include/exclude it in the ref
             let b = f <= r
             if i < len0 then goElimFst b (fst $ M.elemAt i byFst)
@@ -134,7 +134,7 @@ genRefinementWith r byFst0 bySnd0 =
         where
           len0 = M.size byFst -- O(1)
           len1 = M.size bySnd -- O(1)
-          total = len0 + len1
+          remaining = len0 + len1
 
     -- | Map.deleteFind
     deleteFind :: Ord k => k -> Map k b -> (b, Map k b)
@@ -201,14 +201,14 @@ genRefinementWith r byFst0 bySnd0 =
           else do fstUnion %= IS.insert s0
                   refJoints %= M.insert (s0,s1) () -- null staged0
 
--- | (DO NOT USE (NAIVE)) Generate a random refinement of a type. The
--- produced type is not necessarily a valid refinement (least upper
--- bound) of the set of joints it covers.
-genRefinement_ :: MonadRandom m => JointType -> m JointType
-genRefinement_ (JT u0 u1) = do
-  (_,ss0) <- R.split (UT.toAscList u0)
-  (_,ss1) <- R.split (UT.toAscList u1)
-  return $ JT (UT.fromDistinctAscList ss0) (UT.fromDistinctAscList ss1)
+-- -- | (DO NOT USE (NAIVE)) Generate a random refinement of a type. The
+-- -- produced type is not necessarily a valid refinement (least upper
+-- -- bound) of the set of joints it covers.
+-- genRefinement_ :: MonadRandom m => JointType -> m JointType
+-- genRefinement_ (JT u0 u1) = do
+--   (_,ss0) <- R.split (UT.toAscList u0)
+--   (_,ss1) <- R.split (UT.toAscList u1)
+--   return $ JT (UT.fromDistinctAscList ss0) (UT.fromDistinctAscList ss1)
 
 -- --------------- --
 -- -- MUTATIONS -- --
@@ -237,27 +237,32 @@ evalMutation m bigN ns ns' nm vm = go
     go :: Mutation -> Double
     go (AddLeft s0 jtns) = goAdd1 s0 jtns
     go (AddRight s1 jtns) = goAdd1 s1 jtns
-    go (Add2 s0 s1 n01) = deltaDelta_ (nm+n01) dns (vm+2)
-      where n0 = ns U.! s0
-            n1 = ns U.! s1
-            dns = [(n0,n0-n01),(n1,n1-n01)]
+    go (Add2 s0 s1 n01) = deltaDelta_ nm' dns (vm+2)
+      where nm' = nm + n01
+            n0 = ns U.! s0 -- not in ns' by Add2 definition
+            n1 = ns U.! s1 -- not in ns' by Add2 definition
+            dns | s0 == s1  = [(n0,n0-2*n01)]
+                | otherwise = [(n0,n0-n01),(n1,n1-n01)]
+
     go (DelLeft s0 jtns) = goDel1 s0 jtns
     go (DelRight s1 jtns) = goDel1 s1 jtns
-    go (Del2 _ _ n01) = deltaDelta_ (nm-n01) dns (vm-2)
-      where dns = [(n01,0),(n01,0)]
+    go (Del2 s0 s1 n01) = deltaDelta_ (nm-n01) dns (vm-2)
+      where
+        dns | s0 == s1  = [(2*n01,0)]
+            | otherwise = [(n01,0),(n01,0)]
+            -- n0'',n1'' = 0 by Del2 definition
 
     -- | Factored; s0 can be either left or right, doesn't make a
     -- difference
     goAdd1 s0 jtns = deltaDelta_ nm' (IM.elems dns) (vm+1)
       where
-        n01 = sum jtns -- INFO: this could be bookkept
-        nm' = nm + n01
-        n0 = ns U.! s0
-        adns = IM.insertWith (+) s0 n01 jtns -- absolute diffs
-        dns = IM.intersectionWith (\n' adn -> (n', n'-adn))
+        dnm = sum jtns -- INFO: this could be bookkept
+        nm' = nm + dnm
+        adns = IM.insertWith (+) s0 dnm jtns -- absolute diffs
+        dns = IM.intersectionWith (\adn n' -> (n', n'-adn)) adns $
               -- IM.keySet jtns `IS.isSubsetOf` IM.keySet ns'
               -- (because each key of jtns is a staged symbol)
-              (IM.insertWith (\_ n0' -> n0') s0 n0 ns') adns
+              IM.insertWith (\_ n0' -> n0') s0 (ns U.! s0) ns'
               -- updates on s0 handle case where s0 also appears
               -- (or doesn't) in jtns (i.e. on the other side)
 
@@ -265,13 +270,12 @@ evalMutation m bigN ns ns' nm vm = go
     -- difference
     goDel1 s0 jtns = deltaDelta_ nm' (IM.elems dns) (vm+1)
       where
-        n01 = sum jtns -- INFO: this could be bookkept
-        nm' = nm - n01
-        n0 = ns U.! s0
-        adns = IM.insertWith (+) s0 n01 jtns -- absolute diffs
-        dns = IM.intersectionWith (\n' adn -> (n', n'+adn))
+        dnm = sum jtns -- INFO: this could be bookkept
+        nm' = nm - dnm
+        adns = IM.insertWith (+) s0 dnm jtns -- absolute diffs
+        dns = IM.intersectionWith (\adn n' -> (n', n'+adn)) adns $
               -- IM.keySet jtns `IS.isSubsetOf` IM.keySet ns'
-              (IM.insertWith (\_ n0' -> n0') s0 n0 ns') adns
+              IM.insertWith (\_ n0' -> n0') s0 (ns U.! s0) ns'
               -- updates on s0 handle case where s0 also appears
               -- (or doesn't) in jtns (i.e. on the other side)
 
@@ -282,20 +286,19 @@ deltaDelta :: Int -> Int -> (Int,Int) -> [(Int,Int)] -> (Int,Int) -> Double
 deltaDelta m bigN (nm,nm') dns (vm,vm') =
   nDeltaDelta + sDeltaDelta + rDeltaDelta
   where
-    mpN = m + bigN -- m + N
+    nDeltaDelta = logFactNpmmnm' - logFactNpmmnm
     logFactNpmmnm = logFact $ mpN - nm
     logFactNpmmnm' = logFact $ mpN - nm'
-    nDeltaDelta = logFactNpmmnm' - logFactNpmmnm
-    -- (logFactNpmm1 and logm cancel out)
+    mpN = m + bigN -- m + N
 
     sDeltaDelta = sDDltm + logFact nm - logFact nm'
     sDDltm = sum $ (<$> dns) $ \(ni',ni'') ->
       logFact ni' - logFact ni''
       -- (logFact ni (old symbol count) cancel out)
 
+    rDeltaDelta = rInfo' - rInfo
     rInfo' = fromIntegral nm' * ilog vm' -- rInfo == rDelta
     rInfo = fromIntegral nm * ilog vm -- rInfo == rDelta
-    rDeltaDelta = rInfo' - rInfo
 
 -- | log(x!)
 logFact :: Int -> Double
