@@ -89,40 +89,40 @@ difference = M.mergeWithKey (const f) id id
 -----------------
 
 -- | Generic, given a `fromDistinctAscList` function
-curryWith :: (forall a. [(Int,a)] -> m a) -> Map (Int,Int) s -> m (m s)
+curryWith :: (forall a. [(Int,a)] -> m a) -> Map (Sym,Sym) s -> m (m s)
 curryWith build = build
   . fmap (fst . fst . head &&& build . fmap (first snd))
   . L.groupBy ((==) `on` (fst . fst))
   . M.toAscList
 
 -- | O(n) Convert a `(s0,s1) -> is` map into `s0 -> s1 -> is`
-curry :: Map (Int,Int) a -> IntMap (IntMap a)
+curry :: Map (Sym,Sym) a -> IntMap (IntMap a)
 curry = curryWith IM.fromDistinctAscList
 
 -- | O(n) Convert the `(s0,s1) -> is` map into `s0 -> s1 -> is`
-byFst :: Joints -> IntMap (IntMap (Int, IntSet))
+byFst :: Map (Sym,Sym) a -> IntMap (IntMap a)
 byFst = Diagram.Joints.curry
 
 -- | O(n) Convert the `(s0,s1) -> is` map into `s0 -> s1 -> is`
-byFstSized :: Joints -> Map Int (Map Int (Int, IntSet))
+byFstSized :: Map (Sym,Sym) a -> Map Int (Map Int a)
 byFstSized = curryWith M.fromDistinctAscList
 
 -- | Generic, given a `fromDistinctAscList` function
 bySndWith :: (forall a. [(Int,a)] -> m a) ->
-             Int -> Joints -> m (m (Int, IntSet))
-bySndWith build numSymbols jts = runST $ do
+             Int -> Map (Sym,Sym) b -> m (m b)
+bySndWith fromDistinctAscList numSymbols jts = runST $ do
   mv <- MV.replicate numSymbols []
   forM_ (M.toDescList jts) $ \((s0,s1),is) -> MV.modify mv ((s0,is):) s1
   ims <- MV.ifoldr (\s1 l -> if null l then id else
-                       ((s1, build l):)) [] mv
-  return $ build ims
+                       ((s1, fromDistinctAscList l):)) [] mv
+  return $ fromDistinctAscList ims
 
 -- | O(n + numSymbols) Given the number of symbols, convert the `(s0,s1)
 -- -> is` map into `s1 -> s0 -> is`
-bySnd :: Int -> Joints -> IntMap (IntMap (Int, IntSet))
+bySnd :: Int -> Map (Sym,Sym) a -> IntMap (IntMap a)
 bySnd = bySndWith IM.fromDistinctAscList
 
-bySndSized :: Int -> Joints -> Map Int (Map Int (Int, IntSet))
+bySndSized :: Int -> Map (Sym,Sym) a -> Map Int (Map Int a)
 bySndSized = bySndWith M.fromDistinctAscList
 
 m2im :: Map Int (Map Int a) -> IntMap (IntMap a)

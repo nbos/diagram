@@ -219,9 +219,159 @@ data Mutation
   | DelRight !Sym !(IntMap Int)
   | Del2     !Sym !Sym !Int
 
-----------
--- EVAL --
-----------
+data ModelParams = Params
+  { _numSymbols :: !Int
+  , _stringLength :: !Int
+  , _symbolCounts :: !(U.Vector Int) }
+
+type RefinementT = StateT RefinementState
+data RefinementState = RefinementState
+  { _modelParams :: !ModelParams -- for params: m, N, ns
+  -- , _parent :: !JointType
+  , _jointCount :: !Int -- :: nm
+  , _refinement :: !JointType -- :: rjt
+  , _newSymbolCounts :: !(IntMap Int) -- :: ns'
+  , _joints :: !CoverageState }
+
+data CoverageState = CoverageState
+  { _byFstInIn   :: !(IntMap (IntMap Int))
+  , _byFstInOut  :: !(IntMap (IntMap Int))
+  , _byFstOutIn  :: !(IntMap (IntMap Int))
+  , _byFstOutOut :: !(IntMap (IntMap Int))
+  , _bySndInIn   :: !(IntMap (IntMap Int))
+  , _bySndInOut  :: !(IntMap (IntMap Int))
+  , _bySndOutIn  :: !(IntMap (IntMap Int))
+  , _bySndOutOut :: !(IntMap (IntMap Int)) }
+
+makeLenses ''ModelParams
+makeLenses ''RefinementState
+makeLenses ''CoverageState
+
+-- | Enumerate and evaluate all possible mutations. Apply the one with
+-- the lowest loss if negative, returning Nothing. Returns Just if the
+-- JointType cannot be improved further (all mutations have positive
+-- loss).
+stepHillClimb :: RefinementT m (Maybe JointType)
+stepHillClimb = undefined
+
+initRefinementState :: ModelParams -> IntMap (IntMap Int) ->
+                       IntMap (IntMap Int) -> JointType -> RefinementState
+initRefinementState mdl@(Params _ _ ns) byFst bySnd rjt =
+  RefinementState { _modelParams = mdl
+                  , _jointCount = nm
+                  , _refinement = rjt
+                  , _newSymbolCounts = ns'
+                  , _joints = coverage }
+  where
+    coverage = initCoverageState byFst bySnd rjt
+    nm = sum $ snd <$> byFstInInL
+    byFstInInL = byFstToAscList $ coverage ^. byFstInIn
+    ns' = IM.mapWithKey (\s dn -> (ns U.! s) - dn ) $
+            IM.fromListWith (+) $
+            foldr (\((s0,s1),n01) l -> (s0,n01):(s1,n01):l)
+            [] byFstInInL
+
+initCoverageState :: IntMap (IntMap Int) -> IntMap (IntMap Int) ->
+                     JointType -> CoverageState
+initCoverageState byFst bySnd (JT u0 u1) =
+  CoverageState { _byFstInIn   = byFstInIn_
+                , _byFstInOut  = byFstInOut_
+                , _byFstOutIn  = byFstOutIn_
+                , _byFstOutOut = byFstOutOut_
+                , _bySndInIn   = bySndInIn_
+                , _bySndInOut  = bySndInOut_
+                , _bySndOutIn  = bySndOutIn_
+                , _bySndOutOut = bySndOutOut_ }
+  where
+    byFstIn = byFst `IM.restrictKeys` UT.set u0
+    byFstInIn_  = (`IM.restrictKeys` UT.set u1) <$> byFstIn
+    byFstInOut_ = (`IM.withoutKeys`  UT.set u1) <$> byFstIn
+
+    byFstOut = byFst `IM.withoutKeys` UT.set u0
+    byFstOutIn_  = (`IM.restrictKeys` UT.set u1) <$> byFstOut
+    byFstOutOut_ = (`IM.withoutKeys`  UT.set u1) <$> byFstOut
+
+    bySndIn = bySnd `IM.restrictKeys` UT.set u1
+    bySndInIn_  = (`IM.restrictKeys` UT.set u0) <$> bySndIn
+    bySndInOut_ = (`IM.withoutKeys`  UT.set u0) <$> bySndIn
+
+    bySndOut = bySnd `IM.withoutKeys` UT.set u1
+    bySndOutIn_  = (`IM.restrictKeys` UT.set u0) <$> bySndOut
+    bySndOutOut_ = (`IM.withoutKeys`  UT.set u0) <$> bySndOut
+
+--------------------------
+-- MUTATION ENUMERATION --
+--------------------------
+
+enumMutations :: Monad m => RefinementT m [Mutation]
+enumMutations = do
+  (CoverageState byFstInIn_ _ byFstOutIn_ byFstOutOut_
+   bySndInIn_ _ bySndOutIn_ _) <- use joints
+
+  let als = uc AddLeft  <$> IM.toList byFstOutIn_ -- Out --> In
+      ars = uc AddRight <$> IM.toList bySndOutIn_ -- In <-- Out
+
+      -- (Out,Out) that can't be added one-by-one
+      a2s = uc (uc Add2) <$> M.toList outSubgraph
+      outSubgraph = byFstToMap $
+                    (IM.\\ bySndOutIn_)
+                    <$> (byFstOutOut_ IM.\\ byFstOutIn_)
+
+      leftDependents = IM.mapMaybe fromSingleton byFstInIn_
+      rightDependents = IM.mapMaybe fromSingleton bySndInIn_
+      fromSingleton im | [sn] <- IM.toList im = Just sn
+                       | otherwise = Nothing
+
+      -- can be deleted yet: In (w/o dependents) --> In
+      dls = uc DelLeft <$> byFstInInWithoutDeps
+      byFstInInWithoutDeps = filter (IM.disjoint rightDependents . snd) $
+                             IM.toList byFstInIn_ -- In --> In
+
+      -- can be deleted yet: In <-- In (w/o dependents)
+      drs = uc DelRight <$> bySndInInWithoutDeps
+      bySndInInWithoutDeps = filter (IM.disjoint leftDependents . snd) $
+                             IM.toList bySndInIn_ -- In <-- In
+
+      -- (In,In) that can't be deleted one-by-one
+      d2s = uc (uc Del2) <$> M.toList coDependents
+      coDependents = M.intersectionWith assertEq
+                     leftPendantJts rightPendantJts
+
+      leftPendantJts = M.fromDistinctAscList $ toList leftDependents
+        where toList :: IntMap (s1, a) -> [((Sym, s1), a)]
+              toList = IM.foldrWithKey (\s0 s1n l -> first (s0,) s1n : l) []
+
+      rightPendantJts = M.fromDistinctAscList $ toList rightDependents
+        where toList :: IntMap (s0, a) -> [((s0, Sym), a)]
+              toList = IM.foldrWithKey (\s1 s0n l -> first (,s1) s0n : l) []
+
+  return $ als ++ ars ++ a2s ++ dls ++ drs ++ d2s
+    where
+      uc = uncurry
+      err' = err . ("enumMutations: " ++)
+      assertEq n n'
+        | n /= n' = err' $ "should be eq: " ++ show (n,n')
+        | otherwise = n
+
+-- WHERE --
+byFstToMap :: IntMap (IntMap Int) -> Map (Sym,Sym) Int
+byFstToMap = M.fromDistinctAscList . byFstToAscList
+
+byFstToAscList :: IntMap (IntMap Int) -> [((Sym,Sym),Int)]
+byFstToAscList = concatMap (\(s0,im) -> first (s0,)
+                                        <$> IM.toAscList im)
+                 . IM.toAscList
+
+bySndToMap :: IntMap (IntMap Int) -> Map (Sym,Sym) Int
+bySndToMap = M.fromDistinctAscList . bySndToAscList
+
+bySndToAscList :: IntMap (IntMap Int) -> [((Sym,Sym),Int)]
+bySndToAscList = fmap (first swap) . byFstToAscList
+--
+
+-------------------------
+-- MUTATION EVALUATION --
+-------------------------
 
 -- | Evaluate the loss incurred by the application of a mutation
 evalMutation :: Int -> Int -> U.Vector Int -> IntMap Int -> Int -> Int ->
@@ -304,159 +454,6 @@ logFact = iLogFactorial
 -- | Natural logarithm of an integer
 ilog :: Int -> Double
 ilog = log . fromIntegral
-
---------------------------
--- MUTATION APPLICATION --
---------------------------
-
-data ModelParams = Params
-  { _numSymbols :: !Int
-  , _stringLength :: !Int
-  , _symbolCounts :: !(U.Vector Int) }
-
-type RefinementT = StateT RefinementState
-data RefinementState = RefinementState
-  { _modelParams :: !ModelParams -- for params: m, N, ns
-  -- , _parent :: !JointType
-  , _jointCount :: !Int -- :: nm
-  , _refinement :: !JointType -- :: rjt
-  , _newSymbolCounts :: !(IntMap Int) -- :: ns'
-  , _joints :: !CoverageState }
-
-data CoverageState = CoverageState
-  { _byFstInIn   :: !(IntMap (IntMap Int))
-  , _byFstInOut  :: !(IntMap (IntMap Int))
-  , _byFstOutIn  :: !(IntMap (IntMap Int))
-  , _byFstOutOut :: !(IntMap (IntMap Int))
-  , _bySndInIn   :: !(IntMap (IntMap Int))
-  , _bySndInOut  :: !(IntMap (IntMap Int))
-  , _bySndOutIn  :: !(IntMap (IntMap Int))
-  , _bySndOutOut :: !(IntMap (IntMap Int)) }
-
-makeLenses ''ModelParams
-makeLenses ''RefinementState
-makeLenses ''CoverageState
-
-initRefinementState :: ModelParams -> IntMap (IntMap Int) ->
-                       IntMap (IntMap Int) -> JointType -> RefinementState
-initRefinementState mdl@(Params _ _ ns) byFst bySnd rjt =
-  RefinementState { _modelParams = mdl
-                  , _jointCount = nm
-                  , _refinement = rjt
-                  , _newSymbolCounts = ns'
-                  , _joints = coverage }
-  where
-    coverage = initCoverageState byFst bySnd rjt
-    nm = sum $ snd <$> byFstInInL
-    byFstInInL = byFstToAscList $ coverage ^. byFstInIn
-    ns' = IM.mapWithKey (\s dn -> (ns U.! s) - dn ) $
-            IM.fromListWith (+) $
-            foldr (\((s0,s1),n01) l -> (s0,n01):(s1,n01):l)
-            [] byFstInInL
-
-initCoverageState :: IntMap (IntMap Int) -> IntMap (IntMap Int) ->
-                     JointType -> CoverageState
-initCoverageState byFst bySnd (JT u0 u1) =
-  CoverageState { _byFstInIn   = byFstInIn_
-                , _byFstInOut  = byFstInOut_
-                , _byFstOutIn  = byFstOutIn_
-                , _byFstOutOut = byFstOutOut_
-                , _bySndInIn   = bySndInIn_
-                , _bySndInOut  = bySndInOut_
-                , _bySndOutIn  = bySndOutIn_
-                , _bySndOutOut = bySndOutOut_ }
-  where
-    byFstIn = byFst `IM.restrictKeys` UT.set u0
-    byFstInIn_  = (`IM.restrictKeys` UT.set u1) <$> byFstIn
-    byFstInOut_ = (`IM.withoutKeys`  UT.set u1) <$> byFstIn
-
-    byFstOut = byFst `IM.withoutKeys` UT.set u0
-    byFstOutIn_  = (`IM.restrictKeys` UT.set u1) <$> byFstOut
-    byFstOutOut_ = (`IM.withoutKeys`  UT.set u1) <$> byFstOut
-
-    bySndIn = bySnd `IM.restrictKeys` UT.set u1
-    bySndInIn_  = (`IM.restrictKeys` UT.set u0) <$> bySndIn
-    bySndInOut_ = (`IM.withoutKeys`  UT.set u0) <$> bySndIn
-
-    bySndOut = bySnd `IM.withoutKeys` UT.set u1
-    bySndOutIn_  = (`IM.restrictKeys` UT.set u0) <$> bySndOut
-    bySndOutOut_ = (`IM.withoutKeys`  UT.set u0) <$> bySndOut
-
-hillClimb :: ModelParams -> JointType
-hillClimb mdl = undefined
-
-hillClimb_ :: ModelParams -> JointType -> JointType
-hillClimb_ = undefined
-
---------------------------
--- MUTATION ENUMERATION --
---------------------------
-
-enumMutations :: Monad m => RefinementT m [Mutation]
-enumMutations = do
-  (CoverageState byFstInIn_ _ byFstOutIn_ byFstOutOut_
-   bySndInIn_ _ bySndOutIn_ _) <- use joints
-
-  let als = uc AddLeft  <$> IM.toList byFstOutIn_ -- Out --> In
-      ars = uc AddRight <$> IM.toList bySndOutIn_ -- In <-- Out
-
-      -- (Out,Out) that can't be added one-by-one
-      a2s = uc (uc Add2) <$> M.toList outSubgraph
-      outSubgraph = byFstToMap $
-                    (IM.\\ bySndOutIn_)
-                    <$> (byFstOutOut_ IM.\\ byFstOutIn_)
-
-      leftDependents = IM.mapMaybe fromSingleton byFstInIn_
-      rightDependents = IM.mapMaybe fromSingleton bySndInIn_
-      fromSingleton im | [sn] <- IM.toList im = Just sn
-                       | otherwise = Nothing
-
-      -- can be deleted yet: In (w/o dependents) --> In
-      dls = uc DelLeft <$> byFstInInWithoutDeps
-      byFstInInWithoutDeps = filter (IM.disjoint rightDependents . snd) $
-                             IM.toList byFstInIn_ -- In --> In
-
-      -- can be deleted yet: In <-- In (w/o dependents)
-      drs = uc DelRight <$> bySndInInWithoutDeps
-      bySndInInWithoutDeps = filter (IM.disjoint leftDependents . snd) $
-                             IM.toList bySndInIn_ -- In <-- In
-
-      -- (In,In) that can't be deleted one-by-one
-      d2s = uc (uc Del2) <$> M.toList coDependents
-      coDependents = M.intersectionWith assertEq
-                     leftPendantJts rightPendantJts
-
-      leftPendantJts = M.fromDistinctAscList $ toList leftDependents
-        where toList :: IntMap (s1, a) -> [((Sym, s1), a)]
-              toList = IM.foldrWithKey (\s0 s1n l -> first (s0,) s1n : l) []
-
-      rightPendantJts = M.fromDistinctAscList $ toList rightDependents
-        where toList :: IntMap (s0, a) -> [((s0, Sym), a)]
-              toList = IM.foldrWithKey (\s1 s0n l -> first (,s1) s0n : l) []
-
-  return $ als ++ ars ++ a2s ++ dls ++ drs ++ d2s
-    where
-      uc = uncurry
-      err' = err . ("enumMutations: " ++)
-      assertEq n n'
-        | n /= n' = err' $ "should be eq: " ++ show (n,n')
-        | otherwise = n
-
--- WHERE --
-byFstToMap :: IntMap (IntMap Int) -> Map (Sym,Sym) Int
-byFstToMap = M.fromDistinctAscList . byFstToAscList
-
-byFstToAscList :: IntMap (IntMap Int) -> [((Sym,Sym),Int)]
-byFstToAscList = concatMap (\(s0,im) -> first (s0,)
-                                        <$> IM.toAscList im)
-                 . IM.toAscList
-
-bySndToMap :: IntMap (IntMap Int) -> Map (Sym,Sym) Int
-bySndToMap = M.fromDistinctAscList . bySndToAscList
-
-bySndToAscList :: IntMap (IntMap Int) -> [((Sym,Sym),Int)]
-bySndToAscList = fmap (first swap) . byFstToAscList
---
 
 --------------------------
 -- MUTATION APPLICATION --
