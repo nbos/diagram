@@ -22,13 +22,10 @@ import qualified Data.Vector.Unboxed as U
 
 import Diagram.Primitive
 import Diagram.Information
--- import qualified Diagram.Random as R
-import qualified Diagram.Dynamic as Dyn
 
 import Diagram.UnionType (Sym)
 import qualified Diagram.UnionType as UT
 import Diagram.JointType (JointType(..))
-import Diagram.Model (Model(..))
 
 import Diagram.Util
 
@@ -312,9 +309,14 @@ ilog = log . fromIntegral
 -- MUTATION APPLICATION --
 --------------------------
 
-type RefinementT m = StateT (RefinementState m) m
-data RefinementState m = RefinementState
-  { _model :: !(Model m) -- for params: m, N, ns
+data ModelParams = Params
+  { _numSymbols :: !Int
+  , _stringLength :: !Int
+  , _symbolCounts :: !(U.Vector Int) }
+
+type RefinementT = StateT RefinementState
+data RefinementState = RefinementState
+  { _modelParams :: !ModelParams -- for params: m, N, ns
   -- , _parent :: !JointType
   , _jointCount :: !Int -- :: nm
   , _refinement :: !JointType -- :: rjt
@@ -331,26 +333,26 @@ data CoverageState = CoverageState
   , _bySndOutIn  :: !(IntMap (IntMap Int))
   , _bySndOutOut :: !(IntMap (IntMap Int)) }
 
+makeLenses ''ModelParams
 makeLenses ''RefinementState
 makeLenses ''CoverageState
 
-initRefinementState :: PrimMonad m => Model m -> IntMap (IntMap Int) ->
-                       IntMap (IntMap Int) -> JointType -> m (RefinementState m)
-initRefinementState mdl@(Model _ _ ns _) byFst bySnd rjt = do
-  ns' <- IM.traverseWithKey (\s dn -> (+(-dn)) <$> (ns Dyn.! s) ) $
-         IM.fromListWith (+) $
-         foldr (\((s0,s1),n01) l -> (s0,n01):(s1,n01):l)
-         [] byFstInInL
-
-  return $ RefinementState { _model = mdl
-                           , _jointCount = nm
-                           , _refinement = rjt
-                           , _newSymbolCounts = ns'
-                           , _joints = coverage }
+initRefinementState :: ModelParams -> IntMap (IntMap Int) ->
+                       IntMap (IntMap Int) -> JointType -> RefinementState
+initRefinementState mdl@(Params _ _ ns) byFst bySnd rjt =
+  RefinementState { _modelParams = mdl
+                  , _jointCount = nm
+                  , _refinement = rjt
+                  , _newSymbolCounts = ns'
+                  , _joints = coverage }
   where
     coverage = initCoverageState byFst bySnd rjt
     nm = sum $ snd <$> byFstInInL
     byFstInInL = byFstToAscList $ coverage ^. byFstInIn
+    ns' = IM.mapWithKey (\s dn -> (ns U.! s) - dn ) $
+            IM.fromListWith (+) $
+            foldr (\((s0,s1),n01) l -> (s0,n01):(s1,n01):l)
+            [] byFstInInL
 
 initCoverageState :: IntMap (IntMap Int) -> IntMap (IntMap Int) ->
                      JointType -> CoverageState
@@ -379,6 +381,12 @@ initCoverageState byFst bySnd (JT u0 u1) =
     bySndOut = bySnd `IM.withoutKeys` UT.set u1
     bySndOutIn_  = (`IM.restrictKeys` UT.set u0) <$> bySndOut
     bySndOutOut_ = (`IM.withoutKeys`  UT.set u0) <$> bySndOut
+
+hillClimb :: ModelParams -> JointType
+hillClimb mdl = undefined
+
+hillClimb_ :: ModelParams -> JointType -> JointType
+hillClimb_ = undefined
 
 --------------------------
 -- MUTATION ENUMERATION --

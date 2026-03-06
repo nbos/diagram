@@ -23,13 +23,12 @@ import Diagram.Information
 
 import Diagram.Util
 
-
 data Model m = Model {
   types :: !(BoxedVec m JointType), -- :: [m - 256]JointType
   stringLen :: !Int,
   nCounts :: !(UnboxedVec m Int), -- [m]Int
   kCounts :: !(UnboxedVec m Int)  -- [m - 256]Int
-}
+} -- probably should have been kept pure
 
 numSymbols :: Model m -> Int
 numSymbols = (256+) . Dyn.length . types
@@ -215,7 +214,7 @@ ssInfoDelta_ bigN dns k
                           - sum (iLogFactorial <$> ns'))
   where (ns,ns') = unzip dns
 
--- | Givne the model and counts of joints covered by a JointType, return
+-- | Given the model and counts of joints covered by a JointType, return
 -- the before/after values of the affected n-counts (unlabeled)
 deltaCounts :: PrimMonad m => Model m -> Map (Sym,Sym) Int -> m [(Int,Int)]
 deltaCounts (Model _ _ ns _) jtnm =
