@@ -11,6 +11,7 @@ import Control.Monad.Random
 
 import Data.Maybe
 import Data.Tuple.Extra
+import qualified Data.List.Extra as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.IntMap.Strict (IntMap)
@@ -26,6 +27,7 @@ import Diagram.Information
 import Diagram.UnionType (Sym)
 import qualified Diagram.UnionType as UT
 import Diagram.JointType (JointType(..))
+import qualified Diagram.JointType as JT
 
 import Diagram.Util
 
@@ -233,6 +235,7 @@ data RefinementState = RefinementState
   , _newSymbolCounts :: !(IntMap Int) -- :: ns'
   , _joints :: !CoverageState }
 
+type CoverageT = StateT CoverageState
 data CoverageState = CoverageState
   { _byFstInIn   :: !(IntMap (IntMap Int))
   , _byFstInOut  :: !(IntMap (IntMap Int))
@@ -247,15 +250,47 @@ makeLenses ''ModelParams
 makeLenses ''RefinementState
 makeLenses ''CoverageState
 
--- | Enumerate and evaluate all possible mutations. Apply the one with
--- the lowest loss if negative, returning Nothing. Returns Just if the
--- JointType cannot be improved further (all mutations have positive
--- loss).
-stepHillClimb :: RefinementT m (Maybe JointType)
-stepHillClimb = undefined
+stepHillClimb :: Monad m => RefinementT m (Maybe JointType)
+stepHillClimb = do
+  (minLoss, mut) <- minMutation
+  if minLoss >= 0 then refinement `uses` Just -- end
+    else zoom joints (appMutation mut) -- step
+         >> return Nothing
 
-initRefinementState :: ModelParams -> IntMap (IntMap Int) ->
-                       IntMap (IntMap Int) -> JointType -> RefinementState
+hillClimb :: Monad m => RefinementT m JointType
+hillClimb = (stepHillClimb >>=) $ \case
+  Nothing -> hillClimb
+  Just jt -> return jt
+
+-- stepEM :: Monad m => RefinementT m (Maybe JointType)
+-- stepEM = do
+--   muts <- negMutations
+--   if null muts then refinement `uses` Just -- end
+--     else mapM_ (appMutation . snd) muts -- step
+--          >> return Nothing
+
+minMutation :: Monad m => RefinementT m (Double, Mutation)
+minMutation = do
+  muts <- zoom joints enumMutations
+  (RefinementState (Params m bigN ns) nm rjt ns' _) <- get
+  let vm = JT.variety rjt
+      emuts = toFst (evalMutation m bigN ns ns' nm vm) <$> muts
+  return $ L.minimumOn fst emuts
+
+negMutations :: Monad m => RefinementT m [(Double, Mutation)]
+negMutations = do
+  muts <- zoom joints enumMutations
+  (RefinementState (Params m bigN ns) nm rjt ns' _) <- get
+  let vm = JT.variety rjt
+      emuts = toFst (evalMutation m bigN ns ns' nm vm) <$> muts
+  return $ L.filter ((<0) . fst) emuts
+
+--------------------------
+-- STATE INITIALIZATION --
+--------------------------
+
+initRefinementState :: ModelParams -> IntMap (IntMap Int) -> IntMap (IntMap Int) ->
+                       JointType -> RefinementState
 initRefinementState mdl@(Params _ _ ns) byFst bySnd rjt =
   RefinementState { _modelParams = mdl
                   , _jointCount = nm
@@ -303,10 +338,10 @@ initCoverageState byFst bySnd (JT u0 u1) =
 -- MUTATION ENUMERATION --
 --------------------------
 
-enumMutations :: Monad m => RefinementT m [Mutation]
+enumMutations :: Monad m => CoverageT m [Mutation]
 enumMutations = do
   (CoverageState byFstInIn_ _ byFstOutIn_ byFstOutOut_
-   bySndInIn_ _ bySndOutIn_ _) <- use joints
+   bySndInIn_ _ bySndOutIn_ _) <- get
 
   let als = uc AddLeft  <$> IM.toList byFstOutIn_ -- Out --> In
       ars = uc AddRight <$> IM.toList bySndOutIn_ -- In <-- Out
@@ -459,8 +494,8 @@ ilog = log . fromIntegral
 -- MUTATION APPLICATION --
 --------------------------
 
-appMutation :: Monad m => Mutation -> RefinementT m ()
-appMutation mutation = zoom joints $ case mutation of
+appMutation :: Monad m => Mutation -> CoverageT m ()
+appMutation mutation = case mutation of
   (AddLeft s0 _) -> do
     -- (Out,Out): remove (Out[s0] <--> Out[outs])
     outs <- byFstOutOut %%= deleteFind s0
