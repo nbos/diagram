@@ -86,6 +86,7 @@ executable diagram
                     , random
                     , variety
                     , filepath
+                    , hashable
                     , directory
                     , primitive
                     , streaming
@@ -93,6 +94,7 @@ executable diagram
                     , MonadRandom
                     , random-shuffle
                     , math-functions
+                    , unordered-containers
                     , streaming-bytestring
                     , optparse-applicative
                     , terminal-progress-bar

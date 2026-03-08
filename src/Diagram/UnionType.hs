@@ -1,8 +1,11 @@
-{-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE InstanceSigs, DeriveGeneric, DeriveAnyClass #-}
 module Diagram.UnionType (module Diagram.UnionType) where
 
 import Prelude hiding (length)
 
+import GHC.Generics (Generic)
+
+import Data.Hashable
 import Data.Tuple.Extra
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IS
@@ -19,9 +22,9 @@ type Sym = Int
 
 -- | A sized union of symbols
 data UnionType = UT {
-  length :: !Int, -- size of the set
+  size :: !Int, -- size of the set
   set :: !IntSet  -- set of symbols
-} deriving (Eq,Show)
+} deriving (Eq,Show,Generic,Hashable)
 
 instance Semigroup UnionType where
   (<>) :: UnionType -> UnionType -> UnionType
@@ -53,6 +56,16 @@ fromSet ss = UT (IS.size ss) ss
 -- | Is the symbol a member of the union?
 member :: Sym -> UnionType -> Bool
 member s = IS.member s . set
+
+insert :: Sym -> UnionType -> UnionType
+insert s ut@(UT n ss)
+  | s `IS.member` ss = ut -- unchanged
+  | otherwise = UT (n+1) $ IS.insert s ss
+
+delete :: Sym -> UnionType -> UnionType
+delete s ut@(UT n ss)
+  | s `IS.member` ss = UT (n-1) $ IS.delete s ss
+  | otherwise = ut -- unchanged
 
 -------------
 -- LATTICE --
@@ -103,11 +116,11 @@ refine (UT n ss) bv
 
 -- | Codelen (bits) of a refinement
 refineLen :: UnionType -> Int
-refineLen = length
+refineLen = size
 
 -- | For encoding/decoding
 bases :: Int -> UnionType -> [Integer]
-bases k = replicate k . fromIntegral . length
+bases k = replicate k . fromIntegral . size
 
 -- | For decoding
 fromIdxs :: UnionType -> [Integer] -> [Sym]

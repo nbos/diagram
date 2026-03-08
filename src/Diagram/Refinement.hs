@@ -25,10 +25,9 @@ import Diagram.Primitive
 import Diagram.Information
 
 import Diagram.Joints (Joints,Joints2(J2),Joints2S(J2S))
-import qualified Diagram.Joints as Jts
 import Diagram.UnionType (Sym)
 import qualified Diagram.UnionType as UT
-import Diagram.JointType (JointType(..))
+import Diagram.JointType (JointType(..),left,right)
 import qualified Diagram.JointType as JT
 
 import Diagram.Util
@@ -255,7 +254,7 @@ stepHillClimb :: Monad m => RefinementT m (Maybe JointType)
 stepHillClimb = do
   (minLoss, mut) <- minMutation
   if minLoss >= 0 then refinement `uses` Just -- end
-    else zoom joints (appMutation mut) -- step
+    else appMutation mut -- step
          >> return Nothing
 
 hillClimb :: Monad m => RefinementT m JointType
@@ -333,9 +332,9 @@ initCoverageState (J2 byFst bySnd) (JT u0 u1) =
     bySndOutIn_  = (`IM.restrictKeys` UT.set u0) <$> bySndOut
     bySndOutOut_ = (`IM.withoutKeys`  UT.set u0) <$> bySndOut
 
---------------------------
--- MUTATION ENUMERATION --
---------------------------
+-------------------------
+-- ENUMERATE MUTATIONS --
+-------------------------
 
 enumMutations :: Monad m => CoverageT m [Mutation]
 enumMutations = do
@@ -403,9 +402,9 @@ bySndToAscList :: IntMap (IntMap Int) -> [((Sym,Sym),Int)]
 bySndToAscList = fmap (first swap) . byFstToAscList
 --
 
--------------------------
--- MUTATION EVALUATION --
--------------------------
+--------------------
+-- EVAL MUTATIONS --
+--------------------
 
 -- | Evaluate the loss incurred by the application of a mutation
 evalMutation :: Int -> Int -> U.Vector Int -> IntMap Int -> Int -> Int ->
@@ -420,18 +419,22 @@ evalMutation m bigN ns ns' nm vm = go
     go (AddRight s1 jtns) = goAdd1 s1 jtns
     go (Add2 s0 s1 n01) = deltaDelta_ nm' dns (vm+2)
       where nm' = nm + n01
-            n0 = ns U.! s0 -- not in ns' by Add2 definition
-            n1 = ns U.! s1 -- not in ns' by Add2 definition
-            dns | s0 == s1  = [(n0,n0-2*n01)]
-                | otherwise = [(n0,n0-n01),(n1,n1-n01)]
+            n0' = IM.findWithDefault (ns U.! s0) s0 ns'
+            n1' = IM.findWithDefault (ns U.! s1) s1 ns'
+            dns | s0 == s1  = [(n0', n0'-2*n01)]
+                | otherwise = [(n0', n0'-n01)
+                              ,(n1', n1'-n01)]
 
     go (DelLeft s0 jtns) = goDel1 s0 jtns
     go (DelRight s1 jtns) = goDel1 s1 jtns
-    go (Del2 s0 s1 n01) = deltaDelta_ (nm-n01) dns (vm-2)
+    go (Del2 s0 s1 n01) = deltaDelta_ nm' dns (vm-2)
       where
-        dns | s0 == s1  = [(2*n01,0)]
-            | otherwise = [(n01,0),(n01,0)]
-            -- n0'',n1'' = 0 by Del2 definition
+        nm' = nm - n01
+        n0 = ns' IM.! s0
+        n1 = ns' IM.! s1
+        dns | s0 == s1  = [(n0, n0+2*n01)]
+            | otherwise = [(n0, n0+n01)
+                          ,(n1, n1+n01)]
 
     -- | Factored; s0 can be either left or right, doesn't make a
     -- difference
@@ -439,13 +442,12 @@ evalMutation m bigN ns ns' nm vm = go
       where
         dnm = sum jtns -- INFO: this could be bookkept
         nm' = nm + dnm
+        ns'' = IM.insertWith (\_ n0' -> n0') s0 (ns U.! s0) ns'
+               -- ^ ensures s0 is in ns' before intersection operation
         adns = IM.insertWith (+) s0 dnm jtns -- absolute diffs
-        dns = IM.intersectionWith (\adn n' -> (n', n'-adn)) adns $
-              -- IM.keySet jtns `IS.isSubsetOf` IM.keySet ns'
-              -- (because each key of jtns is a staged symbol)
-              IM.insertWith (\_ n0' -> n0') s0 (ns U.! s0) ns'
-              -- updates on s0 handle case where s0 also appears
-              -- (or doesn't) in jtns (i.e. on the other side)
+        dns = IM.intersectionWith (\n' adn -> (n', n'-adn)) ns'' adns
+              -- IM.keySet jtns `IS.isSubsetOf` IM.keySet ns' because
+              -- each key of jtns is a staged symbol
 
     -- | Factored; s0 can be either left or right, doesn't make a
     -- difference
@@ -454,11 +456,8 @@ evalMutation m bigN ns ns' nm vm = go
         dnm = sum jtns -- INFO: this could be bookkept
         nm' = nm - dnm
         adns = IM.insertWith (+) s0 dnm jtns -- absolute diffs
-        dns = IM.intersectionWith (\adn n' -> (n', n'+adn)) adns $
+        dns = IM.intersectionWith (\adn n' -> (n', n'+adn)) ns' adns
               -- IM.keySet jtns `IS.isSubsetOf` IM.keySet ns'
-              IM.insertWith (\_ n0' -> n0') s0 (ns U.! s0) ns'
-              -- updates on s0 handle case where s0 also appears
-              -- (or doesn't) in jtns (i.e. on the other side)
 
 -- | Computes the difference in the info delta from changing parameters:
 -- joint type count n_m (before,after), symbol (new) counts ns
@@ -489,144 +488,213 @@ logFact = iLogFactorial
 ilog :: Int -> Double
 ilog = log . fromIntegral
 
---------------------------
--- MUTATION APPLICATION --
---------------------------
+--------------------
+-- APPLY MUTATION --
+---------------------
 
-appMutation :: Monad m => Mutation -> CoverageT m ()
+appMutation :: Monad m => Mutation -> RefinementT m ()
 appMutation mutation = case mutation of
   (AddLeft s0 _) -> do
-    -- (Out,Out): remove (Out[s0] <--> Out[outs])
-    outs <- byFstOutOut %%= deleteFind s0
-    bySndOutOut %= const (IM.delete s0) `atEvery` outs
-
     -- (Out,In): remove (Out[s0] <--> In[ins])
-    ins <- byFstOutIn %%= deleteFind s0
-    bySndInOut %= const (IM.delete s0) `atEvery` ins
+    ins <- joints . byFstOutIn %%= deleteFind s0
+    zoom joints $ do
+      bySndInOut %= const (IM.delete s0) `atEvery` ins
 
-    -- (In,In): insert (In[s0] <--> In[ins])
-    byFstInIn %= IM.insertWithKey (col "byFstInIn") s0 ins
-    bySndInIn %= IM.insertWithKey (col "bySndInIn") s0 `atEvery` ins
+      -- (Out,Out): remove (Out[s0] <--> Out[outs])
+      outs <- byFstOutOut %%= deleteFind s0
+      bySndOutOut %= const (IM.delete s0) `atEvery` outs
 
-    -- (In,Out): insert (In[s0] <--> Out[outs])
-    byFstInOut %= IM.insertWithKey (col "byFstInOut") s0 outs
-    bySndOutIn %= IM.insertWithKey (col "bySndOutIn") s0 `atEvery` outs
-    where
-      col str k a a' = error $ "AddLeft (" ++ str ++ "):\n"
-                       ++ "  collision: " ++ show (k,(a,a'))
+      -- (In,In): insert (In[s0] <--> In[ins])
+      byFstInIn %= IM.insertWithKey (col "byFstInIn") s0 ins
+      bySndInIn %= IM.insertWithKey (col "bySndInIn") s0 `atEvery` ins
+
+      -- (In,Out): insert (In[s0] <--> Out[outs])
+      byFstInOut %= IM.insertWithKey (col "byFstInOut") s0 outs
+      bySndOutIn %= IM.insertWithKey (col "bySndOutIn") s0 `atEvery` outs
+
+
+    let dnm = sum ins
+    jointCount += dnm
+    refinement.left %= UT.insert s0
+
+    -- (insert s0 if not already in ns')
+    ns <- use $ modelParams.symbolCounts
+    newSymbolCounts %= IM.insertWith (\_ n0' -> n0') s0 (ns U.! s0)
+    let adns = IM.insertWith (+) s0 dnm ins -- absolute differences
+    newSymbolCounts %= (\_ adn n -> Just (n-adn)) `modifyEvery` adns
+      where
+        col str k a a' = error $ "AddLeft (" ++ str ++ "):\n"
+                         ++ "  collision: " ++ show (k,(a,a'))
 
   (AddRight s1 _) -> do
-    -- (Out,Out): remove (Out[outs] <--> Out[s1])
-    outs <- bySndOutOut %%= deleteFind s1
-    byFstOutOut %= const (IM.delete s1) `atEvery` outs
-
     -- (In,Out): remove (In[ins] <--> Out[s1])
-    ins <- bySndOutIn %%= deleteFind s1
-    byFstInOut %= const (IM.delete s1) `atEvery` ins
+    ins <- joints . bySndOutIn %%= deleteFind s1
+    zoom joints $ do
+      byFstInOut %= const (IM.delete s1) `atEvery` ins
 
-    -- (In,In): insert (In[ins] <--> In[s1])
-    bySndInIn %= IM.insertWithKey (col "bySndInIn") s1 ins
-    byFstInIn %= IM.insertWithKey (col "byFstInIn") s1 `atEvery` ins
+      -- (Out,Out): remove (Out[outs] <--> Out[s1])
+      outs <- bySndOutOut %%= deleteFind s1
+      byFstOutOut %= const (IM.delete s1) `atEvery` outs
 
-    -- (Out,In): insert (Out[outs] <--> In[s1])
-    bySndInOut %= IM.insertWithKey (col "bySndInOut") s1 outs
-    byFstOutIn %= IM.insertWithKey (col "byFstOutIn") s1 `atEvery` outs
-    where
-      col str k a a' = error $ "AddRight (" ++ str ++ "):\n"
-                       ++ "  collision: " ++ show (k,(a,a'))
+      -- (In,In): insert (In[ins] <--> In[s1])
+      bySndInIn %= IM.insertWithKey (col "bySndInIn") s1 ins
+      byFstInIn %= IM.insertWithKey (col "byFstInIn") s1 `atEvery` ins
+
+      -- (Out,In): insert (Out[outs] <--> In[s1])
+      bySndInOut %= IM.insertWithKey (col "bySndInOut") s1 outs
+      byFstOutIn %= IM.insertWithKey (col "byFstOutIn") s1 `atEvery` outs
+
+    let dnm = sum ins
+    jointCount += dnm
+    refinement.right %= UT.insert s1
+
+    -- (insert s1 if not already in ns')
+    ns <- use $ modelParams.symbolCounts
+    newSymbolCounts %= IM.insertWith (\_ n1' -> n1') s1 (ns U.! s1)
+    let adns = IM.insertWith (+) s1 dnm ins -- absolute differences
+    newSymbolCounts %= (\_ adn n -> Just (n-adn)) `modifyEvery` adns
+      where
+        col str k a a' = error $ "AddRight (" ++ str ++ "):\n"
+                         ++ "  collision: " ++ show (k,(a,a'))
 
   (Add2 s0 s1 n01) -> do
-    -- (Out,Out): remove (Out[s0] <--> Out[out0s])
-    out0s <- byFstOutOut %%= deleteFind s0
-    bySndOutOut %= const (IM.delete s0) `atEvery` out0s
-    -- (Out,Out): remove (Out[out1s] <--> Out[s1])
-    out1s <- bySndOutOut %%= deleteFind s1
-    byFstOutOut %= const (IM.delete s1) `atEvery` out1s
+    zoom joints $ do
+      -- (Out,Out): remove (Out[s0] <--> Out[out0s])
+      out0s <- byFstOutOut %%= deleteFind s0
+      bySndOutOut %= const (IM.delete s0) `atEvery` out0s
+      -- (Out,Out): remove (Out[out1s] <--> Out[s1])
+      out1s <- bySndOutOut %%= deleteFind s1
+      byFstOutOut %= const (IM.delete s1) `atEvery` out1s
 
-    -- [no ins prior to Add2 by definition]
-    let in0s = IM.singleton s1 n01
-        in1s = IM.singleton s0 n01
+      -- [no ins prior to Add2 by definition]
+      let in0s = IM.singleton s1 n01
+          in1s = IM.singleton s0 n01
 
-    -- (In,In): insert (In[s0] <--> In[s1])
-    byFstInIn %= IM.insertWithKey (col "byFstInIn") s0 in0s
-    bySndInIn %= IM.insertWithKey (col "bySndInIn") s1 in1s
+      -- (In,In): insert (In[s0] <--> In[s1])
+      byFstInIn %= IM.insertWithKey (col "byFstInIn") s0 in0s
+      bySndInIn %= IM.insertWithKey (col "bySndInIn") s1 in1s
 
-    -- (In,Out): insert (In[s0] <--> Out[out0s])
-    byFstInOut %= IM.insertWithKey (col "byFstInOut") s0 out0s
-    bySndOutIn %= IM.insertWithKey (col "bySndOutIn") s0 `atEvery` out0s
+      -- (In,Out): insert (In[s0] <--> Out[out0s])
+      byFstInOut %= IM.insertWithKey (col "byFstInOut") s0 out0s
+      bySndOutIn %= IM.insertWithKey (col "bySndOutIn") s0 `atEvery` out0s
 
-    -- (Out,In): insert (Out[out1s] <--> In[s1])
-    bySndInOut %= IM.insertWithKey (col "bySndInOut") s1 out1s
-    byFstOutIn %= IM.insertWithKey (col "byFstOutIn") s1 `atEvery` out1s
-    where
-      col str k a a' = error $ "Add2 (" ++ str ++ "):\n"
-                       ++ "  collision: " ++ show (k,(a,a'))
+      -- (Out,In): insert (Out[out1s] <--> In[s1])
+      bySndInOut %= IM.insertWithKey (col "bySndInOut") s1 out1s
+      byFstOutIn %= IM.insertWithKey (col "byFstOutIn") s1 `atEvery` out1s
+
+    jointCount += n01
+    refinement.left %= UT.insert s0
+    refinement.right %= UT.insert s1
+    ns <- use $ modelParams.symbolCounts
+    n0' <- newSymbolCounts `uses` IM.findWithDefault (ns U.! s0) s0
+    n1' <- newSymbolCounts `uses` IM.findWithDefault (ns U.! s1) s1
+    newSymbolCounts %= if s0 == s1 then IM.insert s0 (n0'-2*n01)
+                       else IM.insert s0 (n0'-n01) . IM.insert s1 (n1'-n01)
+      where
+        col str k a a' = error $ "Add2 (" ++ str ++ "):\n"
+                         ++ "  collision: " ++ show (k,(a,a'))
 
   (DelLeft s0 _) -> do
-    -- (In,Out): remove (In[s0] <--> Out[outs])
-    outs <- byFstInOut %%= deleteFind s0
-    bySndOutIn %= const (IM.delete s0) `atEvery` outs
-
     -- (In,In): remove (In[s0] <--> In[ins])
-    ins <- byFstInIn %%= deleteFind s0
-    bySndInIn %= const (IM.delete s0) `atEvery` ins
+    ins <- joints . byFstInIn %%= deleteFind s0
+    zoom joints $ do
+      bySndInIn %= const (IM.delete s0) `atEvery` ins
 
-    -- (Out,Out): insert (Out[s0] <--> Out[outs])
-    byFstOutOut %= IM.insertWithKey (col "byFstOutOut") s0 outs
-    bySndOutOut %= IM.insertWithKey (col "bySndOutOut") s0 `atEvery` outs
+      -- (In,Out): remove (In[s0] <--> Out[outs])
+      outs <- byFstInOut %%= deleteFind s0
+      bySndOutIn %= const (IM.delete s0) `atEvery` outs
 
-    -- (Out,In): insert (Out[s0] <--> In[ins])
-    byFstOutIn %= IM.insertWithKey (col "byFstOutIn") s0 ins
-    bySndInOut %= IM.insertWithKey (col "bySndInOut") s0 `atEvery` ins
-    where
-      col str k a a' = error $ "DelLeft (" ++ str ++ "):\n"
-                       ++ "  collision: " ++ show (k,(a,a'))
+      -- (Out,Out): insert (Out[s0] <--> Out[outs])
+      byFstOutOut %= IM.insertWithKey (col "byFstOutOut") s0 outs
+      bySndOutOut %= IM.insertWithKey (col "bySndOutOut") s0 `atEvery` outs
+
+      -- (Out,In): insert (Out[s0] <--> In[ins])
+      byFstOutIn %= IM.insertWithKey (col "byFstOutIn") s0 ins
+      bySndInOut %= IM.insertWithKey (col "bySndInOut") s0 `atEvery` ins
+
+    let dnm = sum ins
+    jointCount -= dnm
+    refinement.left %= UT.delete s0
+
+    ns <- use $ modelParams.symbolCounts
+    let adns = IM.insertWith (+) s0 dnm ins -- absolute differences
+    newSymbolCounts %= (\s adn n -> nothingIf (ns U.! s ==) (n+adn))
+                       `modifyEvery` adns
+      where
+        col str k a a' = error $ "DelLeft (" ++ str ++ "):\n"
+                         ++ "  collision: " ++ show (k,(a,a'))
 
   (DelRight s1 _) -> do
-    -- (Out,In): remove (Out[outs] <--> In[s1])
-    outs <- bySndInOut %%= deleteFind s1
-    byFstOutIn %= const (IM.delete s1) `atEvery` outs
-
     -- (In,In): remove (In[ins] <--> In[s1])
-    ins <- bySndInIn %%= deleteFind s1
-    byFstInIn %= const (IM.delete s1) `atEvery` ins
+    ins <- joints . bySndInIn %%= deleteFind s1
+    zoom joints $ do
+      byFstInIn %= const (IM.delete s1) `atEvery` ins
 
-    -- (Out,Out): insert (Out[outs] <--> Out[s1])
-    bySndOutOut %= IM.insertWithKey (col "bySndOutOut") s1 outs
-    byFstOutOut %= IM.insertWithKey (col "byFstOutOut") s1 `atEvery` outs
+      -- (Out,In): remove (Out[outs] <--> In[s1])
+      outs <- bySndInOut %%= deleteFind s1
+      byFstOutIn %= const (IM.delete s1) `atEvery` outs
 
-    -- (In,Out): insert (In[ins] <--> Out[s1])
-    bySndOutIn %= IM.insertWithKey (col "bySndOutIn") s1 ins
-    byFstInOut %= IM.insertWithKey (col "byFstInOut") s1 `atEvery` ins
-    where
-      col str k a a' = error $ "DelRight (" ++ str ++ "):\n"
-                       ++ "  collision: " ++ show (k,(a,a'))
+      -- (Out,Out): insert (Out[outs] <--> Out[s1])
+      bySndOutOut %= IM.insertWithKey (col "bySndOutOut") s1 outs
+      byFstOutOut %= IM.insertWithKey (col "byFstOutOut") s1 `atEvery` outs
+
+      -- (In,Out): insert (In[ins] <--> Out[s1])
+      bySndOutIn %= IM.insertWithKey (col "bySndOutIn") s1 ins
+      byFstInOut %= IM.insertWithKey (col "byFstInOut") s1 `atEvery` ins
+
+    let dnm = sum ins
+    jointCount -= dnm
+    refinement.right %= UT.delete s1
+
+    ns <- use $ modelParams.symbolCounts
+    let adns = IM.insertWith (+) s1 dnm ins -- absolute differences
+    newSymbolCounts %= (\s adn n -> nothingIf (ns U.! s ==) (n+adn))
+                       `modifyEvery` adns
+        where
+          col str k a a' = error $ "DelRight (" ++ str ++ "):\n"
+                           ++ "  collision: " ++ show (k,(a,a'))
 
   (Del2 s0 s1 n01) -> do
-    -- (In,Out): remove (In[s0] <--> Out[out0s])
-    out0s <- byFstInOut %%= deleteFind s0
-    bySndOutIn %= const (IM.delete s0) `atEvery` out0s
+    zoom joints $ do
+      -- (In,Out): remove (In[s0] <--> Out[out0s])
+      out0s <- byFstInOut %%= deleteFind s0
+      bySndOutIn %= const (IM.delete s0) `atEvery` out0s
 
-    -- (Out,In): remove (Out[out1s] <--> In[s1])
-    out1s <- bySndInOut %%= deleteFind s1
-    byFstOutIn %= const (IM.delete s1) `atEvery` out1s
+      -- (Out,In): remove (Out[out1s] <--> In[s1])
+      out1s <- bySndInOut %%= deleteFind s1
+      byFstOutIn %= const (IM.delete s1) `atEvery` out1s
 
-    -- (In,In): remove (In[s0] <--> In[s1])
-    byFstInIn %= IM.delete s0 -- singleton by definition
-    bySndInIn %= IM.delete s1 -- singleton by definition
+      -- (In,In): remove (In[s0] <--> In[s1])
+      byFstInIn %= IM.delete s0 -- singleton by definition
+      bySndInIn %= IM.delete s1 -- singleton by definition
 
-    let out0s' = IM.insertWithKey (col "s0-->s1") s1 n01 out0s
-        out1s' = IM.insertWithKey (col "s0<--s1") s0 n01 out1s
+      let out0s' = IM.insertWithKey (col "s0-->s1") s1 n01 out0s
+          out1s' = IM.insertWithKey (col "s0<--s1") s0 n01 out1s
 
-    -- (Out,Out): insert (Out[s0] <--> Out[out0s])
-    byFstOutOut %= IM.insertWithKey (col "byFstOutOut") s0 out0s'
-    bySndOutOut %= IM.insertWithKey (col "bySndOutOut") s0 `atEvery` out0s
-    -- (Out,Out): insert (Out[out1s] <--> Out[s1])
-    bySndOutOut %= IM.insertWithKey (col "bySndOutOut") s1 out1s'
-    byFstOutOut %= IM.insertWithKey (col "byFstOutOut") s1 `atEvery` out1s
-    where
-      col str k a a' = error $ "Del2 (" ++ str ++ "):\n"
-                       ++ "  collision: " ++ show (k,(a,a'))
+      -- (Out,Out): insert (Out[s0] <--> Out[out0s])
+      byFstOutOut %= IM.insertWithKey (col "byFstOutOut") s0 out0s'
+      bySndOutOut %= IM.insertWithKey (col "bySndOutOut") s0 `atEvery` out0s
+      -- (Out,Out): insert (Out[out1s] <--> Out[s1])
+      bySndOutOut %= IM.insertWithKey (col "bySndOutOut") s1 out1s'
+      byFstOutOut %= IM.insertWithKey (col "byFstOutOut") s1 `atEvery` out1s
+
+    jointCount -= n01
+    refinement.left %= UT.delete s0
+    refinement.right %= UT.delete s1
+
+    ns <- use $ modelParams.symbolCounts
+    n0' <- newSymbolCounts `uses` (IM.! s0)
+    n1' <- newSymbolCounts `uses` (IM.! s1)
+    let n0'' = n0' + n01
+        n1'' = n1' + n01
+        op0 | n0'' == (ns U.! s0) = IM.delete s0
+            | otherwise = IM.insert s0 n0''
+        op1 | n1'' == (ns U.! s1) = IM.delete s1
+            | otherwise = IM.insert s1 n1''
+    newSymbolCounts %= if s0 == s1 then IM.delete s0 else op0 . op1
+      where
+        col str k a a' = error $ "Del2 (" ++ str ++ "):\n"
+                         ++ "  collision: " ++ show (k,(a,a'))
 
 -- WHERE --
 deleteLookup :: Sym -> IntMap a -> (Maybe a, IntMap a)
@@ -646,6 +714,13 @@ atEvery f = IM.mergeWithKey g h id
     -- apply f to every value in the key map with an empty map
     h :: IntMap b -> IntMap (IntMap a)
     h = fmap (`f` IM.empty)
+
+-- | @(f `modifyEvery` bs) as@ applies @f b a@ to every element in @bs@
+-- inside the map @as@ (deletes if Nothing) and raises an error if a key
+-- of @bs@ is missing in @as@
+modifyEvery :: Show b => (Sym -> b -> a -> Maybe a) -> IntMap b -> IntMap a -> IntMap a
+modifyEvery f = IM.mergeWithKey f
+                (error . ("modifyEvery: missing keys: " ++) . show) id
 --
 
 -- optimize_ :: Int -> Int -> U.Vector Int -> IntMap (IntMap Int) ->

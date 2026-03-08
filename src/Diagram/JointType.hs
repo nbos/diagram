@@ -1,8 +1,13 @@
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
-{-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE InstanceSigs, DeriveGeneric, DeriveAnyClass #-}
 
 module Diagram.JointType (module Diagram.JointType, Sym) where
 
+import GHC.Generics (Generic)
+import Control.Lens hiding (both)
+
+import Data.Hashable
 import Data.Tuple.Extra
 import qualified Data.List.Extra as L
 import qualified Data.Map.Strict as M
@@ -20,18 +25,19 @@ import Diagram.Util
 
 -- | A joint of unions
 data JointType = JT {
-  left :: !UnionType, -- s0s
-  right :: !UnionType -- s1s
-} deriving (Eq)
+  _left :: !UnionType, -- s0s
+  _right :: !UnionType -- s1s
+} deriving (Eq,Generic,Hashable)
+makeLenses ''JointType
 
 instance Show JointType where
   show :: JointType -> String
   show = ("fromLists " ++) . show . toLists
 
 size :: JointType -> (Int, Int)
-size (JT u0 u1) = (UT.length u0, UT.length u1)
+size (JT u0 u1) = (UT.size u0, UT.size u1)
 
-fromJoints :: Joints -> JointType
+fromJoints :: Joints a -> JointType
 fromJoints = uncurry JT . both UT.fromList . unzip . M.keys
 
 fromLists :: ([Sym],[Sym]) -> JointType
@@ -55,7 +61,7 @@ bot = JT UT.bot UT.bot
 -- | Subtype relation (partial order)
 leq :: JointType -> JointType -> Bool
 leq (JT u0 u1) (JT u0' u1') =
-  UT.length u1 <= UT.length u1' -- short-circuit
+  UT.size u1 <= UT.size u1' -- short-circuit
   && UT.leq u0 u0'
   && UT.leq u1 u1'
 
@@ -84,8 +90,8 @@ refine (JT u0 u1) bv
                      ++ show len ++ " should be " ++ show (n0 + n1)
   | otherwise = JT (UT.refine u0 bv0) (UT.refine u1 bv1)
   where
-    n0 = UT.length u0
-    n1 = UT.length u1
+    n0 = UT.size u0
+    n1 = UT.size u1
     len = BV.length bv
     (bv0,bv1) = BV.splitAt n0 bv
 
@@ -122,9 +128,9 @@ err = error . ("JointType." ++)
 refineLen :: JointType -> Int
 refineLen (JT u0 u1) = UT.refineLen u0 + UT.refineLen u1
 
--- | Number of different joints covered by the type
+-- | O(1) Number of different joints covered by the type
 variety :: JointType -> Int
-variety (JT u0 u1) = UT.length u0 * UT.length u1
+variety (JT u0 u1) = UT.size u0 * UT.size u1
 
 -- | k log(n0*n1)
 resolutionInfo :: Int -> JointType -> Double
