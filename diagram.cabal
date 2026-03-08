@@ -71,7 +71,6 @@ executable diagram
                       Diagram.UnionType
                       Diagram.Refinement
                       Diagram.Information
-                      Diagram.TrainJointType
                       Diagram.Util
 
     -- LANGUAGE extensions used by modules in this package.

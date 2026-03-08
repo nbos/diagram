@@ -18,7 +18,6 @@ import qualified Streaming.ByteString as Q
 
 import qualified Diagram.Joints as Jts
 import qualified Diagram.JointType as JT
-import qualified Diagram.TrainJointType as TJT
 import qualified Diagram.Refinement as Refinement
 import Diagram.Progress (withPB)
 
@@ -65,58 +64,61 @@ main = do
               withPB sz "Counting joints" $
               Q.unpack $ Q.fromHandle h
 
-  let tjt = TJT.fromJoints jts
+  let jt = JT.fromJoints jts
       byFst = Jts.byFstSized jts
       bySnd = Jts.bySndSized 256 jts
 
   let go :: RandT StdGen IO ()
       go = do
-        ((tjt',rtjt),rjts) <- first (TJT.refine tjt)
-                           <$> Refinement.genRefinement byFst bySnd
+        (rjt,rjts_A) <- Refinement.genRefinement byFst bySnd
+        let jts' = jts M.\\ rjts_A
+            rjts_B = M.filterWithKey (\k _ -> k `JT.member` rjt) jts
+
         lift $ putStrLn $
           "generated refinement type with size "
-          ++ show (JT.size $ TJT.jointType rtjt)
-          ++ " from "  ++ show (JT.size $ TJT.jointType tjt)
-          ++ " covering " ++ show (Jts.size $ TJT.joints rtjt)
-          ++ " joints out of " ++ show (Jts.size $ TJT.joints tjt)
+          ++ show (JT.size rjt)
+          ++ " from "  ++ show (JT.size jt)
+          ++ " covering " ++ show (Jts.size rjts_B)
+          ++ " joints out of " ++ show (Jts.size jts)
           ++ " ("  ++ show
-          (round @_ @Int $ 100.0 * fromIntegral (Jts.size $ TJT.joints rtjt)
-            / fromIntegral @_ @Double (Jts.size $ TJT.joints tjt))
+          (round @_ @Int $ 100.0 * fromIntegral (Jts.size rjts_B)
+            / fromIntegral @_ @Double (Jts.size jts))
           ++ "%)"
 
         lift $ putStr "refinement is "
-        if TJT.isLUB rtjt
+        if rjt == JT.fromJoints rjts_B
           then lift $ putStrLn $ green "LUB" ++ " of its joints"
           else do lift $ putStrLn $ red "not LUB" ++ " of its joints"
-                  lift $ putStrLn $ "rtjt: " ++ show rtjt
+                  lift $ putStrLn $ "rtjt: " ++ show (rjt,rjts_B)
                   error "LUB error"
 
         lift $ putStr "refinement is "
-        if TJT.jointType rtjt `JT.leq` TJT.jointType tjt'
+        if rjt `JT.leq` jt
           then lift $ putStrLn $ green "subtype" ++ " of its parent"
           else do lift $ putStrLn $ red "not subtype" ++ " of its parent"
-                  lift $ putStrLn $ "tjt: " ++ show tjt
-                    ++ "\ntjt': " ++ show tjt'
-                    ++ "\nrtjt: " ++ show rtjt
+                  lift $ putStrLn $ "tjt: " ++ show (jt,jts)
+                    ++ "\ntjt': " ++ show (jt,jts')
+                    ++ "\nrtjt: " ++ show (rjt,rjts_B)
                   error "subtype error"
 
         lift $ putStr "split "
-        if TJT.joints tjt == (TJT.joints rtjt `Jts.union` TJT.joints tjt')
+        if jts == (rjts_B `Jts.union` jts')
           then lift $ putStrLn $ green "preserves" ++ " all joints"
           else do lift $ putStrLn $ red "does not preserve" ++ " all joints"
-                  lift $ putStrLn $ "tjt: " ++ show tjt
-                    ++ "\ntjt': " ++ show tjt'
-                    ++ "\nrtjt: " ++ show rtjt
+                  lift $ putStrLn $ "tjt: " ++ show (jt,jts)
+                    ++ "\ntjt': " ++ show (jt,jts')
+                    ++ "\nrtjt: " ++ show (rjt,rjts_B)
                   error "joints split error"
 
         lift $ putStr "returned joints "
-        if M.keys (TJT.joints rtjt) == M.keys rjts
+        if M.keys rjts_B == M.keys rjts_A
           then lift $ putStrLn $ green "match" ++ " joints covered by the refinement"
           else do lift $ putStrLn $ red "don't match" ++ " joints covered by the refinement"
-                  lift $ putStrLn $ "rtjt: " ++ show (M.keys (TJT.joints rtjt))
-                    ++ "\nrjts: " ++ show (M.keys rjts)
+                  lift $ putStrLn $ "rtjt: " ++ show (M.keys rjts_B)
+                    ++ "\nrjts: " ++ show (M.keys rjts_A)
                   error "joints coverage error"
-        go
+
+        go -- loop
 
   evalRandT go stdGen
 
