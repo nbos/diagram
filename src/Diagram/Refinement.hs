@@ -24,6 +24,8 @@ import qualified Data.Vector.Unboxed as U
 import Diagram.Primitive
 import Diagram.Information
 
+import Diagram.Joints (Joints,Joints2(J2),Joints2S(J2S))
+import qualified Diagram.Joints as Jts
 import Diagram.UnionType (Sym)
 import qualified Diagram.UnionType as UT
 import Diagram.JointType (JointType(..))
@@ -42,8 +44,7 @@ err = error . ("Refinement." ++)
 -- starting with the empty refinement, ending with the same as input
 --
 -- >>> import qualified Diagram.Joints as Jts
--- >>> uncurry enumRefinements $
---     Jts.byFstSized &&& Jts.bySndSized 256 $ Jts.fromList [1,2,3,2]
+-- >>> enumRefinements $ Jts.sized $ Jts.doubleIndex 256 $ Jts.fromList [1,2,3,2]
 -- [ fromLists ([],[])
 -- , fromLists ([3],[2])
 -- , fromLists ([2],[3])
@@ -52,9 +53,8 @@ err = error . ("Refinement." ++)
 -- , fromLists ([1,3],[2])
 -- , fromLists ([1,2],[2,3])
 -- , fromLists ([1,2,3],[2,3]) ]
-enumRefinements :: forall a. Map Sym (Map Sym a) ->
-  Map Sym (Map Sym a) -> [JointType]
-enumRefinements byFst0 bySnd0 = concatMap givenU0 u0s
+enumRefinements :: forall a. Joints2S a -> [JointType]
+enumRefinements (J2S byFst0 bySnd0) = concatMap givenU0 u0s
   where -- (enumerate u0 powerset, then hitting set enum)
     u0s :: [[(Sym, Map Sym a)]]
     u0s = combs $ M.toAscList byFst0 -- deconstruct, select
@@ -107,15 +107,14 @@ makeLenses ''GenerationState
 -- ways. Assumes each map maps pairs of symbols to the same values,
 -- i.e. if s0 -> s1 -> a01 then s1 -> s0 -> a01, otherwise the returned
 -- map of joints will have unpredicatble values.
-genRefinement :: (MonadRandom m, PrimMonad m) => Map Sym (Map Sym a) ->
-                 Map Sym (Map Sym a) -> m (JointType, Map (Sym,Sym) a)
+genRefinement :: (MonadRandom m, PrimMonad m) =>
+                 Joints2S a -> m (JointType, Joints a)
 genRefinement = genRefinementWith 0.5
 
 -- | Generate a random refinement, given a sampling probability
 genRefinementWith :: forall m a. (MonadRandom m, PrimMonad m) =>
-  Double -> Map Sym (Map Sym a) -> Map Sym (Map Sym a) -> m ( JointType
-                                                            , Map (Sym,Sym) a )
-genRefinementWith r byFst0 bySnd0 =
+  Double -> Joints2S a -> m (JointType, Joints a)
+genRefinementWith r (J2S byFst0 bySnd0) =
   evalStateT go $ GenerationState
   (([],) <$> byFst0)
   (([],) <$> bySnd0) IS.empty IS.empty M.empty
@@ -291,16 +290,15 @@ negMutations = do
 -- STATE INITIALIZATION --
 --------------------------
 
-initRefinementState :: ModelParams -> IntMap (IntMap Int) -> IntMap (IntMap Int) ->
-                       JointType -> RefinementState
-initRefinementState mdl@(Params _ _ ns) byFst bySnd rjt =
+initRefinementState :: ModelParams -> Joints2 Int -> JointType -> RefinementState
+initRefinementState mdl@(Params _ _ ns) jts2 rjt =
   RefinementState { _modelParams = mdl
                   , _jointCount = nm
                   , _refinement = rjt
                   , _newSymbolCounts = ns'
                   , _joints = coverage }
   where
-    coverage = initCoverageState byFst bySnd rjt
+    coverage = initCoverageState jts2 rjt
     nm = sum $ snd <$> byFstInInL
     byFstInInL = byFstToAscList $ coverage ^. byFstInIn
     ns' = IM.mapWithKey (\s dn -> (ns U.! s) - dn ) $
@@ -308,9 +306,8 @@ initRefinementState mdl@(Params _ _ ns) byFst bySnd rjt =
             foldr (\((s0,s1),n01) l -> (s0,n01):(s1,n01):l)
             [] byFstInInL
 
-initCoverageState :: IntMap (IntMap Int) -> IntMap (IntMap Int) ->
-                     JointType -> CoverageState
-initCoverageState byFst bySnd (JT u0 u1) =
+initCoverageState :: Joints2 Int -> JointType -> CoverageState
+initCoverageState (J2 byFst bySnd) (JT u0 u1) =
   CoverageState { _byFstInIn   = byFstInIn_
                 , _byFstInOut  = byFstInOut_
                 , _byFstOutIn  = byFstOutIn_

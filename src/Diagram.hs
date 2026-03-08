@@ -58,19 +58,19 @@ main = do
   putStr "Using seed: " >> print seed
 
   sz <- fromInteger @Int <$> hFileSize h
-  (jts, _) <- Jts.fromStream $
+  (jts, _) <- Jts.fromStream $ -- Map (Sym,Sym) a
               S.zip (S.enumFrom 0) $
               S.map fromEnum $
               withPB sz "Counting joints" $
               Q.unpack $ Q.fromHandle h
 
   let jt = JT.fromJoints jts
-      byFst = Jts.byFstSized jts
-      bySnd = Jts.bySndSized 256 jts
+      jts2 = Jts.doubleIndex 256 jts -- IntMap (IntMap a)
+      jts2S = Jts.sized jts2 -- Map Sym (Map Sym a)
 
   let go :: RandT StdGen IO ()
       go = do
-        (rjt,rjts_A) <- Refinement.genRefinement byFst bySnd
+        (rjt,rjts_A) <- Refinement.genRefinement jts2S
         let jts' = jts M.\\ rjts_A
             rjts_B = M.filterWithKey (\k _ -> k `JT.member` rjt) jts
 

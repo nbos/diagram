@@ -29,35 +29,36 @@ import qualified Diagram.Doubly as D
 import Diagram.Util
 
 -- | Count and location of each candidate/joint symbol in the string
-type Joints = Map (Sym,Sym) (Int, IntSet)
+type Joints a = Map (Sym,Sym) a
 
-size :: Joints -> Int
+size :: Joints a -> Int
 size = M.size
 
 ------------------
 -- CONSTRUCTION --
 ------------------
 
-fromList :: [Sym] -> Joints
+fromList :: [Sym] -> Joints (Int, IntSet)
 fromList = fst . runIdentity . fromStream . S.each . zip [0..]
 
 type Doubly s = D.Doubly MVector s Sym
 -- | Construction using the indices of the doubly-linked list
-fromDoubly :: PrimMonad m => Doubly (PrimState m) -> m Joints
+fromDoubly :: PrimMonad m => Doubly (PrimState m) -> m (Joints (Int, IntSet))
 fromDoubly = fmap fst
              . fromStream_ M.empty
              . D.streamWithKey
 
-fromStream :: Monad m => Stream (Of (Index,Sym)) m r -> m (Joints, r)
+fromStream :: Monad m => Stream (Of (Index,Sym)) m r -> m (Joints (Int, IntSet), r)
 fromStream = fromStream_ M.empty
 
-fromStream_ :: Monad m => Joints -> Stream (Of (Index,Sym)) m r -> m (Joints, r)
+fromStream_ :: Monad m => Joints (Int, IntSet) ->
+               Stream (Of (Index,Sym)) m r -> m (Joints (Int, IntSet), r)
 fromStream_ m0 iss0 = (S.next iss0 >>=) $ \case
   Left r -> return (m0, r)
   Right (i0s0,iss0') -> fromStreamOdd_ i0s0 m0 iss0'
 
-fromStreamOdd_ :: Monad m => (Index, Sym) -> Joints ->
-                  Stream (Of (Index, Sym)) m r -> m (Joints, r)
+fromStreamOdd_ :: Monad m => (Index, Sym) -> Joints (Int, IntSet) ->
+                  Stream (Of (Index, Sym)) m r -> m (Joints (Int, IntSet), r)
 fromStreamOdd_ (i0,s0) !m iss = (S.next iss >>=) $ \case
   Left r -> return (m,r) -- end
   Right (i1s1@(_,s1),ss') -> (S.next ss' >>=) $ \case
@@ -71,22 +72,37 @@ fromStreamOdd_ (i0,s0) !m iss = (S.next iss >>=) $ \case
 -- OPERATIONS --
 ----------------
 
-insert1 :: Joints -> (Sym,Sym) -> Index -> Joints
+insert1 :: Joints (Int, IntSet) -> (Sym,Sym) -> Index -> Joints (Int, IntSet)
 insert1 jts s0s1 i = M.insertWith f s0s1 (1, IS.singleton i) jts
   where f _ (n,is) = (n + 1, IS.insert i is)
 
 -- | The union of two sets of counts + indices
-union :: Joints -> Joints -> Joints
+union :: Joints (Int, IntSet) -> Joints (Int, IntSet) -> Joints (Int, IntSet)
 union = M.unionWith $ \(a,s) (b,t) -> (a + b, IS.union s t)
 
 -- | Subtract the counts + indices in the second map from the first map
-difference :: Joints -> Joints -> Joints
+difference :: Joints (Int, IntSet) -> Joints (Int, IntSet) -> Joints (Int, IntSet)
 difference = M.mergeWithKey (const f) id id
   where f (a,s) (b,t) = nothingIf ((== 0) . fst) (a - b, IS.difference s t)
 
 -----------------
 -- RE-INDEXING --
 -----------------
+
+data Joints2 a = J2
+  { byFst2 :: !(IntMap (IntMap a))
+  , bySnd2 :: !(IntMap (IntMap a)) }
+
+-- | Double up the index given the number of symbols (max s1 + 1)
+doubleIndex :: Int -> Joints a -> Joints2 a
+doubleIndex m jts = J2 (byFst jts) (bySnd m jts)
+
+data Joints2S a = J2S
+  { byFst2S :: !(Map Sym (Map Sym a))
+  , bySnd2S :: !(Map Sym (Map Sym a)) }
+
+sized :: Joints2 a -> Joints2S a
+sized jts2 = J2S (im2m $ byFst2 jts2) (im2m $ bySnd2 jts2)
 
 -- | Generic, given a `fromDistinctAscList` function
 curryWith :: (forall a. [(Int,a)] -> m a) -> Map (Sym,Sym) s -> m (m s)
@@ -141,7 +157,7 @@ im2m = M.fromDistinctAscList
 
 -- | Re-compute the joint counts + locations to check the validity of a
 -- given joints map. Throws an error if they differ.
-validate :: PrimMonad m => Joints -> Doubly (PrimState m) -> a -> m a
+validate :: PrimMonad m => Joints (Int, IntSet) -> Doubly (PrimState m) -> a -> m a
 validate cdts ss a = do
   cdtsRef <- fromDoubly ss
   when (cdts /= cdtsRef) $
