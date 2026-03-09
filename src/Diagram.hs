@@ -18,7 +18,7 @@ import qualified Streaming.ByteString as Q
 
 import qualified Diagram.Joints as Jts
 import qualified Diagram.JointType as JT
-import qualified Diagram.Refinement as Refinement
+import qualified Diagram.Refinement as JTR
 import Diagram.Progress (withPB)
 
 data Options = Options
@@ -70,53 +70,15 @@ main = do
 
   let go :: RandT StdGen IO ()
       go = do
-        (rjt,rjts_A) <- Refinement.genRefinement jts2S
-        let jts' = jts M.\\ rjts_A
-            rjts_B = M.filterWithKey (\k _ -> k `JT.member` rjt) jts
+        (rjt,rjts) <- JTR.genRefinement jts2S
 
-        lift $ putStrLn $
-          "generated refinement type with size "
-          ++ show (JT.size rjt)
-          ++ " from "  ++ show (JT.size jt)
-          ++ " covering " ++ show (Jts.size rjts_B)
-          ++ " joints out of " ++ show (Jts.size jts)
-          ++ " ("  ++ show
-          (round @_ @Int $ 100.0 * fromIntegral (Jts.size rjts_B)
-            / fromIntegral @_ @Double (Jts.size jts))
-          ++ "%)"
-
-        lift $ putStr "refinement is "
-        if rjt == JT.fromJoints rjts_B
-          then lift $ putStrLn $ green "LUB" ++ " of its joints"
-          else do lift $ putStrLn $ red "not LUB" ++ " of its joints"
-                  lift $ putStrLn $ "rtjt: " ++ show (rjt,rjts_B)
-                  error "LUB error"
-
-        lift $ putStr "refinement is "
-        if rjt `JT.leq` jt
-          then lift $ putStrLn $ green "subtype" ++ " of its parent"
-          else do lift $ putStrLn $ red "not subtype" ++ " of its parent"
-                  lift $ putStrLn $ "tjt: " ++ show (jt,jts)
-                    ++ "\ntjt': " ++ show (jt,jts')
-                    ++ "\nrtjt: " ++ show (rjt,rjts_B)
-                  error "subtype error"
-
-        lift $ putStr "split "
-        if jts == (rjts_B `Jts.union` jts')
-          then lift $ putStrLn $ green "preserves" ++ " all joints"
-          else do lift $ putStrLn $ red "does not preserve" ++ " all joints"
-                  lift $ putStrLn $ "tjt: " ++ show (jt,jts)
-                    ++ "\ntjt': " ++ show (jt,jts')
-                    ++ "\nrtjt: " ++ show (rjt,rjts_B)
-                  error "joints split error"
-
-        lift $ putStr "returned joints "
-        if M.keys rjts_B == M.keys rjts_A
-          then lift $ putStrLn $ green "match" ++ " joints covered by the refinement"
-          else do lift $ putStrLn $ red "don't match" ++ " joints covered by the refinement"
-                  lift $ putStrLn $ "rtjt: " ++ show (M.keys rjts_B)
-                    ++ "\nrjts: " ++ show (M.keys rjts_A)
-                  error "joints coverage error"
+        -- report stats, verify properties/integrity
+        JTR.printInfo (jt,jts) (rjt,rjts)
+        JTR.printLUB rjt rjts
+        JTR.printSubtyping (jt,jts) (rjt,rjts)
+        JTR.printConservation (jt,jts) (rjt,rjts)
+        JTR.printCoverage jts (rjt,rjts)
+        --
 
         go -- loop
 

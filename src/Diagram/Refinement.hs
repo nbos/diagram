@@ -25,6 +25,7 @@ import Diagram.Primitive
 import Diagram.Information
 
 import Diagram.Joints (Joints,Joints2(J2),Joints2S(J2S))
+import qualified Diagram.Joints as Jts
 import Diagram.UnionType (Sym)
 import qualified Diagram.UnionType as UT
 import Diagram.JointType (JointType(..),left,right)
@@ -268,6 +269,32 @@ hillClimb = (stepHillClimb >>=) $ \case
 --   if null muts then refinement `uses` Just -- end
 --     else mapM_ (appMutation . snd) muts -- step
 --          >> return Nothing
+
+-- optimize_ :: Int -> Int -> U.Vector Int -> IntMap (IntMap Int) ->
+--              IntMap (IntMap Int) -> JointType -> JointType
+-- optimize_ m bigN ns byFst_0 bySnd_0 (JT ru0_0 ru1_0) = undefined
+--   where
+--     mpN = m + bigN
+
+--     -- from Diagram.Model ------------------------------------
+--     mLen_ = eliasCodeLen . (+(-256))
+--     mDelta_ = mLen_ (m+1) - mLen_ m
+--     tsLen_ = m*m - m - 65280
+--     tsLen_' = (m+1)*(m+1) - (m+1) - 65280
+--     tsDelta_ = tsLen_' - tsLen_
+--     bigNDelta_ k = eliasCodeLen (bigN - k) - eliasCodeLen bigN
+--     mtnDelta k = mDelta_ + tsDelta_ + bigNDelta_ k
+--     ----------------------------------------------------------
+
+--     logm = ilog m -- log(m)
+--     logFactNpmm1 = logFact $ mpN - 1 -- log((N + m - 1)!)
+--     logFactNpmmnm_0 = logFact $ mpN - nm_0 -- log((N + m - nm)!)
+--     nm_0 = undefined -- sum $ sum <$> byFstInIn_0
+
+--     logFactnm_0 = logFact nm_0
+
+--     vm_0 = UT.length ru0_0 + UT.length ru1_0
+--     rInfo_0 = fromIntegral nm_0 * ilog vm_0
 
 minMutation :: Monad m => RefinementT m (Double, Mutation)
 minMutation = do
@@ -723,28 +750,72 @@ modifyEvery f = IM.mergeWithKey f
                 (error . ("modifyEvery: missing keys: " ++) . show) id
 --
 
--- optimize_ :: Int -> Int -> U.Vector Int -> IntMap (IntMap Int) ->
---              IntMap (IntMap Int) -> JointType -> JointType
--- optimize_ m bigN ns byFst_0 bySnd_0 (JT ru0_0 ru1_0) = undefined
---   where
---     mpN = m + bigN
+-----------
+-- STATS --
+-----------
 
---     -- from Diagram.Model ------------------------------------
---     mLen_ = eliasCodeLen . (+(-256))
---     mDelta_ = mLen_ (m+1) - mLen_ m
---     tsLen_ = m*m - m - 65280
---     tsLen_' = (m+1)*(m+1) - (m+1) - 65280
---     tsDelta_ = tsLen_' - tsLen_
---     bigNDelta_ k = eliasCodeLen (bigN - k) - eliasCodeLen bigN
---     mtnDelta k = mDelta_ + tsDelta_ + bigNDelta_ k
---     ----------------------------------------------------------
+printInfo :: MonadIO m => (JointType, Map (Sym,Sym) a) ->
+             (JointType, Map (Sym,Sym) b) -> m ()
+printInfo (jt,jts) (rjt,rjts) = liftIO $ putStrLn $
+  "generated refinement type with size "
+  ++ show (JT.size rjt)
+  ++ " from "  ++ show (JT.size jt)
+  ++ " covering " ++ show (Jts.size rjts)
+  ++ " joints out of " ++ show (Jts.size jts)
+  ++ " ("  ++ show
+  (round @_ @Int $ 100.0 * fromIntegral (Jts.size rjts)
+    / fromIntegral @_ @Double (Jts.size jts))
+  ++ "%)"
 
---     logm = ilog m -- log(m)
---     logFactNpmm1 = logFact $ mpN - 1 -- log((N + m - 1)!)
---     logFactNpmmnm_0 = logFact $ mpN - nm_0 -- log((N + m - nm)!)
---     nm_0 = undefined -- sum $ sum <$> byFstInIn_0
+printLUB :: MonadIO m => JointType -> Map (Sym,Sym) a -> m ()
+printLUB jt jts = liftIO $ do
+  putStr "refinement is "
+  if jt == JT.fromJoints jts
+    then putStrLn $ green "LUB" ++ " of its joints"
+    else do putStrLn $ red "not LUB" ++ " of its joints"
+            putStrLn $ "rtjt: " ++ show (jt, void jts)
+            error "LUB error"
 
---     logFactnm_0 = logFact nm_0
+printSubtyping :: MonadIO m => (JointType, Map (Sym,Sym) a) ->
+                  (JointType, Map (Sym,Sym) b) -> m ()
+printSubtyping (jt,jts) (rjt,rjts) = liftIO $ do
+  let jts' = jts M.\\ rjts
+  putStr "refinement is "
+  if rjt `JT.leq` jt
+    then putStrLn $ green "subtype" ++ " of its parent"
+    else do putStrLn $ red "not subtype" ++ " of its parent"
+            putStrLn $ "tjt: " ++ show (jt, void jts)
+              ++ "\ntjt': " ++ show (jt, void jts')
+              ++ "\nrtjt: " ++ show (rjt, void rjts)
+            error "subtype error"
 
---     vm_0 = UT.length ru0_0 + UT.length ru1_0
---     rInfo_0 = fromIntegral nm_0 * ilog vm_0
+printConservation :: MonadIO m => (JointType, Map (Sym,Sym) a) ->
+                     (JointType, Map (Sym,Sym) a) -> m ()
+printConservation (jt,jts) (rjt,rjts) = liftIO $ do
+  let jts' = jts M.\\ rjts
+  putStr "split " -- TODO: check disjointness too?
+  if void jts == (void rjts `M.union` void jts')
+    then putStrLn $ green "preserves" ++ " all joints"
+    else do putStrLn $ red "does not preserve" ++ " all joints"
+            putStrLn $ "tjt: " ++ show (jt, void jts)
+              ++ "\ntjt': " ++ show (jt, void jts')
+              ++ "\nrtjt: " ++ show (rjt, void rjts)
+            error "joints split error"
+
+printCoverage :: MonadIO m => Map (Sym,Sym) a -> (JointType, Map (Sym,Sym) a) -> m ()
+printCoverage jts (rjt,rjts) = liftIO $ do
+  let rjtsVerif = M.filterWithKey (\k _ -> k `JT.member` rjt) jts
+  putStr "returned joints "
+  if M.keys rjts == M.keys rjtsVerif
+    then putStrLn $ green "match" ++ " joints covered by the refinement"
+    else do putStrLn $ red "don't match" ++ " joints covered by the refinement"
+            putStrLn $ "rtjt: " ++ show (M.keys rjts)
+              ++ "\nrjts: " ++ show (M.keys rjts)
+              ++ "\nrjtsVerif: " ++ show (M.keys rjtsVerif)
+            error "joints coverage error"
+
+red :: String -> String
+red s = "\ESC[31mError:" ++ s ++ "\ESC[0m"
+
+green :: String -> String
+green s = "\ESC[32m" ++ s ++ "\ESC[0m"
