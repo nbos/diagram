@@ -2,7 +2,7 @@
 module Diagram.Model (module Diagram.Model) where
 
 import Control.Monad
-import Control.Monad.Primitive (PrimMonad)
+import Control.Monad.Primitive (PrimMonad,PrimState)
 
 import Data.Word
 import Data.Map.Strict (Map)
@@ -23,11 +23,11 @@ import Diagram.Information
 
 import Diagram.Util
 
-data Model m = Model {
-  types :: !(BoxedVec m JointType), -- :: [m - 256]JointType
+data Model s = Model {
+  types :: !(BoxedVec s JointType), -- :: [m - 256]JointType
   stringLen :: !Int,
-  nCounts :: !(UnboxedVec m Int), -- [m]Int
-  kCounts :: !(UnboxedVec m Int)  -- [m - 256]Int
+  nCounts :: !(UnboxedVec s Int), -- [m]Int
+  kCounts :: !(UnboxedVec s Int)  -- [m - 256]Int
 } -- probably should have been kept pure
 
 numSymbols :: Model m -> Int
@@ -38,7 +38,7 @@ numSymbols = (256+) . Dyn.length . types
 ------------------
 
 -- | Construction from bytes
-emptyFromAtoms :: PrimMonad m => Stream (Of Word8) m r -> m (Model m, r)
+emptyFromAtoms :: PrimMonad m => Stream (Of Word8) m r -> m (Model (PrimState m), r)
 emptyFromAtoms ss = do
   ts <- Dyn.new
   (nv,r) <- countAtoms ss
@@ -79,7 +79,7 @@ countJointsM_ m0 ss0 = (S.next ss0 >>=) $ \case
 -- INFORMATION --
 -----------------
 
-codeLen :: PrimMonad m => Model m -> m Int
+codeLen :: PrimMonad m => Model (PrimState m) -> m Int
 codeLen mdl = (ml + tl + bl + nl +) <$> liftA2 (+) sl rl
   where ml = mLen mdl
         tl = tsLen mdl
@@ -88,7 +88,7 @@ codeLen mdl = (ml + tl + bl + nl +) <$> liftA2 (+) sl rl
         sl = ssLen mdl
         rl = rsLen mdl
 
-infoLoss :: PrimMonad m => Model m -> Int -> JointType ->
+infoLoss :: PrimMonad m => Model (PrimState m) -> Int -> JointType ->
             Map (Sym,Sym) Int -> m Double
 infoLoss mdl k jt jts = (ml + tl + bl + rl +) <$> nsl
   where ml = fromIntegral $ mDelta mdl
@@ -103,7 +103,7 @@ mtnDelta mdl k = ml + tl + bl
         tl = tsDelta mdl
         bl = bigNDelta mdl k
 
-nsrInfoLoss :: PrimMonad m => Model m -> Int -> JointType ->
+nsrInfoLoss :: PrimMonad m => Model (PrimState m) -> Int -> JointType ->
                Map (Sym,Sym) Int -> m Double
 nsrInfoLoss mdl k jt jts = (rl +) <$> nsl
   where nsl = nssInfoDelta mdl k jts -- n * s simplifies
@@ -191,10 +191,10 @@ nsDelta = ceiling .: nsInfoDelta
 
 -- ss :: String
 
-ssLen :: PrimMonad m => Model m -> m Int
+ssLen :: PrimMonad m => Model (PrimState m) -> m Int
 ssLen = fmap ceiling . ssInfo
 
-ssInfo :: PrimMonad m => Model m -> m Double
+ssInfo :: PrimMonad m => Model (PrimState m) -> m Double
 ssInfo (Model _ bigN ns _)
   | bigN <= 1 = return 0
   | otherwise = do
@@ -216,7 +216,7 @@ ssInfoDelta_ bigN dns k
 
 -- | Given the model and counts of joints covered by a JointType, return
 -- the before/after values of the affected n-counts (unlabeled)
-deltaCounts :: PrimMonad m => Model m -> Map (Sym,Sym) Int -> m [(Int,Int)]
+deltaCounts :: PrimMonad m => Model (PrimState m) -> Map (Sym,Sym) Int -> m [(Int,Int)]
 deltaCounts (Model _ _ ns _) jtnm =
   forM (IM.toAscList im) $ \(s,d) ->
     Dyn.read ns s >>= \n -> return (n, n-d)
@@ -228,7 +228,7 @@ deltaCounts (Model _ _ ns _) jtnm =
 
 -- | Given the model, count of the introduced JointType and counts of
 -- covered Joints
-ssInfoDelta :: PrimMonad m => Model m -> Int -> Map (Sym,Sym) Int -> m Double
+ssInfoDelta :: PrimMonad m => Model (PrimState m) -> Int -> Map (Sym,Sym) Int -> m Double
 ssInfoDelta mdl k jtnm = flip (ssInfoDelta_ bigN) k
                          <$> deltaCounts mdl jtnm
   where bigN = stringLen mdl
@@ -244,7 +244,7 @@ nssInfoDelta_ m bigN dns k = log2e * ( iLogFactorial (bigN + m - k)
                                        - iLogFactorial k )
   where (ns,ns') = unzip dns
 
-nssInfoDelta :: PrimMonad m => Model m -> Int -> Map (Sym,Sym) Int -> m Double
+nssInfoDelta :: PrimMonad m => Model (PrimState m) -> Int -> Map (Sym,Sym) Int -> m Double
 nssInfoDelta mdl k jtnm = flip (nssInfoDelta_ m bigN) k
                           <$> deltaCounts mdl jtnm
   where m = numSymbols mdl
@@ -252,7 +252,7 @@ nssInfoDelta mdl k jtnm = flip (nssInfoDelta_ m bigN) k
 
 -- rs :: Resolutions
 
-rsLen :: PrimMonad m => Model m -> m Int
+rsLen :: PrimMonad m => Model (PrimState m) -> m Int
 rsLen (Model ts _ _ mks) = do
   vs <- fromIntegral . JT.variety <<$>> Dyn.toList ts
   ks <- fromIntegral <<$>> Dyn.toList mks
@@ -260,7 +260,7 @@ rsLen (Model ts _ _ mks) = do
     k * ceiling (log2 v) -- ceiling at each b.c. they can't be encoded
                          -- together (earlier k's depend on later k's)
 
-rsInfo :: PrimMonad m => Model m -> m Double
+rsInfo :: PrimMonad m => Model (PrimState m) -> m Double
 rsInfo = fmap fromIntegral . rsLen
 
 rsInfoDelta_ :: Int -> Int -> Double

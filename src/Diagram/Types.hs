@@ -4,7 +4,7 @@ module Diagram.Types (module Diagram.Types) where
 
 import Prelude hiding (length,read)
 import Control.Monad
-import Control.Monad.Primitive (PrimMonad)
+import Control.Monad.Primitive (PrimMonad,PrimState)
 
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IS
@@ -18,22 +18,22 @@ import Diagram.Information
 import Diagram.Util
 
 -- | Forest of joint-of-unions type refinements
-data Types m = Types {
-  parents    :: !(BoxedVec m (Maybe Sym)),
-  children   :: !(BoxedVec m IntSet),
-  jointTypes :: !(BoxedVec m JointType)
+data Types s = Types {
+  parents    :: !(BoxedVec s (Maybe Sym)),
+  children   :: !(BoxedVec s IntSet),
+  jointTypes :: !(BoxedVec s JointType)
 }
 
-length :: PrimMonad m => Types m -> Int
+length :: Types s -> Int
 length (Types _ _ ts) = Dyn.length ts
 
-parentOf :: PrimMonad m => Types m -> Sym -> m (Maybe Sym)
+parentOf :: PrimMonad m => Types (PrimState m) -> Sym -> m (Maybe Sym)
 parentOf (Types mps _ _) = Dyn.read mps . (+(-256))
 
-childrenOf :: PrimMonad m => Types m -> Sym -> m IntSet
+childrenOf :: PrimMonad m => Types (PrimState m) -> Sym -> m IntSet
 childrenOf (Types _ css _) = Dyn.read css . (+(-256))
 
-read :: PrimMonad m => Types m -> Sym -> m JointType
+read :: PrimMonad m => Types (PrimState m) -> Sym -> m JointType
 read (Types _ _ ts) = Dyn.read ts . (+(-256))
 
 ------------------
@@ -41,19 +41,20 @@ read (Types _ _ ts) = Dyn.read ts . (+(-256))
 ------------------
 
 -- | Length 0 initialization
-new :: PrimMonad m => m (Types m)
+new :: PrimMonad m => m (Types (PrimState m))
 new = Types <$> Dyn.new <*> Dyn.new <*> Dyn.new
 
 -- | Construction (empty) given a capacity
-withCapacity :: forall m. PrimMonad m => Int -> m (Types m)
+withCapacity :: forall m. PrimMonad m => Int -> m (Types (PrimState m))
 withCapacity n = Types <$> newDyn <*> newDyn <*> newDyn
-  where newDyn = Dyn.withCapacity n :: m (BoxedVec m a)
+  where newDyn = Dyn.withCapacity n :: m (BoxedVec (PrimState m) a)
 
 ------------
 -- MODIFY --
 ------------
 
-push :: PrimMonad m => Types m -> Maybe Sym -> JointType -> m (Types m)
+push :: PrimMonad m => Types (PrimState m) -> Maybe Sym -> JointType ->
+        m (Types (PrimState m))
 push typs@(Types mps css ts) mp t = do
   let s = length typs
   forM_ mp $ Dyn.modify css $ IS.insert s
@@ -65,7 +66,7 @@ push typs@(Types mps css ts) mp t = do
 -- INFORMATION --
 -----------------
 
-information :: PrimMonad m => Types m -> m Double
+information :: PrimMonad m => Types (PrimState m) -> m Double
 information typs@(Types mps _ _) = do
   refineLens <- flip2 Dyn.ifoldM' 0 mps $ \acc i -> \case
     Nothing -> let s = 256 + i in return $ acc + s
@@ -79,7 +80,7 @@ information typs@(Types mps _ _) = do
 -- DEBUG --
 -----------
 
-checkIntegrity :: PrimMonad m => Types m -> a -> m a
+checkIntegrity :: PrimMonad m => Types (PrimState m) -> a -> m a
 checkIntegrity typs@(Types mps css ts) a = do
   let err = error . ("Types.checkIntegrity: " ++)
       len = Dyn.length ts
