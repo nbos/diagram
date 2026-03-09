@@ -14,24 +14,31 @@ import qualified Data.IntMap.Strict as IM
 import Streaming
 import qualified Streaming.Prelude as S
 
+import Diagram.Information
+import Diagram.Dynamic (BoxedVec, UnboxedVec)
+import qualified Diagram.Dynamic as Dyn
+
 import Diagram.UnionType (Sym)
 import Diagram.JointType (JointType)
 import qualified Diagram.JointType as JT
-import Diagram.Dynamic (BoxedVec, UnboxedVec)
-import qualified Diagram.Dynamic as Dyn
-import Diagram.Information
+import Diagram.Refinement (ModelParams(..))
 
 import Diagram.Util
 
 data Model s = Model {
   types :: !(BoxedVec s JointType), -- :: [m - 256]JointType
-  stringLen :: !Int,
-  nCounts :: !(UnboxedVec s Int), -- [m]Int
-  kCounts :: !(UnboxedVec s Int)  -- [m - 256]Int
+  stringLen :: !Int, -- N
+  nCounts :: !(UnboxedVec s Int), -- ns :: [m]Int
+  kCounts :: !(UnboxedVec s Int)  -- ks :: [m - 256]Int
 } -- probably should have been kept pure
 
 numSymbols :: Model m -> Int
 numSymbols = (256+) . Dyn.length . types
+
+params :: PrimMonad m => Model (PrimState m) -> m ModelParams
+params mdl@(Model _ bigN ns _) =
+  Params m bigN <$> Dyn.freeze ns
+  where m = numSymbols mdl
 
 ------------------
 -- CONSTRUCTION --

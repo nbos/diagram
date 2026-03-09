@@ -222,6 +222,7 @@ data Mutation
   | DelRight !Sym !(IntMap Int)
   | Del2     !Sym !Sym !Int
 
+-- TODO: move to Diagram.Model
 data ModelParams = Params
   { _numSymbols :: !Int
   , _stringLength :: !Int
@@ -250,6 +251,57 @@ data CoverageState = CoverageState
 makeLenses ''ModelParams
 makeLenses ''RefinementState
 makeLenses ''CoverageState
+
+--------------------------
+-- STATE INITIALIZATION --
+--------------------------
+
+initRefinementState :: ModelParams -> Joints2 Int -> JointType -> RefinementState
+initRefinementState mdl@(Params _ _ ns) jts2 rjt =
+  RefinementState { _modelParams = mdl
+                  , _jointCount = nm
+                  , _refinement = rjt
+                  , _newSymbolCounts = ns'
+                  , _joints = coverage }
+  where
+    coverage = initCoverageState jts2 rjt
+    nm = sum $ snd <$> byFstInInL
+    byFstInInL = byFstToAscList $ coverage ^. byFstInIn
+    ns' = IM.mapWithKey (\s dn -> (ns U.! s) - dn ) $
+            IM.fromListWith (+) $
+            foldr (\((s0,s1),n01) l -> (s0,n01):(s1,n01):l)
+            [] byFstInInL
+
+initCoverageState :: Joints2 Int -> JointType -> CoverageState
+initCoverageState (J2 byFst bySnd) (JT u0 u1) =
+  CoverageState { _byFstInIn   = byFstInIn_
+                , _byFstInOut  = byFstInOut_
+                , _byFstOutIn  = byFstOutIn_
+                , _byFstOutOut = byFstOutOut_
+                , _bySndInIn   = bySndInIn_
+                , _bySndInOut  = bySndInOut_
+                , _bySndOutIn  = bySndOutIn_
+                , _bySndOutOut = bySndOutOut_ }
+  where
+    byFstIn = byFst `IM.restrictKeys` UT.set u0
+    byFstInIn_  = (`IM.restrictKeys` UT.set u1) <$> byFstIn
+    byFstInOut_ = (`IM.withoutKeys`  UT.set u1) <$> byFstIn
+
+    byFstOut = byFst `IM.withoutKeys` UT.set u0
+    byFstOutIn_  = (`IM.restrictKeys` UT.set u1) <$> byFstOut
+    byFstOutOut_ = (`IM.withoutKeys`  UT.set u1) <$> byFstOut
+
+    bySndIn = bySnd `IM.restrictKeys` UT.set u1
+    bySndInIn_  = (`IM.restrictKeys` UT.set u0) <$> bySndIn
+    bySndInOut_ = (`IM.withoutKeys`  UT.set u0) <$> bySndIn
+
+    bySndOut = bySnd `IM.withoutKeys` UT.set u1
+    bySndOutIn_  = (`IM.restrictKeys` UT.set u0) <$> bySndOut
+    bySndOutOut_ = (`IM.withoutKeys`  UT.set u0) <$> bySndOut
+
+---------------
+-- EXECUTION --
+---------------
 
 stepHillClimb :: Monad m => RefinementT m (Maybe JointType)
 stepHillClimb = do
@@ -311,53 +363,6 @@ negMutations = do
   let vm = JT.variety rjt
       emuts = toFst (evalMutation m bigN ns ns' nm vm) <$> muts
   return $ L.filter ((<0) . fst) emuts
-
---------------------------
--- STATE INITIALIZATION --
---------------------------
-
-initRefinementState :: ModelParams -> Joints2 Int -> JointType -> RefinementState
-initRefinementState mdl@(Params _ _ ns) jts2 rjt =
-  RefinementState { _modelParams = mdl
-                  , _jointCount = nm
-                  , _refinement = rjt
-                  , _newSymbolCounts = ns'
-                  , _joints = coverage }
-  where
-    coverage = initCoverageState jts2 rjt
-    nm = sum $ snd <$> byFstInInL
-    byFstInInL = byFstToAscList $ coverage ^. byFstInIn
-    ns' = IM.mapWithKey (\s dn -> (ns U.! s) - dn ) $
-            IM.fromListWith (+) $
-            foldr (\((s0,s1),n01) l -> (s0,n01):(s1,n01):l)
-            [] byFstInInL
-
-initCoverageState :: Joints2 Int -> JointType -> CoverageState
-initCoverageState (J2 byFst bySnd) (JT u0 u1) =
-  CoverageState { _byFstInIn   = byFstInIn_
-                , _byFstInOut  = byFstInOut_
-                , _byFstOutIn  = byFstOutIn_
-                , _byFstOutOut = byFstOutOut_
-                , _bySndInIn   = bySndInIn_
-                , _bySndInOut  = bySndInOut_
-                , _bySndOutIn  = bySndOutIn_
-                , _bySndOutOut = bySndOutOut_ }
-  where
-    byFstIn = byFst `IM.restrictKeys` UT.set u0
-    byFstInIn_  = (`IM.restrictKeys` UT.set u1) <$> byFstIn
-    byFstInOut_ = (`IM.withoutKeys`  UT.set u1) <$> byFstIn
-
-    byFstOut = byFst `IM.withoutKeys` UT.set u0
-    byFstOutIn_  = (`IM.restrictKeys` UT.set u1) <$> byFstOut
-    byFstOutOut_ = (`IM.withoutKeys`  UT.set u1) <$> byFstOut
-
-    bySndIn = bySnd `IM.restrictKeys` UT.set u1
-    bySndInIn_  = (`IM.restrictKeys` UT.set u0) <$> bySndIn
-    bySndInOut_ = (`IM.withoutKeys`  UT.set u0) <$> bySndIn
-
-    bySndOut = bySnd `IM.withoutKeys` UT.set u1
-    bySndOutIn_  = (`IM.restrictKeys` UT.set u0) <$> bySndOut
-    bySndOutOut_ = (`IM.withoutKeys`  UT.set u0) <$> bySndOut
 
 -------------------------
 -- ENUMERATE MUTATIONS --

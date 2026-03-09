@@ -32,7 +32,8 @@ makeLenses ''JointType
 
 instance Show JointType where
   show :: JointType -> String
-  show = ("fromLists " ++) . show . toLists
+  show jt = "fromLists " ++ show u0 ++ " " ++ show u1
+    where (u0,u1) = toLists jt
 
 size :: JointType -> (Int, Int)
 size (JT u0 u1) = (UT.size u0, UT.size u1)
@@ -40,8 +41,8 @@ size (JT u0 u1) = (UT.size u0, UT.size u1)
 fromJoints :: Joints a -> JointType
 fromJoints = uncurry JT . both UT.fromList . unzip . M.keys
 
-fromLists :: ([Sym],[Sym]) -> JointType
-fromLists (syms0, syms1) = JT (UT.fromList syms0) (UT.fromList syms1)
+fromLists :: [Sym] -> [Sym] -> JointType
+fromLists syms0 syms1 = JT (UT.fromList syms0) (UT.fromList syms1)
 
 toLists :: JointType -> ([Sym],[Sym])
 toLists (JT u0 u1) = (UT.toAscList u0, UT.toAscList u1)

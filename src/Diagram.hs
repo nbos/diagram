@@ -1,24 +1,52 @@
-{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeApplications, LambdaCase #-}
 module Diagram (module Diagram) where
 
 import System.IO
+    ( BufferMode(NoBuffering),
+      IOMode(ReadMode),
+      hSetBuffering,
+      stdout,
+      openFile,
+      hFileSize )
 import Options.Applicative
+    ( Parser,
+      argument,
+      str,
+      metavar,
+      help,
+      optional,
+      option,
+      auto,
+      long,
+      short,
+      execParser,
+      info,
+      (<**>),
+      helper,
+      fullDesc,
+      progDesc,
+      header )
 import System.Random (StdGen)
 import qualified System.Random as R
+
+import Control.Lens hiding (both,last1,argument)
 import Control.Monad.Trans.Random.Lazy (RandT,evalRand,evalRandT)
-import Control.Monad.Random.Class
+import Control.Monad.State.Strict
+    (MonadIO(liftIO), MonadTrans(lift), evalStateT)
+import Control.Monad.Random.Class (MonadRandom(getRandom))
 
-import Data.Word
+import Data.Word (Word64)
 import Data.Maybe
-import qualified Data.Map.Strict as M
 
-import Streaming
 import qualified Streaming.Prelude as S
 import qualified Streaming.ByteString as Q
+import Diagram.Streaming ()
 
 import qualified Diagram.Joints as Jts
 import qualified Diagram.JointType as JT
-import qualified Diagram.Refinement as JTR
+import qualified Diagram.Refinement as Ref
+import Diagram.Refinement (refinement)
+import qualified Diagram.Model as Mdl
 import Diagram.Progress (withPB)
 
 data Options = Options
@@ -41,13 +69,10 @@ optionsParser = Options
 main :: IO ()
 main = do
   hSetBuffering stdout NoBuffering
-
   opts <- execParser $ info (optionsParser <**> helper)
     ( fullDesc
       <> progDesc "Chunking with joints and unions"
       <> header "diagram" )
-
-  h <- openFile (optFilename opts) ReadMode
 
   -- can't inspect seed at init or deconstruct to seed, so we gen a
   -- random StdGen seed with a StdGen
@@ -57,35 +82,59 @@ main = do
       stdGen = R.mkStdGen64 seed
   putStr "Using seed: " >> print seed
 
+  -- read file
+  h <- openFile (optFilename opts) ReadMode
   sz <- fromInteger @Int <$> hFileSize h
-  (jts, _) <- Jts.fromStream $ -- Map (Sym,Sym) a
-              S.zip (S.enumFrom 0) $
-              S.map fromEnum $
-              withPB sz "Counting joints" $
-              Q.unpack $ Q.fromHandle h
+  (jtniss,(mdl,_)) <- Jts.fromStream $ -- Map (Sym,Sym) a
+                     S.zip (S.enumFrom 0) $
+                     S.map fromEnum $
+                     Mdl.emptyFromAtoms $
+                     S.copy $
+                     withPB sz "Counting joints" $
+                     Q.unpack $ Q.fromHandle h
 
-  let jt = JT.fromJoints jts
-      jts2 = Jts.doubleIndex 256 jts -- IntMap (IntMap a)
-      jts2S = Jts.sized jts2 -- Map Sym (Map Sym a)
+  -- form types
+  let jtns = fst <$> jtniss
+      jt = JT.fromJoints jtns
+  putStr "Top type: " >> print jt
+
+  let jtns2 = Jts.doubleIndex 256 jtns -- IntMap (IntMap a)
+      jtns2S = Jts.sized jtns2 -- Map Sym (Map Sym a)
+
+  -- freeze params
+  params <- Mdl.params mdl
 
   let go :: RandT StdGen IO ()
       go = do
-        (rjt,rjts) <- JTR.genRefinement jts2S
+
+        (rjt,rjtns) <- Ref.genRefinement jtns2S
 
         -- report stats, verify properties/integrity
-        JTR.printInfo (jt,jts) (rjt,rjts)
-        JTR.printLUB rjt rjts
-        JTR.printSubtyping (jt,jts) (rjt,rjts)
-        JTR.printConservation (jt,jts) (rjt,rjts)
-        JTR.printCoverage jts (rjt,rjts)
+        Ref.printInfo (jt,jtns) (rjt,rjtns)
+        lift $ putStr "Refinement: " >> print rjt
+
+        Ref.printLUB rjt rjtns
+        Ref.printSubtyping (jt,jtns) (rjt,rjtns)
+        Ref.printConservation (jt,jtns) (rjt,rjtns)
+        Ref.printCoverage jtns (rjt,rjtns)
         --
 
+        lift $ putStrLn "Beginning hill climb."
+        let rjts2 = Jts.doubleIndex 256 rjtns
+            rst0 = Ref.initRefinementState params rjts2 rjt
+
+            go' = (Ref.stepHillClimb >>=) $ \case
+              Just t -> return t
+              Nothing -> use refinement
+                         >>= liftIO . print
+                         >> go'
+
+        rjt' <- evalStateT go' rst0
+        lift $ putStr "Final ref: " >> print rjt'
+
+        lift $ putStrLn ""
         go -- loop
 
+  -- run loop -------
   evalRandT go stdGen
-
-red :: String -> String
-red s = "\ESC[31mError:" ++ s ++ "\ESC[0m"
-
-green :: String -> String
-green s = "\ESC[32m" ++ s ++ "\ESC[0m"
+  -------------------

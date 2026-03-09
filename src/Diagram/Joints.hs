@@ -92,6 +92,7 @@ difference = M.mergeWithKey (const f) id id
 data Joints2 a = J2
   { byFst2 :: !(IntMap (IntMap a))
   , bySnd2 :: !(IntMap (IntMap a)) }
+  deriving(Eq,Show)
 
 -- | Double up the index given the number of symbols (max s1 + 1)
 doubleIndex :: Int -> Joints a -> Joints2 a
