@@ -111,12 +111,13 @@ main = do
 
         -- report stats, verify properties/integrity
         Ref.printInfo (jt,jtns) (rjt,rjtns)
-        lift $ putStr "Refinement: " >> print rjt
+        lift $ print rjt
 
         Ref.printLUB rjt rjtns
         Ref.printSubtyping (jt,jtns) (rjt,rjtns)
         Ref.printConservation (jt,jtns) (rjt,rjtns)
         Ref.printCoverage jtns (rjt,rjtns)
+        lift $ putStrLn ""
         --
 
         lift $ putStrLn "Beginning hill climb."

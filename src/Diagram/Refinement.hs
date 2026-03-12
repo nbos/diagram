@@ -9,6 +9,7 @@ import Control.Lens hiding (both,last1)
 import Control.Monad.State.Strict
 import Control.Monad.Random
 
+
 import Data.Maybe
 import Data.Tuple.Extra
 import qualified Data.List.Extra as L
@@ -221,6 +222,7 @@ data Mutation
   | DelLeft  !Sym !(IntMap Int)
   | DelRight !Sym !(IntMap Int)
   | Del2     !Sym !Sym !Int
+  deriving(Show,Eq)
 
 -- TODO: move to Diagram.Model
 data ModelParams = Params
@@ -268,9 +270,9 @@ initRefinementState mdl@(Params _ _ ns) jts2 rjt =
     nm = sum $ snd <$> byFstInInL
     byFstInInL = byFstToAscList $ coverage ^. byFstInIn
     ns' = IM.mapWithKey (\s dn -> (ns U.! s) - dn ) $
-            IM.fromListWith (+) $
-            foldr (\((s0,s1),n01) l -> (s0,n01):(s1,n01):l)
-            [] byFstInInL
+          IM.fromListWith (+) $
+          foldr (\((s0,s1),n01) l -> (s0,n01):(s1,n01):l)
+          [] byFstInInL
 
 initCoverageState :: Joints2 Int -> JointType -> CoverageState
 initCoverageState (J2 byFst bySnd) (JT u0 u1) =
@@ -488,7 +490,7 @@ evalMutation m bigN ns ns' nm vm = go
         dnm = sum jtns -- INFO: this could be bookkept
         nm' = nm - dnm
         adns = IM.insertWith (+) s0 dnm jtns -- absolute diffs
-        dns = IM.intersectionWith (\adn n' -> (n', n'+adn)) ns' adns
+        dns = IM.intersectionWith (\n' adn -> (n', n'+adn)) ns' adns
               -- IM.keySet jtns `IS.isSubsetOf` IM.keySet ns'
 
 -- | Computes the difference in the info delta from changing parameters:
