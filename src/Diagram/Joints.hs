@@ -16,6 +16,7 @@ import qualified Data.IntMap as IM
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IS
 import qualified Data.Set as Set
+import Data.Strict.Tuple (Pair((:!:)))
 
 import qualified Data.Vector.Mutable as MV
 import Data.Vector.Unboxed.Mutable (MVector)
@@ -38,27 +39,27 @@ size = M.size
 -- CONSTRUCTION --
 ------------------
 
-fromList :: [Sym] -> Joints (Int, IntSet)
+fromList :: [Sym] -> Joints (Pair Int IntSet)
 fromList = fst . runIdentity . fromStream . S.each . zip [0..]
 
 type Doubly s = D.Doubly MVector s Sym
 -- | Construction using the indices of the doubly-linked list
-fromDoubly :: PrimMonad m => Doubly (PrimState m) -> m (Joints (Int, IntSet))
+fromDoubly :: PrimMonad m => Doubly (PrimState m) -> m (Joints (Pair Int IntSet))
 fromDoubly = fmap fst
              . fromStream_ M.empty
              . D.streamWithKey
 
-fromStream :: Monad m => Stream (Of (Index,Sym)) m r -> m (Joints (Int, IntSet), r)
+fromStream :: Monad m => Stream (Of (Index,Sym)) m r -> m (Joints (Pair Int IntSet), r)
 fromStream = fromStream_ M.empty
 
-fromStream_ :: Monad m => Joints (Int, IntSet) ->
-               Stream (Of (Index,Sym)) m r -> m (Joints (Int, IntSet), r)
+fromStream_ :: Monad m => Joints (Pair Int IntSet) ->
+               Stream (Of (Index,Sym)) m r -> m (Joints (Pair Int IntSet), r)
 fromStream_ m0 iss0 = (S.next iss0 >>=) $ \case
   Left r -> return (m0, r)
   Right (i0s0,iss0') -> fromStreamOdd_ i0s0 m0 iss0'
 
-fromStreamOdd_ :: Monad m => (Index, Sym) -> Joints (Int, IntSet) ->
-                  Stream (Of (Index, Sym)) m r -> m (Joints (Int, IntSet), r)
+fromStreamOdd_ :: Monad m => (Index, Sym) -> Joints (Pair Int IntSet) ->
+                  Stream (Of (Index, Sym)) m r -> m (Joints (Pair Int IntSet), r)
 fromStreamOdd_ (i0,s0) !m iss = (S.next iss >>=) $ \case
   Left r -> return (m,r) -- end
   Right (i1s1@(_,s1),ss') -> (S.next ss' >>=) $ \case
@@ -72,18 +73,18 @@ fromStreamOdd_ (i0,s0) !m iss = (S.next iss >>=) $ \case
 -- OPERATIONS --
 ----------------
 
-insert1 :: Joints (Int, IntSet) -> (Sym,Sym) -> Index -> Joints (Int, IntSet)
-insert1 jts s0s1 i = M.insertWith f s0s1 (1, IS.singleton i) jts
-  where f _ (n,is) = (n + 1, IS.insert i is)
+insert1 :: Joints (Pair Int IntSet) -> (Sym,Sym) -> Index -> Joints (Pair Int IntSet)
+insert1 jts s0s1 i = M.insertWith f s0s1 (1 :!: IS.singleton i) jts
+  where f _ (n :!: is) = (n + 1) :!: IS.insert i is
 
 -- | The union of two sets of counts + indices
-union :: Joints (Int, IntSet) -> Joints (Int, IntSet) -> Joints (Int, IntSet)
-union = M.unionWith $ \(a,s) (b,t) -> (a + b, IS.union s t)
+union :: Joints (Pair Int IntSet) -> Joints (Pair Int IntSet) -> Joints (Pair Int IntSet)
+union = M.unionWith $ \(a :!: s) (b :!: t) -> (a + b) :!: IS.union s t
 
 -- | Subtract the counts + indices in the second map from the first map
-difference :: Joints (Int, IntSet) -> Joints (Int, IntSet) -> Joints (Int, IntSet)
+difference :: Joints (Pair Int IntSet) -> Joints (Pair Int IntSet) -> Joints (Pair Int IntSet)
 difference = M.mergeWithKey (const f) id id
-  where f (a,s) (b,t) = nothingIf ((== 0) . fst) (a - b, IS.difference s t)
+  where f (a :!: s) (b :!: t) = nothingIf (\(x :!: _) -> x == 0) $ (a - b) :!: IS.difference s t
 
 -----------------
 -- RE-INDEXING --
@@ -158,7 +159,7 @@ im2m = M.fromDistinctAscList
 
 -- | Re-compute the joint counts + locations to check the validity of a
 -- given joints map. Throws an error if they differ.
-validate :: PrimMonad m => Joints (Int, IntSet) -> Doubly (PrimState m) -> a -> m a
+validate :: PrimMonad m => Joints (Pair Int IntSet) -> Doubly (PrimState m) -> a -> m a
 validate cdts ss a = do
   cdtsRef <- fromDoubly ss
   when (cdts /= cdtsRef) $

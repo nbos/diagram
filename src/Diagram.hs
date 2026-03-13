@@ -37,6 +37,7 @@ import Control.Monad.Random.Class (MonadRandom(getRandom))
 
 import Data.Word (Word64)
 import Data.Maybe
+import qualified Data.Strict.Tuple as Strict
 
 import qualified Streaming.Prelude as S
 import qualified Streaming.ByteString as Q
@@ -94,7 +95,7 @@ main = do
                      Q.unpack $ Q.fromHandle h
 
   -- form types
-  let jtns = fst <$> jtniss
+  let jtns = Strict.fst <$> jtniss
       jt = JT.fromJoints jtns
   putStr "Top type: " >> print jt
 
