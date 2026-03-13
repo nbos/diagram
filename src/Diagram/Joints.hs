@@ -1,13 +1,16 @@
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
 {-# LANGUAGE BangPatterns, LambdaCase #-}
 module Diagram.Joints (module Diagram.Joints, Sym) where
 
 import Control.Monad
+import Control.Lens hiding (Index)
 import Control.Monad.Primitive (PrimMonad(PrimState))
 import Control.Monad.ST
 
 import Data.Function
-import Data.Tuple.Extra
+import Data.Tuple.Extra ((&&&))
+import Data.Bifunctor
 import qualified Data.List.Extra as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -27,7 +30,6 @@ import qualified Streaming.Prelude as S
 import Diagram.UnionType (Sym)
 import Diagram.Doubly (Index)
 import qualified Diagram.Doubly as D
-import Diagram.Util
 
 -- | Count and location of each candidate/joint symbol in the string
 type Joints a = Map (Sym,Sym) a
@@ -35,56 +37,60 @@ type Joints a = Map (Sym,Sym) a
 size :: Joints a -> Int
 size = M.size
 
+data Sites = Sites
+  {    _constructive :: !(Pair Int IntSet)
+  , _nonconstructive :: !(Pair Int IntSet) }
+  deriving(Eq,Ord,Show)
+makeLenses ''Sites
+
+noSites :: Sites
+noSites = Sites no no
+  where no = 0 :!: IS.empty
+
 ------------------
 -- CONSTRUCTION --
 ------------------
 
-fromList :: [Sym] -> Joints (Pair Int IntSet)
+fromList :: [Sym] -> Joints Sites
 fromList = fst . runIdentity . fromStream . S.each . zip [0..]
 
 type Doubly s = D.Doubly MVector s Sym
 -- | Construction using the indices of the doubly-linked list
-fromDoubly :: PrimMonad m => Doubly (PrimState m) -> m (Joints (Pair Int IntSet))
-fromDoubly = fmap fst
-             . fromStream_ M.empty
-             . D.streamWithKey
+fromDoubly :: PrimMonad m =>
+              Doubly (PrimState m) -> m (Joints Sites)
+fromDoubly = fmap fst . fromStream . D.streamWithKey
 
-fromStream :: Monad m => Stream (Of (Index,Sym)) m r -> m (Joints (Pair Int IntSet), r)
-fromStream = fromStream_ M.empty
+fromStream :: Monad m => Stream (Of (Index,Sym)) m r -> m (Joints Sites, r)
+fromStream iss0 = (S.next iss0 >>=) $ \case
+  Left r -> return (M.empty, r)
+  Right (i0s0,iss0') -> fromStream1 i0s0 M.empty iss0'
 
-fromStream_ :: Monad m => Joints (Pair Int IntSet) ->
-               Stream (Of (Index,Sym)) m r -> m (Joints (Pair Int IntSet), r)
-fromStream_ m0 iss0 = (S.next iss0 >>=) $ \case
-  Left r -> return (m0, r)
-  Right (i0s0,iss0') -> fromStreamOdd_ i0s0 m0 iss0'
-
-fromStreamOdd_ :: Monad m => (Index, Sym) -> Joints (Pair Int IntSet) ->
-                  Stream (Of (Index, Sym)) m r -> m (Joints (Pair Int IntSet), r)
-fromStreamOdd_ (i0,s0) !m iss = (S.next iss >>=) $ \case
+fromStream1 :: Monad m => (Index, Sym) -> Joints Sites ->
+               Stream (Of (Index, Sym)) m r -> m (Joints Sites, r)
+fromStream1 (i0,s0) m iss = (S.next iss >>=) $ \case
   Left r -> return (m,r) -- end
-  Right (i1s1@(_,s1),ss') -> (S.next ss' >>=) $ \case
-    Left r -> return (m', r) -- last joint
-    Right (is2@(_,s2),ss'') -> f m' $ S.yield is2 >> ss''
-      where f | s0 == s1 && s1 == s2 = fromStream_         -- even
-              | otherwise            = fromStreamOdd_ i1s1 -- odd
-    where m' = insert1 m (s0,s1) i0
+  Right (i1s1@(_,s1),ss') -> fromStream2 s0 i1s1 m' ss'
+    where m' = addCons (s0,s1) i0 m -- inc constructive
 
-----------------
--- OPERATIONS --
-----------------
+-- | Joints from a stream that follows two symbols, given the index of
+-- the last symbol too.
+fromStream2 :: Monad m => Sym -> (Index, Sym) -> Joints Sites ->
+               Stream (Of (Index, Sym)) m r -> m (Joints Sites, r)
+fromStream2 sm1 (i0,s0) !m iss = (S.next iss >>=) $ \case
+  Left r -> return (m,r) -- end
+  Right (i1s1@(_,s1),ss') -> cont i1s1 m' ss'
+    where m' = add (s0,s1) i0 m
+          (add,cont)
+            | sm1 == s0 && s0 == s1 = (addNoncons, fromStream1)
+            | otherwise             = (addCons, fromStream2 s0)
 
-insert1 :: Joints (Pair Int IntSet) -> (Sym,Sym) -> Index -> Joints (Pair Int IntSet)
-insert1 jts s0s1 i = M.insertWith f s0s1 (1 :!: IS.singleton i) jts
-  where f _ (n :!: is) = (n + 1) :!: IS.insert i is
+addCons :: (Sym,Sym) -> Index -> Joints Sites -> Joints Sites
+addCons (s0,s1) i0 = at (s0,s1) . non noSites . constructive
+                     %~ ((+1) `bimap` IS.insert i0)
 
--- | The union of two sets of counts + indices
-union :: Joints (Pair Int IntSet) -> Joints (Pair Int IntSet) -> Joints (Pair Int IntSet)
-union = M.unionWith $ \(a :!: s) (b :!: t) -> (a + b) :!: IS.union s t
-
--- | Subtract the counts + indices in the second map from the first map
-difference :: Joints (Pair Int IntSet) -> Joints (Pair Int IntSet) -> Joints (Pair Int IntSet)
-difference = M.mergeWithKey (const f) id id
-  where f (a :!: s) (b :!: t) = nothingIf (\(x :!: _) -> x == 0) $ (a - b) :!: IS.difference s t
+addNoncons :: (Sym,Sym) -> Index -> Joints Sites -> Joints Sites
+addNoncons (s0,s1) i0 = at (s0,s1) . non noSites . nonconstructive
+                        %~ ((+1) `bimap` IS.insert i0)
 
 -----------------
 -- RE-INDEXING --
@@ -159,7 +165,7 @@ im2m = M.fromDistinctAscList
 
 -- | Re-compute the joint counts + locations to check the validity of a
 -- given joints map. Throws an error if they differ.
-validate :: PrimMonad m => Joints (Pair Int IntSet) -> Doubly (PrimState m) -> a -> m a
+validate :: PrimMonad m => Joints Sites -> Doubly (PrimState m) -> a -> m a
 validate cdts ss a = do
   cdtsRef <- fromDoubly ss
   when (cdts /= cdtsRef) $
