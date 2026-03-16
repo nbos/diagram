@@ -224,21 +224,68 @@ genRefinementWith r (J2S byFst0 bySnd0) =
 --   | Del2     !Sym !Sym !Int
 --   deriving(Show,Eq)
 
-data MutKind = Side | Both
-type family CountDelta (k :: MutKind) where
-  CountDelta Side = IntMap Int
-  CountDelta Both = Int
+data NumAffected = One | Two
+  deriving (Show,Eq,Ord)
 
-data TypeMutation (k :: MutKind) where
-  AddLeft  :: !Sym         -> TypeMutation Side
-  AddRight :: !Sym         -> TypeMutation Side
-  Add2     :: !Sym -> !Sym -> TypeMutation Both
-  DelLeft  :: !Sym         -> TypeMutation Side
-  DelRight :: !Sym         -> TypeMutation Side
-  Del2     :: !Sym -> !Sym -> TypeMutation Both
+type family NewJointCounts (k :: NumAffected) where
+  NewJointCounts One = IntMap Int -- ins opposite side
+  NewJointCounts Two = Int -- n01
 
-data Mutation where
-  Mut :: !(TypeMutation k) -> !(CountDelta k) -> Mutation
+data Mutation (k :: NumAffected) where
+  AddLeft  :: !Sym         -> Mutation One
+  AddRight :: !Sym         -> Mutation One
+  Add2     :: !Sym -> !Sym -> Mutation Two
+  DelLeft  :: !Sym         -> Mutation One
+  DelRight :: !Sym         -> Mutation One
+  Del2     :: !Sym -> !Sym -> Mutation Two
+
+deriving instance Show (Mutation k)
+deriving instance Eq (Mutation k)
+deriving instance Ord (Mutation k)
+
+data SomeMutation where
+  Mut :: !(Mutation k) -> SomeMutation
+
+instance Show SomeMutation where
+  show :: SomeMutation -> String
+  show (Mut mut) = case mut of
+    AddLeft  s   -> "AddLeft "  ++ show s
+    AddRight s   -> "AddRight " ++ show s
+    Add2     a b -> "Add2 "     ++ show a ++ " " ++ show b
+    DelLeft  s   -> "DelLeft "  ++ show s
+    DelRight s   -> "DelRight " ++ show s
+    Del2     a b -> "Del2 "     ++ show a ++ " " ++ show b
+
+data EvalMutation where
+  EMut :: !(Mutation k) -> !(NewJointCounts k) -> EvalMutation
+
+instance Show EvalMutation where
+  show :: EvalMutation -> String
+  show (EMut mut jtns) = case mut of
+    AddLeft  s   -> "AddLeft "  ++ show s ++ " " ++ show jtns
+    AddRight s   -> "AddRight " ++ show s ++ " " ++ show jtns
+    Add2     a b -> "Add2 "     ++ show a ++ " " ++ show b ++ " " ++ show jtns
+    DelLeft  s   -> "DelLeft "  ++ show s ++ " " ++ show jtns
+    DelRight s   -> "DelRight " ++ show s ++ " " ++ show jtns
+    Del2     a b -> "Del2 "     ++ show a ++ " " ++ show b ++ " " ++ show jtns
+
+breakingOf :: JointType -> Sym -> (Sym,Sym) -> [(Sym,Sym)] ->
+              (SomeMutation, Sym)
+breakingOf (JT u0 u1) s0 (s1,s2) rest = (mut, go s2 rest)
+  where
+    go s2' [] = s2'
+    go s2' ((s3,s4):rest')
+      | (s2',s3) `JT.member` jt' = go s4 rest' -- breaking propagates
+      | otherwise = s2' -- breaking stops, leaving s2' unconstructed
+
+    (mut, jt')
+      | s0 `UT.member` u0 = -- assert $ not (s1 `UT.member` u1)
+          (Mut (AddRight s1), JT u0 u1')
+      | s1 `UT.member` u1 = (Mut (AddLeft s0), JT u0' u1)
+      | otherwise = (Mut (Add2 s0 s1), JT u0' u1')
+      where
+        u0' = UT.insertMissing s0 u0
+        u1' = UT.insertMissing s1 u1
 
 -- TODO: move to Diagram.Model
 data ModelParams = Params
@@ -323,7 +370,7 @@ initMembershipState (J2 byFst bySnd) (JT u0 u1) =
 
 stepHillClimb :: Monad m => RefinementT m (Maybe JointType)
 stepHillClimb = do
-  (minLoss, Mut mut _) <- minMutation
+  (minLoss, EMut mut _) <- minMutation
   if minLoss >= 0 then refinement `uses` Just -- end
     else appMutation mut -- step
          >> return Nothing
@@ -366,7 +413,7 @@ hillClimb = (stepHillClimb >>=) $ \case
 --     vm_0 = UT.length ru0_0 + UT.length ru1_0
 --     rInfo_0 = fromIntegral nm_0 * ilog vm_0
 
-minMutation :: Monad m => RefinementT m (Double, Mutation)
+minMutation :: Monad m => RefinementT m (Double, EvalMutation)
 minMutation = do
   muts <- zoom joints enumMutations
   (RefinementState (Params m bigN ns) nm rjt ns' _) <- get
@@ -374,7 +421,7 @@ minMutation = do
       emuts = toFst (evalMutation m bigN ns ns' nm vm) <$> muts
   return $ L.minimumOn fst emuts
 
-negMutations :: Monad m => RefinementT m [(Double, Mutation)]
+negMutations :: Monad m => RefinementT m [(Double, EvalMutation)]
 negMutations = do
   muts <- zoom joints enumMutations
   (RefinementState (Params m bigN ns) nm rjt ns' _) <- get
@@ -386,16 +433,16 @@ negMutations = do
 -- ENUMERATE MUTATIONS --
 -------------------------
 
-enumMutations :: Monad m => MembershipT m [Mutation]
+enumMutations :: Monad m => MembershipT m [EvalMutation]
 enumMutations = do
   (MembershipState byFstInIn_ _ byFstOutIn_ byFstOutOut_
    bySndInIn_ _ bySndOutIn_ _) <- get
 
-  let als = uc (Mut . AddLeft)  <$> IM.toList byFstOutIn_ -- Out --> In
-      ars = uc (Mut . AddRight) <$> IM.toList bySndOutIn_ -- In <-- Out
+  let als = uc (EMut . AddLeft)  <$> IM.toList byFstOutIn_ -- Out --> In
+      ars = uc (EMut . AddRight) <$> IM.toList bySndOutIn_ -- In <-- Out
 
       -- (Out,Out) that can't be added one-by-one
-      a2s = uc (Mut . uc Add2) <$> M.toList outSubgraph
+      a2s = uc (EMut . uc Add2) <$> M.toList outSubgraph
       outSubgraph = byFstToMap $
                     (IM.\\ bySndOutIn_)
                     <$> (byFstOutOut_ IM.\\ byFstOutIn_)
@@ -406,17 +453,17 @@ enumMutations = do
                        | otherwise = Nothing
 
       -- can be deleted: In (w/o dependents) --> In
-      dls = uc (Mut . DelLeft) <$> byFstInInWithoutDeps
+      dls = uc (EMut . DelLeft) <$> byFstInInWithoutDeps
       byFstInInWithoutDeps = filter (IM.disjoint rightDependents . snd) $
                              IM.toList byFstInIn_ -- In --> In
 
       -- can be deleted: In <-- In (w/o dependents)
-      drs = uc (Mut . DelRight) <$> bySndInInWithoutDeps
+      drs = uc (EMut . DelRight) <$> bySndInInWithoutDeps
       bySndInInWithoutDeps = filter (IM.disjoint leftDependents . snd) $
                              IM.toList bySndInIn_ -- In <-- In
 
       -- (In,In) that can't be deleted one-by-one
-      d2s = uc (Mut . uc Del2) <$> M.toList coDependents
+      d2s = uc (EMut . uc Del2) <$> M.toList coDependents
       coDependents = M.intersectionWith assertEq
                      leftPendantJts rightPendantJts
 
@@ -458,16 +505,16 @@ bySndToAscList = fmap (first swap) . byFstToAscList
 
 -- | Evaluate the loss incurred by the application of a mutation
 evalMutation :: Int -> Int -> U.Vector Int -> IntMap Int -> Int -> Int ->
-                Mutation -> Double
+                EvalMutation -> Double
 evalMutation m bigN ns ns' nm vm = go
   where
     deltaDelta_ :: Int -> [(Int,Int)] -> Int -> Double
     deltaDelta_ nm' dns vm' = deltaDelta m bigN (nm,nm') dns (vm,vm')
 
-    go :: Mutation -> Double
-    go (Mut (AddLeft s0) jtns) = goAdd1 s0 jtns
-    go (Mut (AddRight s1) jtns) = goAdd1 s1 jtns
-    go (Mut (Add2 s0 s1) n01) = deltaDelta_ nm' dns (vm+2)
+    go :: EvalMutation -> Double
+    go (EMut (AddLeft s0) jtns) = goAdd1 s0 jtns
+    go (EMut (AddRight s1) jtns) = goAdd1 s1 jtns
+    go (EMut (Add2 s0 s1) n01) = deltaDelta_ nm' dns (vm+2)
       where nm' = nm + n01
             n0' = IM.findWithDefault (ns U.! s0) s0 ns'
             n1' = IM.findWithDefault (ns U.! s1) s1 ns'
@@ -475,9 +522,9 @@ evalMutation m bigN ns ns' nm vm = go
                 | otherwise = [(n0', n0'-n01)
                               ,(n1', n1'-n01)]
 
-    go (Mut (DelLeft s0) jtns) = goDel1 s0 jtns
-    go (Mut (DelRight s1) jtns) = goDel1 s1 jtns
-    go (Mut (Del2 s0 s1) n01) = deltaDelta_ nm' dns (vm-2)
+    go (EMut (DelLeft s0) jtns) = goDel1 s0 jtns
+    go (EMut (DelRight s1) jtns) = goDel1 s1 jtns
+    go (EMut (Del2 s0 s1) n01) = deltaDelta_ nm' dns (vm-2)
       where
         nm' = nm - n01
         n0 = ns' IM.! s0
@@ -542,7 +589,7 @@ ilog = log . fromIntegral
 -- APPLY MUTATION --
 ---------------------
 
-appMutation :: Monad m => TypeMutation k -> RefinementT m ()
+appMutation :: Monad m => Mutation k -> RefinementT m ()
 appMutation mutation = case mutation of
   AddLeft s0 -> do
     -- (Out,In): remove (Out[s0] <--> In[ins])
@@ -565,7 +612,7 @@ appMutation mutation = case mutation of
 
     let dnm = sum ins
     jointCount += dnm
-    refinement.left %= UT.insert s0
+    refinement.left %= UT.insertMissing s0
 
     -- (insert s0 if not already in ns')
     ns <- use $ modelParams.symbolCounts
@@ -596,7 +643,7 @@ appMutation mutation = case mutation of
 
     let dnm = sum ins
     jointCount += dnm
-    refinement.right %= UT.insert s1
+    refinement.right %= UT.insertMissing s1
 
     -- (insert s1 if not already in ns')
     ns <- use $ modelParams.symbolCounts
@@ -635,8 +682,8 @@ appMutation mutation = case mutation of
       byFstOutIn %= IM.insertWithKey (col "byFstOutIn") s1 `atEvery` out1s
 
     jointCount += n01
-    refinement.left %= UT.insert s0
-    refinement.right %= UT.insert s1
+    refinement.left %= UT.insertMissing s0
+    refinement.right %= UT.insertMissing s1
     ns <- use $ modelParams.symbolCounts
     n0' <- newSymbolCounts `uses` IM.findWithDefault (ns U.! s0) s0
     n1' <- newSymbolCounts `uses` IM.findWithDefault (ns U.! s1) s1

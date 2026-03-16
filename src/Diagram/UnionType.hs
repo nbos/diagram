@@ -57,15 +57,25 @@ fromSet ss = UT (IS.size ss) ss
 member :: Sym -> UnionType -> Bool
 member s = IS.member s . set
 
+-- | Safe insertion
 insert :: Sym -> UnionType -> UnionType
-insert s ut@(UT n ss)
-  | s `IS.member` ss = ut -- unchanged
-  | otherwise = UT (n+1) $ IS.insert s ss
+insert s ut | s `member` ut = ut -- unchanged
+            | otherwise = insertMissing s ut
 
+-- | Insert a symbol that is not present in the type. Breaks invariant
+-- if it is present.
+insertMissing :: Sym -> UnionType -> UnionType
+insertMissing s (UT n ss) = UT (n+1) $ IS.insert s ss
+
+-- | Safe deletion
 delete :: Sym -> UnionType -> UnionType
-delete s ut@(UT n ss)
-  | s `IS.member` ss = UT (n-1) $ IS.delete s ss
-  | otherwise = ut -- unchanged
+delete s ut | s `member` ut = deleteMember s ut
+            | otherwise = ut -- unchanged
+
+-- | Delete a symbol that is present in the type. Breaks invariant if it
+-- is not present.
+deleteMember :: Sym -> UnionType -> UnionType
+deleteMember s (UT n ss) = UT (n-1) $ IS.delete s ss
 
 -------------
 -- LATTICE --

@@ -51,6 +51,35 @@ toLists (JT u0 u1) = (UT.toAscList u0, UT.toAscList u1)
 member :: (Sym,Sym) -> JointType -> Bool
 member (s0,s1) (JT u0 u1) = UT.member s0 u0 && UT.member s1 u1
 
+-- | Safe left insertion
+insertLeft :: Sym -> JointType -> JointType
+insertLeft s (JT u0 u1) = JT (UT.insert s u0) u1
+
+-- | Unsafe left insertion. Breaks invariant if the symbol is already
+-- present in left union.
+insertLeftMissing :: Sym -> JointType -> JointType
+insertLeftMissing s (JT u0 u1) = JT (UT.insertMissing s u0) u1
+
+-- | Safe right insertion
+insertRight :: Sym -> JointType -> JointType
+insertRight s (JT u0 u1) = JT u0 (UT.insert s u1)
+
+-- | Unsafe right insertion. Breaks invariant if the symbol is already
+-- present in right union.
+insertRightMissing :: Sym -> JointType -> JointType
+insertRightMissing s (JT u0 u1) = JT u0 (UT.insertMissing s u1)
+
+-- | Safe both left/right insertion at once
+insertBoth :: Sym -> Sym -> JointType -> JointType
+insertBoth s0 s1 (JT u0 u1) = JT (UT.insert s0 u0) (UT.insert s1 u1)
+
+-- | Unsafe both left/right insertion at once. Breaks invariant if the
+-- symbols are already present in the respective unions.
+insertBothMissing :: Sym -> Sym -> JointType -> JointType
+insertBothMissing s0 s1 (JT u0 u1) = JT u0' u1'
+  where u0' = UT.insertMissing s0 u0
+        u1' = UT.insertMissing s1 u1
+
 -------------
 -- LATTICE --
 -------------
