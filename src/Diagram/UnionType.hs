@@ -57,6 +57,9 @@ fromSet ss = UT (IS.size ss) ss
 member :: Sym -> UnionType -> Bool
 member s = IS.member s . set
 
+notMember :: Sym -> UnionType -> Bool
+notMember = not .: member
+
 -- | Safe insertion
 insert :: Sym -> UnionType -> UnionType
 insert s ut | s `member` ut = ut -- unchanged

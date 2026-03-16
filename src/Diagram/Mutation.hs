@@ -5,6 +5,8 @@ module Diagram.Mutation (module Diagram.Mutation) where
 
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
+import Data.List.NonEmpty (NonEmpty((:|)))
+import qualified Data.List.NonEmpty as NE
 
 import qualified Data.Vector.Unboxed as U
 
@@ -69,9 +71,14 @@ instance Show EvalMutation where
     DelRight s   -> "DelRight " ++ show s ++ " " ++ show jtns
     Del2     a b -> "Del2 "     ++ show a ++ " " ++ show b ++ " " ++ show jtns
 
-breakingOf :: JointType -> Sym -> (Sym,Sym) -> [(Sym,Sym)] ->
-              (SomeMutation, Sym)
-breakingOf (JT u0 u1) s0 (s1,s2) rest = (mut, go s2 rest)
+-- | For a joint type and a non-empty sequence of consecutive
+-- construction sites (s1,s2):rest, preceded by a non-constructive
+-- symbol s0, return the mutation to that type that would break the
+-- sequence and the trailing symbol that would be left unconstructed,
+-- i.e. whose count would have to be incremented by 1 (while the count
+-- of s0 would be correspondingly decremented by 1).
+breakingOf :: JointType -> Sym -> NonEmpty (Sym,Sym) -> (SomeMutation, Sym)
+breakingOf (JT u0 u1) s0 ((s1,s2):|rest) = (mut, go s2 rest)
   where
     go s2' [] = s2'
     go s2' ((s3,s4):rest')

@@ -1,25 +1,33 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
 {-# LANGUAGE InstanceSigs, DeriveGeneric, DeriveAnyClass #-}
+{-# LANGUAGE LambdaCase, TupleSections #-}
 
 module Diagram.JointType (module Diagram.JointType, Sym) where
 
 import GHC.Generics (Generic)
-import Control.Lens hiding (both)
+import Control.Lens hiding (both,Index)
 
 import Data.Hashable
 import Data.Tuple.Extra
+import Data.List.NonEmpty (NonEmpty(..))
+import qualified Data.List.NonEmpty as NE
 import qualified Data.List.Extra as L
 import qualified Data.Map.Strict as M
+
+import Streaming hiding (first,second)
+import qualified Streaming.Prelude as S
 
 import qualified Codec.Arithmetic.Variety as Variety
 import Codec.Arithmetic.Variety.BitVec (BitVec)
 import qualified Codec.Arithmetic.Variety.BitVec as BV
 
+import Diagram.Information
+
+import Diagram.Doubly (Index)
 import Diagram.Joints (Joints)
 import Diagram.UnionType (Sym,UnionType(..))
 import qualified Diagram.UnionType as UT
-import Diagram.Information
 
 import Diagram.Util
 
@@ -109,6 +117,40 @@ meet :: JointType -> JointType -> JointType
 meet (JT u0 u1) (JT u0' u1') =
   JT (UT.meet u0 u0') (UT.meet u1 u1')
 
+------------------
+-- CONSTRUCTION --
+------------------
+
+runs :: forall m r. Monad m => JointType -> Stream (Of (Index, Sym)) m r ->
+        Stream (Of (Index, NonEmpty (Sym,Sym))) m r
+runs (JT u0 u1) = go0
+  where
+    go0 iss = (lift (S.next iss) >>=) $ \case
+      Left r -> return r -- end
+      Right ((i0,s0),iss')
+        | s0 `UT.member` u0 -> go1 i0 s0 iss'
+        | otherwise -> go0 iss'
+
+    go1 i0 s0 iss = (lift (S.next iss) >>=) $ \case
+      Left r -> return r -- end
+      Right ((i1,s1),iss')
+        | s1 `UT.member` u1 -> do (tl, cont) <- lift $ go2 iss'
+                                  S.yield (i0, (s0,s1):|tl)
+                                  cont
+        | s1 `UT.member` u0 -> go1 i1 s1 iss'
+        | otherwise -> go0 iss'
+
+    go2 iss = (S.next iss >>=) $ \case
+      Left r -> return ([], return r)
+      Right ((_,s0),iss')
+        | s0 `UT.notMember` u0 -> return ([], go0 iss')
+        | otherwise -> (S.next iss' >>=) $ \case
+            Left r -> return ([], return r)
+            Right ((i1,s1), iss'')
+              | s1 `UT.member` u1 -> first ((s0,s1):) <$> go2 iss''
+              | s1 `UT.member` u0 -> return ([], go1 i1 s1 iss')
+              | otherwise -> return ([], go0 iss'')
+
 -----------
 -- CODEC --
 -----------
@@ -170,4 +212,3 @@ resolutionInfo k jt = fromIntegral k * log2 base
 -- | Length of a code to instantiate a type into `k` constructions
 resolutionLen :: Int -> JointType -> Int
 resolutionLen = ceiling .: resolutionInfo
-
