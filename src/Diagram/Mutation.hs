@@ -1,12 +1,12 @@
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
 {-# LANGUAGE DataKinds, GADTs, TypeFamilies, StandaloneDeriving #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE TupleSections, BangPatterns #-}
 module Diagram.Mutation (module Diagram.Mutation) where
 
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
 import Data.List.NonEmpty (NonEmpty((:|)))
-import qualified Data.List.NonEmpty as NE
 
 import qualified Data.Vector.Unboxed as U
 
@@ -73,17 +73,18 @@ instance Show EvalMutation where
 
 -- | For a joint type and a non-empty sequence of consecutive
 -- construction sites (s1,s2):rest, preceded by a non-constructive
--- symbol s0, return the mutation to that type that would break the
--- sequence and the trailing symbol that would be left unconstructed,
--- i.e. whose count would have to be incremented by 1 (while the count
--- of s0 would be correspondingly decremented by 1).
-breakingOf :: JointType -> Sym -> NonEmpty (Sym,Sym) -> (SomeMutation, Sym)
-breakingOf (JT u0 u1) s0 ((s1,s2):|rest) = (mut, go s2 rest)
+-- symbol s0, returns the mutation to that type that would break the
+-- sequence, the length of the new run, and the trailing symbol that
+-- would be left unconstructed, i.e. whose count would have to be
+-- incremented by 1 (while the count of s0 would be correspondingly
+-- decremented by 1).
+breakingOf :: JointType -> Sym -> NonEmpty (Sym,Sym) -> (SomeMutation, Int, Sym)
+breakingOf (JT u0 u1) s0 ((s1,s2):|rest) = uncurry (mut,,) $ go 1 s2 rest
   where
-    go s2' [] = s2'
-    go s2' ((s3,s4):rest')
-      | (s2',s3) `JT.member` jt' = go s4 rest' -- breaking propagates
-      | otherwise = s2' -- breaking stops, leaving s2' unconstructed
+    go !k s2' [] = (k,s2')
+    go !k s2' ((s3,s4):rest')
+      | (s2',s3) `JT.member` jt' = go (k+1) s4 rest' -- breaking propagates
+      | otherwise = (k,s2') -- breaking stops, leaving s2' unconstructed
 
     (mut, jt')
       | s0 `UT.member` u0 = -- assert $ not (s1 `UT.member` u1)

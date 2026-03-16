@@ -43,6 +43,7 @@ import qualified Streaming.Prelude as S
 import qualified Streaming.ByteString as Q
 import Diagram.Streaming ()
 
+import qualified Diagram.Doubly as D
 import Diagram.Joints (constructive)
 import qualified Diagram.Joints as Jts
 import qualified Diagram.JointType as JT
@@ -87,13 +88,17 @@ main = do
   -- read file
   h <- openFile (optFilename opts) ReadMode
   sz <- fromInteger @Int <$> hFileSize h
-  (jtniss,(mdl,_)) <- Jts.fromStream $ -- Map (Sym,Sym) a
-                     S.zip (S.enumFrom 0) $
-                     S.map fromEnum $
-                     Mdl.emptyFromAtoms $
-                     S.copy $
-                     withPB sz "Counting joints" $
-                     Q.unpack $ Q.fromHandle h
+
+  (ss,(mdl,())) <- D.fromStream sz $
+                   S.map fromEnum $
+                   Mdl.emptyFromAtoms $
+                   S.copy $
+                   withPB sz "Counting symbols" $
+                   Q.unpack $ Q.fromHandle h
+
+  (jtniss,()) <- Jts.fromStream $
+                 withPB sz "Counting joints" $
+                 D.streamWithKey ss
 
   -- form types
   let jtns = Strict.fst . (^.constructive) <$> jtniss
@@ -109,7 +114,7 @@ main = do
   let go :: RandT StdGen IO ()
       go = do
 
-        (rjt,rjtns) <- Ref.genRefinement jtns2S
+        (rjt,rjtns) <- Ref.genRandom jtns2S
 
         -- report stats, verify properties/integrity
         Ref.printInfo (jt,jtns) (rjt,rjtns)
@@ -124,7 +129,7 @@ main = do
 
         lift $ putStrLn "Beginning hill climb."
         let rjts2 = Jts.doubleIndex 256 rjtns
-            rst0 = Ref.initRefinementState params rjts2 rjt
+            rst0 = Ref.initState params ss rjts2 rjt
 
             go' = (Ref.stepHillClimb >>=) $ \case
               Just t -> return t

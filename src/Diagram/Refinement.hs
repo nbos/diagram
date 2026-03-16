@@ -26,6 +26,7 @@ import qualified Data.IntSet as IS
 import qualified Data.Vector.Unboxed as U
 
 import Diagram.Primitive (PrimMonad)
+import Diagram.Doubly (Doubly)
 
 import Diagram.Joints (Joints,Joints2(J2),Joints2S(J2S))
 import qualified Diagram.Joints as Jts
@@ -57,8 +58,8 @@ err = error . ("Refinement." ++)
 -- , fromLists ([1,3],[2])
 -- , fromLists ([1,2],[2,3])
 -- , fromLists ([1,2,3],[2,3]) ]
-enumRefinements :: forall a. Joints2S a -> [JointType]
-enumRefinements (J2S byFst0 bySnd0) = concatMap givenU0 u0s
+enum :: forall a. Joints2S a -> [JointType]
+enum (J2S byFst0 bySnd0) = concatMap givenU0 u0s
   where -- (enumerate u0 powerset, then hitting set enum)
     u0s :: [[(Sym, Map Sym a)]]
     u0s = combs $ M.toAscList byFst0 -- deconstruct, select
@@ -111,14 +112,14 @@ makeLenses ''GenerationState
 -- ways. Assumes each map maps pairs of symbols to the same values,
 -- i.e. if s0 -> s1 -> a01 then s1 -> s0 -> a01, otherwise the returned
 -- map of joints will have unpredicatble values.
-genRefinement :: (MonadRandom m, PrimMonad m) =>
-                 Joints2S a -> m (JointType, Joints a)
-genRefinement = genRefinementWith 0.5
+genRandom :: (MonadRandom m, PrimMonad m) =>
+             Joints2S a -> m (JointType, Joints a)
+genRandom = genRandomWith 0.5
 
 -- | Generate a random refinement, given a sampling probability
-genRefinementWith :: forall m a. (MonadRandom m, PrimMonad m) =>
-  Double -> Joints2S a -> m (JointType, Joints a)
-genRefinementWith r (J2S byFst0 bySnd0) =
+genRandomWith :: forall m a. (MonadRandom m, PrimMonad m) =>
+                 Double -> Joints2S a -> m (JointType, Joints a)
+genRandomWith r (J2S byFst0 bySnd0) =
   evalStateT go $ GenerationState
   (([],) <$> byFst0)
   (([],) <$> bySnd0) IS.empty IS.empty M.empty
@@ -205,15 +206,6 @@ genRefinementWith r (J2S byFst0 bySnd0) =
           else do fstUnion %= IS.insert s0
                   refJoints %= M.insert (s0,s1) a01 -- null staged0
 
--- -- | (DO NOT USE (NAIVE)) Generate a random refinement of a type. The
--- -- produced type is not necessarily a valid refinement (least upper
--- -- bound) of the set of joints it covers.
--- genRefinement_ :: MonadRandom m => JointType -> m JointType
--- genRefinement_ (JT u0 u1) = do
---   (_,ss0) <- R.split (UT.toAscList u0)
---   (_,ss1) <- R.split (UT.toAscList u1)
---   return $ JT (UT.fromDistinctAscList ss0) (UT.fromDistinctAscList ss1)
-
 -- -------------- --
 -- -- MUTATION -- --
 -- -------------- --
@@ -224,17 +216,18 @@ data ModelParams = Params
   , _stringLength :: !Int
   , _symbolCounts :: !(U.Vector Int) }
 
-type RefinementT = StateT RefinementState
-data RefinementState = RefinementState
-  { _modelParams :: !ModelParams -- for params: m, N, ns
+type RefinementT s = StateT (RefinementState s)
+data RefinementState s = RefinementState
+  { _modelParams :: !ModelParams -- :: (m, N, ns)
+  , _workingString :: !(Doubly U.MVector s Sym) -- :: ss (read only)
   -- , _parent :: !JointType
   , _jointCount :: !Int -- :: nm
   , _refinement :: !JointType -- :: rjt
   , _newSymbolCounts :: !(IntMap Int) -- :: ns'
-  , _joints :: !MembershipState }
+  , _joints :: !Membership }
 
-type MembershipT = StateT MembershipState
-data MembershipState = MembershipState
+type MembershipT = StateT Membership
+data Membership = Membership
   { _byFstInIn   :: !(IntMap (IntMap Int))
   , _byFstInOut  :: !(IntMap (IntMap Int))
   , _byFstOutIn  :: !(IntMap (IntMap Int))
@@ -246,21 +239,23 @@ data MembershipState = MembershipState
 
 makeLenses ''ModelParams
 makeLenses ''RefinementState
-makeLenses ''MembershipState
+makeLenses ''Membership
 
 --------------------------
 -- STATE INITIALIZATION --
 --------------------------
 
-initRefinementState :: ModelParams -> Joints2 Int -> JointType -> RefinementState
-initRefinementState mdl@(Params _ _ ns) jts2 rjt =
+initState :: ModelParams -> Doubly U.MVector s Sym -> Joints2 Int ->
+             JointType -> RefinementState s
+initState mdl@(Params _ _ ns) str jts2 rjt =
   RefinementState { _modelParams = mdl
+                  , _workingString = str
                   , _jointCount = nm
                   , _refinement = rjt
                   , _newSymbolCounts = ns'
                   , _joints = coverage }
   where
-    coverage = initMembershipState jts2 rjt
+    coverage = initMembership jts2 rjt
     nm = sum $ snd <$> byFstInInL
     byFstInInL = byFstToAscList $ coverage ^. byFstInIn
     ns' = IM.mapWithKey (\s dn -> (ns U.! s) - dn ) $
@@ -268,9 +263,9 @@ initRefinementState mdl@(Params _ _ ns) jts2 rjt =
           foldr (\((s0,s1),n01) l -> (s0,n01):(s1,n01):l)
           [] byFstInInL
 
-initMembershipState :: Joints2 Int -> JointType -> MembershipState
-initMembershipState (J2 byFst bySnd) (JT u0 u1) =
-  MembershipState { _byFstInIn   = byFstInIn_
+initMembership :: Joints2 Int -> JointType -> Membership
+initMembership (J2 byFst bySnd) (JT u0 u1) =
+  Membership { _byFstInIn   = byFstInIn_
                   , _byFstInOut  = byFstInOut_
                   , _byFstOutIn  = byFstOutIn_
                   , _byFstOutOut = byFstOutOut_
@@ -299,14 +294,14 @@ initMembershipState (J2 byFst bySnd) (JT u0 u1) =
 -- EXECUTION --
 ---------------
 
-stepHillClimb :: Monad m => RefinementT m (Maybe JointType)
+stepHillClimb :: Monad m => RefinementT s m (Maybe JointType)
 stepHillClimb = do
   (minLoss, EMut mut _) <- minMutation
   if minLoss >= 0 then refinement `uses` Just -- end
     else appMutation mut -- step
          >> return Nothing
 
-hillClimb :: Monad m => RefinementT m JointType
+hillClimb :: Monad m => RefinementT s m JointType
 hillClimb = (stepHillClimb >>=) $ \case
   Nothing -> hillClimb
   Just jt -> return jt
@@ -344,18 +339,18 @@ hillClimb = (stepHillClimb >>=) $ \case
 --     vm_0 = UT.length ru0_0 + UT.length ru1_0
 --     rInfo_0 = fromIntegral nm_0 * ilog vm_0
 
-minMutation :: Monad m => RefinementT m (Double, EvalMutation)
+minMutation :: Monad m => RefinementT s m (Double, EvalMutation)
 minMutation = do
-  muts <- zoom joints enumMutations
-  (RefinementState (Params m bigN ns) nm rjt ns' _) <- get
+  muts <- joints `uses` enumMutations
+  (RefinementState (Params m bigN ns) _ nm rjt ns' _) <- get
   let vm = JT.variety rjt
       emuts = toFst (evalMutation m bigN ns ns' nm vm) <$> muts
   return $ L.minimumOn fst emuts
 
-negMutations :: Monad m => RefinementT m [(Double, EvalMutation)]
+negMutations :: Monad m => RefinementT s m [(Double, EvalMutation)]
 negMutations = do
-  muts <- zoom joints enumMutations
-  (RefinementState (Params m bigN ns) nm rjt ns' _) <- get
+  muts <- joints `uses` enumMutations
+  (RefinementState (Params m bigN ns) _ nm rjt ns' _) <- get
   let vm = JT.variety rjt
       emuts = toFst (evalMutation m bigN ns ns' nm vm) <$> muts
   return $ L.filter ((<0) . fst) emuts
@@ -364,55 +359,56 @@ negMutations = do
 -- ENUMERATE MUTATIONS --
 -------------------------
 
-enumMutations :: Monad m => MembershipT m [EvalMutation]
-enumMutations = do
-  (MembershipState byFstInIn_ _ byFstOutIn_ byFstOutOut_
-   bySndInIn_ _ bySndOutIn_ _) <- get
+enumMutations :: Membership -> [EvalMutation]
+enumMutations (Membership byFstInIn_ _ byFstOutIn_ byFstOutOut_
+                bySndInIn_ _ bySndOutIn_ _) = als ++ ars
+                                              ++ a2s ++ dls
+                                              ++ drs ++ d2s
+  where
+    -- Out --> In
+    als = uc (EMut . AddLeft)  <$> IM.toList byFstOutIn_
+    -- In <-- Out
+    ars = uc (EMut . AddRight) <$> IM.toList bySndOutIn_
 
-  let als = uc (EMut . AddLeft)  <$> IM.toList byFstOutIn_ -- Out --> In
-      ars = uc (EMut . AddRight) <$> IM.toList bySndOutIn_ -- In <-- Out
+    -- (Out,Out) that can't be added one-by-one
+    a2s = uc (EMut . uc Add2) <$> M.toList outSubgraph
+    outSubgraph = byFstToMap $
+                  (IM.\\ bySndOutIn_)
+                  <$> (byFstOutOut_ IM.\\ byFstOutIn_)
 
-      -- (Out,Out) that can't be added one-by-one
-      a2s = uc (EMut . uc Add2) <$> M.toList outSubgraph
-      outSubgraph = byFstToMap $
-                    (IM.\\ bySndOutIn_)
-                    <$> (byFstOutOut_ IM.\\ byFstOutIn_)
+    leftDependents = IM.mapMaybe fromSingleton byFstInIn_
+    rightDependents = IM.mapMaybe fromSingleton bySndInIn_
+    fromSingleton im | [sn] <- IM.toList im = Just sn
+                     | otherwise = Nothing
 
-      leftDependents = IM.mapMaybe fromSingleton byFstInIn_
-      rightDependents = IM.mapMaybe fromSingleton bySndInIn_
-      fromSingleton im | [sn] <- IM.toList im = Just sn
-                       | otherwise = Nothing
+    -- can be deleted: In (w/o dependents) --> In
+    dls = uc (EMut . DelLeft) <$> byFstInInWithoutDeps
+    byFstInInWithoutDeps = filter (IM.disjoint rightDependents . snd) $
+                           IM.toList byFstInIn_ -- In --> In
 
-      -- can be deleted: In (w/o dependents) --> In
-      dls = uc (EMut . DelLeft) <$> byFstInInWithoutDeps
-      byFstInInWithoutDeps = filter (IM.disjoint rightDependents . snd) $
-                             IM.toList byFstInIn_ -- In --> In
+    -- can be deleted: In <-- In (w/o dependents)
+    drs = uc (EMut . DelRight) <$> bySndInInWithoutDeps
+    bySndInInWithoutDeps = filter (IM.disjoint leftDependents . snd) $
+                           IM.toList bySndInIn_ -- In <-- In
 
-      -- can be deleted: In <-- In (w/o dependents)
-      drs = uc (EMut . DelRight) <$> bySndInInWithoutDeps
-      bySndInInWithoutDeps = filter (IM.disjoint leftDependents . snd) $
-                             IM.toList bySndInIn_ -- In <-- In
+    -- (In,In) that can't be deleted one-by-one
+    d2s = uc (EMut . uc Del2) <$> M.toList coDependents
+    coDependents = M.intersectionWith assertEq
+                   leftPendantJts rightPendantJts
 
-      -- (In,In) that can't be deleted one-by-one
-      d2s = uc (EMut . uc Del2) <$> M.toList coDependents
-      coDependents = M.intersectionWith assertEq
-                     leftPendantJts rightPendantJts
+    leftPendantJts = M.fromDistinctAscList $ toList leftDependents
+      where toList :: IntMap (s1, a) -> [((Sym, s1), a)]
+            toList = IM.foldrWithKey (\s0 s1n l -> first (s0,) s1n : l) []
 
-      leftPendantJts = M.fromDistinctAscList $ toList leftDependents
-        where toList :: IntMap (s1, a) -> [((Sym, s1), a)]
-              toList = IM.foldrWithKey (\s0 s1n l -> first (s0,) s1n : l) []
+    rightPendantJts = M.fromDistinctAscList $ toList rightDependents
+      where toList :: IntMap (s0, a) -> [((s0, Sym), a)]
+            toList = IM.foldrWithKey (\s1 s0n l -> first (,s1) s0n : l) []
 
-      rightPendantJts = M.fromDistinctAscList $ toList rightDependents
-        where toList :: IntMap (s0, a) -> [((s0, Sym), a)]
-              toList = IM.foldrWithKey (\s1 s0n l -> first (,s1) s0n : l) []
-
-  return $ als ++ ars ++ a2s ++ dls ++ drs ++ d2s
-    where
-      uc = uncurry
-      err' = err . ("enumMutations: " ++)
-      assertEq n n'
-        | n /= n' = err' $ "should be eq: " ++ show (n,n')
-        | otherwise = n
+    uc = uncurry
+    err' = err . ("enumMutations: " ++)
+    assertEq n n'
+      | n /= n' = err' $ "should be eq: " ++ show (n,n')
+      | otherwise = n
 
 -- WHERE --
 byFstToMap :: IntMap (IntMap Int) -> Map (Sym,Sym) Int
@@ -434,7 +430,7 @@ bySndToAscList = fmap (first swap) . byFstToAscList
 -- APPLY MUTATION --
 ---------------------
 
-appMutation :: Monad m => Mutation k -> RefinementT m ()
+appMutation :: Monad m => Mutation k -> RefinementT s m ()
 appMutation mutation = case mutation of
   AddLeft s0 -> do
     -- (Out,In): remove (Out[s0] <--> In[ins])
@@ -600,8 +596,8 @@ appMutation mutation = case mutation of
 
   Del2 s0 s1 -> do
     -- (In,In): remove (In[s0] --> In[s1])
-    n01 <- joints.byFstInIn %%= first (head . IM.elems) -- singleton by definition
-                                . deleteFind s0
+    n01 <- joints.byFstInIn %%= first (head . IM.elems)
+                                . deleteFind s0 -- singleton by definition
     zoom joints $ do
       -- (In,Out): remove (In[s0] <--> Out[out0s])
       out0s <- byFstInOut %%= deleteFind s0

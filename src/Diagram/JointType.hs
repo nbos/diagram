@@ -11,7 +11,6 @@ import Control.Lens hiding (both,Index)
 import Data.Hashable
 import Data.Tuple.Extra
 import Data.List.NonEmpty (NonEmpty(..))
-import qualified Data.List.NonEmpty as NE
 import qualified Data.List.Extra as L
 import qualified Data.Map.Strict as M
 
