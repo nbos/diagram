@@ -118,7 +118,7 @@ main = do
         Ref.printLUB rjt rjtns
         Ref.printSubtyping (jt,jtns) (rjt,rjtns)
         Ref.printConservation (jt,jtns) (rjt,rjtns)
-        Ref.printCoverage jtns (rjt,rjtns)
+        Ref.printMembership jtns (rjt,rjtns)
         lift $ putStrLn ""
         --
 

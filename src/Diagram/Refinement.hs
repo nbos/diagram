@@ -1,6 +1,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
-{-# LANGUAGE TupleSections, LambdaCase, TypeApplications #-}
+{-# LANGUAGE TupleSections, LambdaCase, TypeApplications, TypeOperators #-}
+{-# LANGUAGE DataKinds, GADTs, KindSignatures, TypeFamilies, StandaloneDeriving #-}
 {-# LANGUAGE InstanceSigs #-}
 module Diagram.Refinement (module Diagram.Refinement) where
 
@@ -8,7 +9,6 @@ import Control.Monad as Monad
 import Control.Lens hiding (both,last1)
 import Control.Monad.State.Strict
 import Control.Monad.Random
-
 
 import Data.Maybe
 import Data.Tuple.Extra
@@ -215,14 +215,30 @@ genRefinementWith r (J2S byFst0 bySnd0) =
 -- -- MUTATIONS -- --
 -- --------------- --
 
-data Mutation
-  = AddLeft  !Sym !(IntMap Int)
-  | AddRight !Sym !(IntMap Int)
-  | Add2     !Sym !Sym !Int
-  | DelLeft  !Sym !(IntMap Int)
-  | DelRight !Sym !(IntMap Int)
-  | Del2     !Sym !Sym !Int
-  deriving(Show,Eq)
+-- data Mutation =
+--   AddLeft  !Sym !(IntMap Int)
+--   | AddRight !Sym !(IntMap Int)
+--   | Add2     !Sym !Sym !Int
+--   | DelLeft  !Sym !(IntMap Int)
+--   | DelRight !Sym !(IntMap Int)
+--   | Del2     !Sym !Sym !Int
+--   deriving(Show,Eq)
+
+data MutKind = Side | Both
+type family CountDelta (k :: MutKind) where
+  CountDelta Side = IntMap Int
+  CountDelta Both = Int
+
+data TypeMutation (k :: MutKind) where
+  AddLeft  :: !Sym         -> TypeMutation Side
+  AddRight :: !Sym         -> TypeMutation Side
+  Add2     :: !Sym -> !Sym -> TypeMutation Both
+  DelLeft  :: !Sym         -> TypeMutation Side
+  DelRight :: !Sym         -> TypeMutation Side
+  Del2     :: !Sym -> !Sym -> TypeMutation Both
+
+data Mutation where
+  Mut :: !(TypeMutation k) -> !(CountDelta k) -> Mutation
 
 -- TODO: move to Diagram.Model
 data ModelParams = Params
@@ -237,10 +253,10 @@ data RefinementState = RefinementState
   , _jointCount :: !Int -- :: nm
   , _refinement :: !JointType -- :: rjt
   , _newSymbolCounts :: !(IntMap Int) -- :: ns'
-  , _joints :: !CoverageState }
+  , _joints :: !MembershipState }
 
-type CoverageT = StateT CoverageState
-data CoverageState = CoverageState
+type MembershipT = StateT MembershipState
+data MembershipState = MembershipState
   { _byFstInIn   :: !(IntMap (IntMap Int))
   , _byFstInOut  :: !(IntMap (IntMap Int))
   , _byFstOutIn  :: !(IntMap (IntMap Int))
@@ -252,7 +268,7 @@ data CoverageState = CoverageState
 
 makeLenses ''ModelParams
 makeLenses ''RefinementState
-makeLenses ''CoverageState
+makeLenses ''MembershipState
 
 --------------------------
 -- STATE INITIALIZATION --
@@ -266,7 +282,7 @@ initRefinementState mdl@(Params _ _ ns) jts2 rjt =
                   , _newSymbolCounts = ns'
                   , _joints = coverage }
   where
-    coverage = initCoverageState jts2 rjt
+    coverage = initMembershipState jts2 rjt
     nm = sum $ snd <$> byFstInInL
     byFstInInL = byFstToAscList $ coverage ^. byFstInIn
     ns' = IM.mapWithKey (\s dn -> (ns U.! s) - dn ) $
@@ -274,16 +290,16 @@ initRefinementState mdl@(Params _ _ ns) jts2 rjt =
           foldr (\((s0,s1),n01) l -> (s0,n01):(s1,n01):l)
           [] byFstInInL
 
-initCoverageState :: Joints2 Int -> JointType -> CoverageState
-initCoverageState (J2 byFst bySnd) (JT u0 u1) =
-  CoverageState { _byFstInIn   = byFstInIn_
-                , _byFstInOut  = byFstInOut_
-                , _byFstOutIn  = byFstOutIn_
-                , _byFstOutOut = byFstOutOut_
-                , _bySndInIn   = bySndInIn_
-                , _bySndInOut  = bySndInOut_
-                , _bySndOutIn  = bySndOutIn_
-                , _bySndOutOut = bySndOutOut_ }
+initMembershipState :: Joints2 Int -> JointType -> MembershipState
+initMembershipState (J2 byFst bySnd) (JT u0 u1) =
+  MembershipState { _byFstInIn   = byFstInIn_
+                  , _byFstInOut  = byFstInOut_
+                  , _byFstOutIn  = byFstOutIn_
+                  , _byFstOutOut = byFstOutOut_
+                  , _bySndInIn   = bySndInIn_
+                  , _bySndInOut  = bySndInOut_
+                  , _bySndOutIn  = bySndOutIn_
+                  , _bySndOutOut = bySndOutOut_ }
   where
     byFstIn = byFst `IM.restrictKeys` UT.set u0
     byFstInIn_  = (`IM.restrictKeys` UT.set u1) <$> byFstIn
@@ -307,7 +323,7 @@ initCoverageState (J2 byFst bySnd) (JT u0 u1) =
 
 stepHillClimb :: Monad m => RefinementT m (Maybe JointType)
 stepHillClimb = do
-  (minLoss, mut) <- minMutation
+  (minLoss, Mut mut _) <- minMutation
   if minLoss >= 0 then refinement `uses` Just -- end
     else appMutation mut -- step
          >> return Nothing
@@ -370,16 +386,16 @@ negMutations = do
 -- ENUMERATE MUTATIONS --
 -------------------------
 
-enumMutations :: Monad m => CoverageT m [Mutation]
+enumMutations :: Monad m => MembershipT m [Mutation]
 enumMutations = do
-  (CoverageState byFstInIn_ _ byFstOutIn_ byFstOutOut_
+  (MembershipState byFstInIn_ _ byFstOutIn_ byFstOutOut_
    bySndInIn_ _ bySndOutIn_ _) <- get
 
-  let als = uc AddLeft  <$> IM.toList byFstOutIn_ -- Out --> In
-      ars = uc AddRight <$> IM.toList bySndOutIn_ -- In <-- Out
+  let als = uc (Mut . AddLeft)  <$> IM.toList byFstOutIn_ -- Out --> In
+      ars = uc (Mut . AddRight) <$> IM.toList bySndOutIn_ -- In <-- Out
 
       -- (Out,Out) that can't be added one-by-one
-      a2s = uc (uc Add2) <$> M.toList outSubgraph
+      a2s = uc (Mut . uc Add2) <$> M.toList outSubgraph
       outSubgraph = byFstToMap $
                     (IM.\\ bySndOutIn_)
                     <$> (byFstOutOut_ IM.\\ byFstOutIn_)
@@ -389,18 +405,18 @@ enumMutations = do
       fromSingleton im | [sn] <- IM.toList im = Just sn
                        | otherwise = Nothing
 
-      -- can be deleted yet: In (w/o dependents) --> In
-      dls = uc DelLeft <$> byFstInInWithoutDeps
+      -- can be deleted: In (w/o dependents) --> In
+      dls = uc (Mut . DelLeft) <$> byFstInInWithoutDeps
       byFstInInWithoutDeps = filter (IM.disjoint rightDependents . snd) $
                              IM.toList byFstInIn_ -- In --> In
 
-      -- can be deleted yet: In <-- In (w/o dependents)
-      drs = uc DelRight <$> bySndInInWithoutDeps
+      -- can be deleted: In <-- In (w/o dependents)
+      drs = uc (Mut . DelRight) <$> bySndInInWithoutDeps
       bySndInInWithoutDeps = filter (IM.disjoint leftDependents . snd) $
                              IM.toList bySndInIn_ -- In <-- In
 
       -- (In,In) that can't be deleted one-by-one
-      d2s = uc (uc Del2) <$> M.toList coDependents
+      d2s = uc (Mut . uc Del2) <$> M.toList coDependents
       coDependents = M.intersectionWith assertEq
                      leftPendantJts rightPendantJts
 
@@ -449,9 +465,9 @@ evalMutation m bigN ns ns' nm vm = go
     deltaDelta_ nm' dns vm' = deltaDelta m bigN (nm,nm') dns (vm,vm')
 
     go :: Mutation -> Double
-    go (AddLeft s0 jtns) = goAdd1 s0 jtns
-    go (AddRight s1 jtns) = goAdd1 s1 jtns
-    go (Add2 s0 s1 n01) = deltaDelta_ nm' dns (vm+2)
+    go (Mut (AddLeft s0) jtns) = goAdd1 s0 jtns
+    go (Mut (AddRight s1) jtns) = goAdd1 s1 jtns
+    go (Mut (Add2 s0 s1) n01) = deltaDelta_ nm' dns (vm+2)
       where nm' = nm + n01
             n0' = IM.findWithDefault (ns U.! s0) s0 ns'
             n1' = IM.findWithDefault (ns U.! s1) s1 ns'
@@ -459,9 +475,9 @@ evalMutation m bigN ns ns' nm vm = go
                 | otherwise = [(n0', n0'-n01)
                               ,(n1', n1'-n01)]
 
-    go (DelLeft s0 jtns) = goDel1 s0 jtns
-    go (DelRight s1 jtns) = goDel1 s1 jtns
-    go (Del2 s0 s1 n01) = deltaDelta_ nm' dns (vm-2)
+    go (Mut (DelLeft s0) jtns) = goDel1 s0 jtns
+    go (Mut (DelRight s1) jtns) = goDel1 s1 jtns
+    go (Mut (Del2 s0 s1) n01) = deltaDelta_ nm' dns (vm-2)
       where
         nm' = nm - n01
         n0 = ns' IM.! s0
@@ -526,11 +542,11 @@ ilog = log . fromIntegral
 -- APPLY MUTATION --
 ---------------------
 
-appMutation :: Monad m => Mutation -> RefinementT m ()
+appMutation :: Monad m => TypeMutation k -> RefinementT m ()
 appMutation mutation = case mutation of
-  (AddLeft s0 _) -> do
+  AddLeft s0 -> do
     -- (Out,In): remove (Out[s0] <--> In[ins])
-    ins <- joints . byFstOutIn %%= deleteFind s0
+    ins <- joints.byFstOutIn %%= deleteFind s0
     zoom joints $ do
       bySndInOut %= const (IM.delete s0) `atEvery` ins
 
@@ -560,9 +576,9 @@ appMutation mutation = case mutation of
         col str k a a' = error $ "AddLeft (" ++ str ++ "):\n"
                          ++ "  collision: " ++ show (k,(a,a'))
 
-  (AddRight s1 _) -> do
+  AddRight s1 -> do
     -- (In,Out): remove (In[ins] <--> Out[s1])
-    ins <- joints . bySndOutIn %%= deleteFind s1
+    ins <- joints.bySndOutIn %%= deleteFind s1
     zoom joints $ do
       byFstInOut %= const (IM.delete s1) `atEvery` ins
 
@@ -591,10 +607,12 @@ appMutation mutation = case mutation of
         col str k a a' = error $ "AddRight (" ++ str ++ "):\n"
                          ++ "  collision: " ++ show (k,(a,a'))
 
-  (Add2 s0 s1 n01) -> do
+  Add2 s0 s1 -> do
+    -- (Out,Out): remove (Out[s0] <--> Out[out0s])
+    out0s <- joints.byFstOutOut %%= deleteFind s0
+    let n01 = out0s IM.! s1
+
     zoom joints $ do
-      -- (Out,Out): remove (Out[s0] <--> Out[out0s])
-      out0s <- byFstOutOut %%= deleteFind s0
       bySndOutOut %= const (IM.delete s0) `atEvery` out0s
       -- (Out,Out): remove (Out[out1s] <--> Out[s1])
       out1s <- bySndOutOut %%= deleteFind s1
@@ -628,9 +646,9 @@ appMutation mutation = case mutation of
         col str k a a' = error $ "Add2 (" ++ str ++ "):\n"
                          ++ "  collision: " ++ show (k,(a,a'))
 
-  (DelLeft s0 _) -> do
+  DelLeft s0 -> do
     -- (In,In): remove (In[s0] <--> In[ins])
-    ins <- joints . byFstInIn %%= deleteFind s0
+    ins <- joints.byFstInIn %%= deleteFind s0
     zoom joints $ do
       bySndInIn %= const (IM.delete s0) `atEvery` ins
 
@@ -658,9 +676,9 @@ appMutation mutation = case mutation of
         col str k a a' = error $ "DelLeft (" ++ str ++ "):\n"
                          ++ "  collision: " ++ show (k,(a,a'))
 
-  (DelRight s1 _) -> do
+  DelRight s1 -> do
     -- (In,In): remove (In[ins] <--> In[s1])
-    ins <- joints . bySndInIn %%= deleteFind s1
+    ins <- joints.bySndInIn %%= deleteFind s1
     zoom joints $ do
       byFstInIn %= const (IM.delete s1) `atEvery` ins
 
@@ -688,7 +706,10 @@ appMutation mutation = case mutation of
           col str k a a' = error $ "DelRight (" ++ str ++ "):\n"
                            ++ "  collision: " ++ show (k,(a,a'))
 
-  (Del2 s0 s1 n01) -> do
+  Del2 s0 s1 -> do
+    -- (In,In): remove (In[s0] --> In[s1])
+    n01 <- joints.byFstInIn %%= first (head . IM.elems) -- singleton by definition
+                                . deleteFind s0
     zoom joints $ do
       -- (In,Out): remove (In[s0] <--> Out[out0s])
       out0s <- byFstInOut %%= deleteFind s0
@@ -698,8 +719,7 @@ appMutation mutation = case mutation of
       out1s <- bySndInOut %%= deleteFind s1
       byFstOutIn %= const (IM.delete s1) `atEvery` out1s
 
-      -- (In,In): remove (In[s0] <--> In[s1])
-      byFstInIn %= IM.delete s0 -- singleton by definition
+      -- (In,In): remove (In[s0] <-- In[s1])
       bySndInIn %= IM.delete s1 -- singleton by definition
 
       let out0s' = IM.insertWithKey (col "s0-->s1") s1 n01 out0s
@@ -757,9 +777,9 @@ modifyEvery f = IM.mergeWithKey f
                 (error . ("modifyEvery: missing keys: " ++) . show) id
 --
 
------------
--- STATS --
------------
+--------------
+-- IO STATS --
+--------------
 
 printInfo :: MonadIO m => (JointType, Map (Sym,Sym) a) ->
              (JointType, Map (Sym,Sym) b) -> m ()
@@ -809,8 +829,8 @@ printConservation (jt,jts) (rjt,rjts) = liftIO $ do
               ++ "\nrtjt: " ++ show (rjt, void rjts)
             error "joints split error"
 
-printCoverage :: MonadIO m => Map (Sym,Sym) a -> (JointType, Map (Sym,Sym) a) -> m ()
-printCoverage jts (rjt,rjts) = liftIO $ do
+printMembership :: MonadIO m => Map (Sym,Sym) a -> (JointType, Map (Sym,Sym) a) -> m ()
+printMembership jts (rjt,rjts) = liftIO $ do
   let rjtsVerif = M.filterWithKey (\k _ -> k `JT.member` rjt) jts
   putStr "returned joints "
   if M.keys rjts == M.keys rjtsVerif
