@@ -66,6 +66,7 @@ executable diagram
                       Diagram.Doubly
                       Diagram.Dynamic
                       Diagram.Progress
+                      Diagram.Mutation
                       Diagram.Primitive
                       Diagram.Streaming
                       Diagram.JointType
