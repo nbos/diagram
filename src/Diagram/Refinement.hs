@@ -25,7 +25,7 @@ import qualified Data.IntSet as IS
 
 import qualified Data.Vector.Unboxed as U
 
-import Diagram.Primitive (PrimMonad)
+import Diagram.Primitive
 import Diagram.Doubly (Doubly)
 
 import Diagram.Joints (Joints,Joints2(J2),Joints2S(J2S))
@@ -34,7 +34,7 @@ import Diagram.UnionType (Sym)
 import qualified Diagram.UnionType as UT
 import Diagram.JointType (JointType(..),left,right)
 import qualified Diagram.JointType as JT
-import Diagram.Mutation (Mutation(..), EvalMutation(..), evalMutation)
+import Diagram.Mutation
 
 import Diagram.Util
 
@@ -294,14 +294,14 @@ initMembership (J2 byFst bySnd) (JT u0 u1) =
 -- EXECUTION --
 ---------------
 
-stepHillClimb :: Monad m => RefinementT s m (Maybe JointType)
+stepHillClimb :: PrimMonad m => RefinementT (PrimState m) m (Maybe JointType)
 stepHillClimb = do
-  (minLoss, EMut mut _) <- minMutation
+  (minLoss, MutD mut _) <- minMutation
   if minLoss >= 0 then refinement `uses` Just -- end
     else appMutation mut -- step
          >> return Nothing
 
-hillClimb :: Monad m => RefinementT s m JointType
+hillClimb :: PrimMonad m => RefinementT (PrimState m) m JointType
 hillClimb = (stepHillClimb >>=) $ \case
   Nothing -> hillClimb
   Just jt -> return jt
@@ -339,7 +339,7 @@ hillClimb = (stepHillClimb >>=) $ \case
 --     vm_0 = UT.length ru0_0 + UT.length ru1_0
 --     rInfo_0 = fromIntegral nm_0 * ilog vm_0
 
-minMutation :: Monad m => RefinementT s m (Double, EvalMutation)
+minMutation :: PrimMonad m => RefinementT (PrimState m) m (Double, MutationDelta)
 minMutation = do
   muts <- joints `uses` enumMutations
   (RefinementState (Params m bigN ns) _ nm rjt ns' _) <- get
@@ -347,7 +347,7 @@ minMutation = do
       emuts = toFst (evalMutation m bigN ns ns' nm vm) <$> muts
   return $ L.minimumOn fst emuts
 
-negMutations :: Monad m => RefinementT s m [(Double, EvalMutation)]
+negMutations :: PrimMonad m => RefinementT (PrimState m) m [(Double, MutationDelta)]
 negMutations = do
   muts <- joints `uses` enumMutations
   (RefinementState (Params m bigN ns) _ nm rjt ns' _) <- get
@@ -359,19 +359,18 @@ negMutations = do
 -- ENUMERATE MUTATIONS --
 -------------------------
 
-enumMutations :: Membership -> [EvalMutation]
+enumMutations :: Membership -> [MutationDelta]
 enumMutations (Membership byFstInIn_ _ byFstOutIn_ byFstOutOut_
-                bySndInIn_ _ bySndOutIn_ _) = als ++ ars
-                                              ++ a2s ++ dls
-                                              ++ drs ++ d2s
+                bySndInIn_ _ bySndOutIn_ _) =
+  als ++ ars ++ a2s ++ dls ++ drs ++ d2s
   where
     -- Out --> In
-    als = uc (EMut . AddLeft)  <$> IM.toList byFstOutIn_
+    als = uc (MutD . AddLeft)  <$> IM.toList byFstOutIn_
     -- In <-- Out
-    ars = uc (EMut . AddRight) <$> IM.toList bySndOutIn_
+    ars = uc (MutD . AddRight) <$> IM.toList bySndOutIn_
 
     -- (Out,Out) that can't be added one-by-one
-    a2s = uc (EMut . uc Add2) <$> M.toList outSubgraph
+    a2s = uc (MutD . uc Add2) <$> M.toList outSubgraph
     outSubgraph = byFstToMap $
                   (IM.\\ bySndOutIn_)
                   <$> (byFstOutOut_ IM.\\ byFstOutIn_)
@@ -382,17 +381,17 @@ enumMutations (Membership byFstInIn_ _ byFstOutIn_ byFstOutOut_
                      | otherwise = Nothing
 
     -- can be deleted: In (w/o dependents) --> In
-    dls = uc (EMut . DelLeft) <$> byFstInInWithoutDeps
+    dls = uc (MutD . DelLeft) <$> byFstInInWithoutDeps
     byFstInInWithoutDeps = filter (IM.disjoint rightDependents . snd) $
                            IM.toList byFstInIn_ -- In --> In
 
     -- can be deleted: In <-- In (w/o dependents)
-    drs = uc (EMut . DelRight) <$> bySndInInWithoutDeps
+    drs = uc (MutD . DelRight) <$> bySndInInWithoutDeps
     bySndInInWithoutDeps = filter (IM.disjoint leftDependents . snd) $
                            IM.toList bySndInIn_ -- In <-- In
 
     -- (In,In) that can't be deleted one-by-one
-    d2s = uc (EMut . uc Del2) <$> M.toList coDependents
+    d2s = uc (MutD . uc Del2) <$> M.toList coDependents
     coDependents = M.intersectionWith assertEq
                    leftPendantJts rightPendantJts
 
@@ -686,8 +685,8 @@ printLUB :: MonadIO m => JointType -> Map (Sym,Sym) a -> m ()
 printLUB jt jts = liftIO $ do
   putStr "refinement is "
   if jt == JT.fromJoints jts
-    then putStrLn $ green "LUB" ++ " of its joints"
-    else do putStrLn $ red "not LUB" ++ " of its joints"
+    then putStrLn $ inGreen "LUB" ++ " of its joints"
+    else do putStrLn $ inRed "not LUB" ++ " of its joints"
             putStrLn $ "rtjt: " ++ show (jt, void jts)
             error "LUB error"
 
@@ -697,8 +696,8 @@ printSubtyping (jt,jts) (rjt,rjts) = liftIO $ do
   let jts' = jts M.\\ rjts
   putStr "refinement is "
   if rjt `JT.leq` jt
-    then putStrLn $ green "subtype" ++ " of its parent"
-    else do putStrLn $ red "not subtype" ++ " of its parent"
+    then putStrLn $ inGreen "subtype" ++ " of its parent"
+    else do putStrLn $ inRed "not subtype" ++ " of its parent"
             putStrLn $ "tjt: " ++ show (jt, void jts)
               ++ "\ntjt': " ++ show (jt, void jts')
               ++ "\nrtjt: " ++ show (rjt, void rjts)
@@ -710,8 +709,8 @@ printConservation (jt,jts) (rjt,rjts) = liftIO $ do
   let jts' = jts M.\\ rjts
   putStr "split " -- TODO: check disjointness too?
   if void jts == (void rjts `M.union` void jts')
-    then putStrLn $ green "preserves" ++ " all joints"
-    else do putStrLn $ red "does not preserve" ++ " all joints"
+    then putStrLn $ inGreen "preserves" ++ " all joints"
+    else do putStrLn $ inRed "does not preserve" ++ " all joints"
             putStrLn $ "tjt: " ++ show (jt, void jts)
               ++ "\ntjt': " ++ show (jt, void jts')
               ++ "\nrtjt: " ++ show (rjt, void rjts)
@@ -722,15 +721,15 @@ printMembership jts (rjt,rjts) = liftIO $ do
   let rjtsVerif = M.filterWithKey (\k _ -> k `JT.member` rjt) jts
   putStr "returned joints "
   if M.keys rjts == M.keys rjtsVerif
-    then putStrLn $ green "match" ++ " joints covered by the refinement"
-    else do putStrLn $ red "don't match" ++ " joints covered by the refinement"
+    then putStrLn $ inGreen "match" ++ " joints covered by the refinement"
+    else do putStrLn $ inRed "don't match" ++ " joints covered by the refinement"
             putStrLn $ "rtjt: " ++ show (M.keys rjts)
               ++ "\nrjts: " ++ show (M.keys rjts)
               ++ "\nrjtsVerif: " ++ show (M.keys rjtsVerif)
             error "joints coverage error"
 
-red :: String -> String
-red s = "\ESC[31mError:" ++ s ++ "\ESC[0m"
+inRed :: String -> String
+inRed s = "\ESC[31mError:" ++ s ++ "\ESC[0m"
 
-green :: String -> String
-green s = "\ESC[32m" ++ s ++ "\ESC[0m"
+inGreen :: String -> String
+inGreen s = "\ESC[32m" ++ s ++ "\ESC[0m"
