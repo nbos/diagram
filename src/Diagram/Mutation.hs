@@ -36,20 +36,22 @@ import qualified Diagram.JointType as JT
 --   | Del2     !Sym !Sym !Int
 --   deriving(Show,Eq)
 
-data NumAffected = One | Two
+data SidesAffected = One | Two
   deriving (Show,Eq,Ord)
 
-type family NewJointCounts (k :: NumAffected) where
-  NewJointCounts One = IntMap Int -- ins opposite side
-  NewJointCounts Two = Int -- n01
+type family NewConstrJoints (k :: SidesAffected) where
+  NewConstrJoints One = IntMap Int -- ins opposite side
+  NewConstrJoints Two = Int -- n01
 
-data Mutation (k :: NumAffected) where
+data Mutation (k :: SidesAffected) where
   AddLeft  :: !Sym         -> Mutation One
   AddRight :: !Sym         -> Mutation One
   Add2     :: !Sym -> !Sym -> Mutation Two
   DelLeft  :: !Sym         -> Mutation One
   DelRight :: !Sym         -> Mutation One
   Del2     :: !Sym -> !Sym -> Mutation Two
+-- TODO: I don't think we need GADT anymore since
+-- MutationDelta always takes an IntMap of counts
 
 deriving instance Show (Mutation k)
 deriving instance Eq (Mutation k)
@@ -65,46 +67,46 @@ data SomeMutation where
 instance Show SomeMutation where
   show :: SomeMutation -> String
   show (Mut mut) = case mut of
-    AddLeft  s   -> "AddLeft "  ++ show s
-    AddRight s   -> "AddRight " ++ show s
-    Add2     a b -> "Add2 "     ++ show a ++ " " ++ show b
-    DelLeft  s   -> "DelLeft "  ++ show s
-    DelRight s   -> "DelRight " ++ show s
-    Del2     a b -> "Del2 "     ++ show a ++ " " ++ show b
+    AddLeft  s0    -> "AddLeft "  ++ show s0
+    AddRight s1    -> "AddRight " ++ show s1
+    Add2     s0 s1 -> "Add2 "     ++ show s0 ++ " " ++ show s1
+    DelLeft  s0    -> "DelLeft "  ++ show s0
+    DelRight s1    -> "DelRight " ++ show s1
+    Del2     s0 s1 -> "Del2 "     ++ show s0 ++ " " ++ show s1
 
 instance Eq SomeMutation where
   (==) :: SomeMutation -> SomeMutation -> Bool
-  Mut m1 == Mut m2 = case (m1, m2) of
-    (AddLeft  s1,    AddLeft  s2)    -> s1 == s2
-    (AddRight s1,    AddRight s2)    -> s1 == s2
-    (Add2     a1 b1, Add2     a2 b2) -> a1 == a2 && b1 == b2
-    (DelLeft  s1,    DelLeft  s2)    -> s1 == s2
-    (DelRight s1,    DelRight s2)    -> s1 == s2
-    (Del2     a1 b1, Del2     a2 b2) -> a1 == a2 && b1 == b2
-    _else                            -> False
+  Mut mut == Mut mut' = case (mut, mut') of
+    (AddLeft  s, AddLeft  s')  ->  s == s'
+    (AddRight s, AddRight s')  ->  s == s'
+    (Add2 s0 s1, Add2 s0' s1') -> s0 == s0' && s1 == s1'
+    (DelLeft  s, DelLeft  s')  ->  s == s'
+    (DelRight s, DelRight s')  ->  s == s'
+    (Del2 s0 s1, Del2 s0' s1') -> s0 == s0' && s1 == s1'
+    _else -> False
 
 instance Ord SomeMutation where
   compare :: SomeMutation -> SomeMutation -> Ordering
-  compare (Mut m1) (Mut m2) = case (m1, m2) of
-    (AddLeft  s1,    AddLeft  s2)    -> compare s1 s2
-    (AddRight s1,    AddRight s2)    -> compare s1 s2
-    (Add2     a1 b1, Add2     a2 b2) -> compare a1 a2 <> compare b1 b2
-    (DelLeft  s1,    DelLeft  s2)    -> compare s1 s2
-    (DelRight s1,    DelRight s2)    -> compare s1 s2
-    (Del2     a1 b1, Del2     a2 b2) -> compare a1 a2 <> compare b1 b2
-    _else                            -> compare (mutTag m1) (mutTag m2)
+  compare (Mut mut) (Mut mut') = case (mut, mut') of
+    (AddLeft  s, AddLeft  s')  -> compare s s'
+    (AddRight s, AddRight s')  -> compare s s'
+    (Add2 s0 s1, Add2 s0' s1') -> compare s0 s0' <> compare s1 s1'
+    (DelLeft  s, DelLeft s')   -> compare s s'
+    (DelRight s, DelRight s')  -> compare s s'
+    (Del2 s0 s1, Del2 s0' s1') -> compare s0 s0' <> compare s1 s1'
+    _else -> compare (mutOrd mut) (mutOrd mut')
     where
-      mutTag :: Mutation k -> Int
-      mutTag AddLeft{}  = 0
-      mutTag AddRight{} = 1
-      mutTag Add2{}     = 2
-      mutTag DelLeft{}  = 3
-      mutTag DelRight{} = 4
-      mutTag Del2{}     = 5
+      mutOrd :: Mutation k -> Int
+      mutOrd AddLeft{}  = 0
+      mutOrd AddRight{} = 1
+      mutOrd Add2{}     = 2
+      mutOrd DelLeft{}  = 3
+      mutOrd DelRight{} = 4
+      mutOrd Del2{}     = 5
 
 -- | O(N log(m)) Reads the whole string compiling differences in counts
 -- resulting from introduced mutations breaking old constructions
--- through higher precedence
+-- through higher precedence.
 breakingDeltaByMut :: forall m. PrimMonad m => JointType ->
                       Doubly U.MVector (PrimState m) Sym ->
                       m (Map SomeMutation (IntMap Int))
@@ -147,21 +149,21 @@ breakingOf (JT u0 u1) s0 ((s1,s2):|rest) = uncurry (mut,,) $ go 1 s2 rest
         u1' = UT.insertMissing s1 u1
 
 --------------------------------
--- MUTATION WITH COUNTS DELTA --
+-- MUTATION WITH JOINTS DELTA --
 --------------------------------
 
-data MutationDelta where
-  MutD :: !(Mutation k) -> !(NewJointCounts k) -> MutationDelta
+data MutationWithJoints where
+  MutD :: !(Mutation k) -> !(NewConstrJoints k) -> MutationWithJoints
 
-instance Show MutationDelta where
-  show :: MutationDelta -> String
-  show (MutD mut jtns) = case mut of
-    AddLeft  s   -> "AddLeft "  ++ show s ++ " " ++ show jtns
-    AddRight s   -> "AddRight " ++ show s ++ " " ++ show jtns
-    Add2     a b -> "Add2 "     ++ show a ++ " " ++ show b ++ " " ++ show jtns
-    DelLeft  s   -> "DelLeft "  ++ show s ++ " " ++ show jtns
-    DelRight s   -> "DelRight " ++ show s ++ " " ++ show jtns
-    Del2     a b -> "Del2 "     ++ show a ++ " " ++ show b ++ " " ++ show jtns
+instance Show MutationWithJoints where
+  show :: MutationWithJoints -> String
+  show (MutD mut ncjts) = case mut of
+    AddLeft  s   -> "AddLeft "  ++ show s ++ " " ++ show ncjts
+    AddRight s   -> "AddRight " ++ show s ++ " " ++ show ncjts
+    Add2     a b -> "Add2 "     ++ show a ++ " " ++ show b ++ " " ++ show ncjts
+    DelLeft  s   -> "DelLeft "  ++ show s ++ " " ++ show ncjts
+    DelRight s   -> "DelRight " ++ show s ++ " " ++ show ncjts
+    Del2     a b -> "Del2 "     ++ show a ++ " " ++ show b ++ " " ++ show ncjts
 
 ----------
 -- EVAL --
@@ -169,13 +171,13 @@ instance Show MutationDelta where
 
 -- | MutDuate the loss incurred by the application of a mutation
 evalMutation :: Int -> Int -> U.Vector Int -> IntMap Int -> Int -> Int ->
-                MutationDelta -> Double
+                MutationWithJoints -> Double
 evalMutation m bigN ns ns' nm vm = go
   where
     deltaDelta_ :: Int -> [(Int,Int)] -> Int -> Double
     deltaDelta_ nm' dns vm' = deltaDelta m bigN (nm,nm') dns (vm,vm')
 
-    go :: MutationDelta -> Double
+    go :: MutationWithJoints -> Double
     go (MutD (AddLeft s0) jtns) = goAdd1 s0 jtns
     go (MutD (AddRight s1) jtns) = goAdd1 s1 jtns
     go (MutD (Add2 s0 s1) n01) = deltaDelta_ nm' dns (vm+2)

@@ -216,7 +216,7 @@ data ModelParams = Params
   , _stringLength :: !Int
   , _symbolCounts :: !(U.Vector Int) }
 
-type RefinementT s = StateT (RefinementState s)
+type RefinementT m = StateT (RefinementState (PrimState m)) m
 data RefinementState s = RefinementState
   { _modelParams :: !ModelParams -- :: (m, N, ns)
   , _workingString :: !(Doubly U.MVector s Sym) -- :: ss (read only)
@@ -224,18 +224,18 @@ data RefinementState s = RefinementState
   , _jointCount :: !Int -- :: nm
   , _refinement :: !JointType -- :: rjt
   , _newSymbolCounts :: !(IntMap Int) -- :: ns'
-  , _joints :: !Membership }
+  , _membership :: !(Membership Int) }
 
-type MembershipT = StateT Membership
-data Membership = Membership
-  { _byFstInIn   :: !(IntMap (IntMap Int))
-  , _byFstInOut  :: !(IntMap (IntMap Int))
-  , _byFstOutIn  :: !(IntMap (IntMap Int))
-  , _byFstOutOut :: !(IntMap (IntMap Int))
-  , _bySndInIn   :: !(IntMap (IntMap Int))
-  , _bySndInOut  :: !(IntMap (IntMap Int))
-  , _bySndOutIn  :: !(IntMap (IntMap Int))
-  , _bySndOutOut :: !(IntMap (IntMap Int)) }
+type MembershipT a = StateT (Membership a)
+data Membership a = Membership
+  { _byFstInIn   :: !(IntMap (IntMap a))
+  , _byFstInOut  :: !(IntMap (IntMap a))
+  , _byFstOutIn  :: !(IntMap (IntMap a))
+  , _byFstOutOut :: !(IntMap (IntMap a))
+  , _bySndInIn   :: !(IntMap (IntMap a))
+  , _bySndInOut  :: !(IntMap (IntMap a))
+  , _bySndOutIn  :: !(IntMap (IntMap a))
+  , _bySndOutOut :: !(IntMap (IntMap a)) }
 
 makeLenses ''ModelParams
 makeLenses ''RefinementState
@@ -253,7 +253,7 @@ initState mdl@(Params _ _ ns) str jts2 rjt =
                   , _jointCount = nm
                   , _refinement = rjt
                   , _newSymbolCounts = ns'
-                  , _joints = coverage }
+                  , _membership = coverage }
   where
     coverage = initMembership jts2 rjt
     nm = sum $ snd <$> byFstInInL
@@ -263,16 +263,16 @@ initState mdl@(Params _ _ ns) str jts2 rjt =
           foldr (\((s0,s1),n01) l -> (s0,n01):(s1,n01):l)
           [] byFstInInL
 
-initMembership :: Joints2 Int -> JointType -> Membership
+initMembership :: Joints2 a -> JointType -> Membership a
 initMembership (J2 byFst bySnd) (JT u0 u1) =
   Membership { _byFstInIn   = byFstInIn_
-                  , _byFstInOut  = byFstInOut_
-                  , _byFstOutIn  = byFstOutIn_
-                  , _byFstOutOut = byFstOutOut_
-                  , _bySndInIn   = bySndInIn_
-                  , _bySndInOut  = bySndInOut_
-                  , _bySndOutIn  = bySndOutIn_
-                  , _bySndOutOut = bySndOutOut_ }
+             , _byFstInOut  = byFstInOut_
+             , _byFstOutIn  = byFstOutIn_
+             , _byFstOutOut = byFstOutOut_
+             , _bySndInIn   = bySndInIn_
+             , _bySndInOut  = bySndInOut_
+             , _bySndOutIn  = bySndOutIn_
+             , _bySndOutOut = bySndOutOut_ }
   where
     byFstIn = byFst `IM.restrictKeys` UT.set u0
     byFstInIn_  = (`IM.restrictKeys` UT.set u1) <$> byFstIn
@@ -294,14 +294,14 @@ initMembership (J2 byFst bySnd) (JT u0 u1) =
 -- EXECUTION --
 ---------------
 
-stepHillClimb :: PrimMonad m => RefinementT (PrimState m) m (Maybe JointType)
+stepHillClimb :: PrimMonad m => RefinementT m (Maybe JointType)
 stepHillClimb = do
   (minLoss, MutD mut _) <- minMutation
   if minLoss >= 0 then refinement `uses` Just -- end
     else appMutation mut -- step
          >> return Nothing
 
-hillClimb :: PrimMonad m => RefinementT (PrimState m) m JointType
+hillClimb :: PrimMonad m => RefinementT m JointType
 hillClimb = (stepHillClimb >>=) $ \case
   Nothing -> hillClimb
   Just jt -> return jt
@@ -339,17 +339,19 @@ hillClimb = (stepHillClimb >>=) $ \case
 --     vm_0 = UT.length ru0_0 + UT.length ru1_0
 --     rInfo_0 = fromIntegral nm_0 * ilog vm_0
 
-minMutation :: PrimMonad m => RefinementT (PrimState m) m (Double, MutationDelta)
+minMutation :: PrimMonad m => RefinementT m ( Double
+                                            , MutationWithJoints )
 minMutation = do
-  muts <- joints `uses` enumMutations
+  muts <- membership `uses` enumMutations
   (RefinementState (Params m bigN ns) _ nm rjt ns' _) <- get
   let vm = JT.variety rjt
       emuts = toFst (evalMutation m bigN ns ns' nm vm) <$> muts
   return $ L.minimumOn fst emuts
 
-negMutations :: PrimMonad m => RefinementT (PrimState m) m [(Double, MutationDelta)]
+negMutations :: PrimMonad m => RefinementT m [( Double
+                                              , MutationWithJoints)]
 negMutations = do
-  muts <- joints `uses` enumMutations
+  muts <- membership `uses` enumMutations
   (RefinementState (Params m bigN ns) _ nm rjt ns' _) <- get
   let vm = JT.variety rjt
       emuts = toFst (evalMutation m bigN ns ns' nm vm) <$> muts
@@ -359,7 +361,7 @@ negMutations = do
 -- ENUMERATE MUTATIONS --
 -------------------------
 
-enumMutations :: Membership -> [MutationDelta]
+enumMutations :: Membership Int -> [MutationWithJoints]
 enumMutations (Membership byFstInIn_ _ byFstOutIn_ byFstOutOut_
                 bySndInIn_ _ bySndOutIn_ _) =
   als ++ ars ++ a2s ++ dls ++ drs ++ d2s
@@ -429,12 +431,12 @@ bySndToAscList = fmap (first swap) . byFstToAscList
 -- APPLY MUTATION --
 ---------------------
 
-appMutation :: Monad m => Mutation k -> RefinementT s m ()
+appMutation :: Monad m => Mutation k -> RefinementT m ()
 appMutation mutation = case mutation of
   AddLeft s0 -> do
     -- (Out,In): remove (Out[s0] <--> In[ins])
-    ins <- joints.byFstOutIn %%= deleteFind s0
-    zoom joints $ do
+    ins <- membership.byFstOutIn %%= deleteFind s0
+    zoom membership $ do
       bySndInOut %= const (IM.delete s0) `atEvery` ins
 
       -- (Out,Out): remove (Out[s0] <--> Out[outs])
@@ -465,8 +467,8 @@ appMutation mutation = case mutation of
 
   AddRight s1 -> do
     -- (In,Out): remove (In[ins] <--> Out[s1])
-    ins <- joints.bySndOutIn %%= deleteFind s1
-    zoom joints $ do
+    ins <- membership.bySndOutIn %%= deleteFind s1
+    zoom membership $ do
       byFstInOut %= const (IM.delete s1) `atEvery` ins
 
       -- (Out,Out): remove (Out[outs] <--> Out[s1])
@@ -496,10 +498,10 @@ appMutation mutation = case mutation of
 
   Add2 s0 s1 -> do
     -- (Out,Out): remove (Out[s0] <--> Out[out0s])
-    out0s <- joints.byFstOutOut %%= deleteFind s0
+    out0s <- membership.byFstOutOut %%= deleteFind s0
     let n01 = out0s IM.! s1
 
-    zoom joints $ do
+    zoom membership $ do
       bySndOutOut %= const (IM.delete s0) `atEvery` out0s
       -- (Out,Out): remove (Out[out1s] <--> Out[s1])
       out1s <- bySndOutOut %%= deleteFind s1
@@ -535,8 +537,8 @@ appMutation mutation = case mutation of
 
   DelLeft s0 -> do
     -- (In,In): remove (In[s0] <--> In[ins])
-    ins <- joints.byFstInIn %%= deleteFind s0
-    zoom joints $ do
+    ins <- membership.byFstInIn %%= deleteFind s0
+    zoom membership $ do
       bySndInIn %= const (IM.delete s0) `atEvery` ins
 
       -- (In,Out): remove (In[s0] <--> Out[outs])
@@ -565,8 +567,8 @@ appMutation mutation = case mutation of
 
   DelRight s1 -> do
     -- (In,In): remove (In[ins] <--> In[s1])
-    ins <- joints.bySndInIn %%= deleteFind s1
-    zoom joints $ do
+    ins <- membership.bySndInIn %%= deleteFind s1
+    zoom membership $ do
       byFstInIn %= const (IM.delete s1) `atEvery` ins
 
       -- (Out,In): remove (Out[outs] <--> In[s1])
@@ -595,9 +597,9 @@ appMutation mutation = case mutation of
 
   Del2 s0 s1 -> do
     -- (In,In): remove (In[s0] --> In[s1])
-    n01 <- joints.byFstInIn %%= first (head . IM.elems)
+    n01 <- membership.byFstInIn %%= first (head . IM.elems)
                                 . deleteFind s0 -- singleton by definition
-    zoom joints $ do
+    zoom membership $ do
       -- (In,Out): remove (In[s0] <--> Out[out0s])
       out0s <- byFstInOut %%= deleteFind s0
       bySndOutIn %= const (IM.delete s0) `atEvery` out0s
