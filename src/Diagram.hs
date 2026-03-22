@@ -44,7 +44,6 @@ import qualified Streaming.ByteString as Q
 import Diagram.Streaming ()
 
 import qualified Diagram.Doubly as D
-import Diagram.Joints (constructive)
 import qualified Diagram.Joints as Jts
 import qualified Diagram.JointType as JT
 import qualified Diagram.Refinement as Ref
@@ -101,7 +100,7 @@ main = do
                  D.streamWithKey ss
 
   -- form types
-  let jtns = Strict.fst . (^.constructive) <$> jtniss
+  let jtns = Strict.fst <$> jtniss
       jt = JT.fromJoints jtns
   putStr "Top type: " >> print jt
 

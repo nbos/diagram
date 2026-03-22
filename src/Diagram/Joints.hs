@@ -37,15 +37,16 @@ type Joints a = Map (Sym,Sym) a
 size :: Joints a -> Int
 size = M.size
 
-data Sites = Sites
-  {    _constructive :: !(Pair Int IntSet)
-  , _nonconstructive :: !(Pair Int IntSet) }
-  deriving(Eq,Ord,Show)
-makeLenses ''Sites
+type Sites = Pair Int IntSet
+-- -- | Constructive and non-constructive sites
+-- data Sites = Sites
+--   {    _constructive :: !(Pair Int IntSet)
+--   , _nonconstructive :: !(Pair Int IntSet) }
+--   deriving(Eq,Ord,Show)
+-- makeLenses ''Sites
 
 noSites :: Sites
-noSites = Sites no no
-  where no = 0 :!: IS.empty
+noSites = 0 :!: IS.empty
 
 ------------------
 -- CONSTRUCTION --
@@ -73,41 +74,41 @@ fromStream1 (i0,s0) m iss = (S.next iss >>=) $ \case
     where m' = addCons (s0,s1) i0 m -- inc constructive
 
 -- | Joints from a stream that follows two symbols, given the index of
--- the last symbol too.
+-- the last symbol.
 fromStream2 :: Monad m => Sym -> (Index, Sym) -> Joints Sites ->
                Stream (Of (Index, Sym)) m r -> m (Joints Sites, r)
 fromStream2 sm1 (i0,s0) !m iss = (S.next iss >>=) $ \case
   Left r -> return (m,r) -- end
   Right (i1s1@(_,s1),ss') -> cont i1s1 m' ss'
-    where m' = add (s0,s1) i0 m
-          (add,cont)
-            | sm1 == s0 && s0 == s1 = (addNoncons, fromStream1)
-            | otherwise             = (addCons, fromStream2 s0)
+    where (m',cont)
+            | sm1 == s0 && s0 == s1 = (m, fromStream1)
+            | otherwise             = ( addCons (s0,s1) i0 m
+                                      , fromStream2 s0 )
 
 addCons :: (Sym,Sym) -> Index -> Joints Sites -> Joints Sites
-addCons (s0,s1) i0 = at (s0,s1) . non noSites . constructive
+addCons (s0,s1) i0 = at (s0,s1) . non noSites -- . constructive
                      %~ ((+1) `bimap` IS.insert i0)
 
-addNoncons :: (Sym,Sym) -> Index -> Joints Sites -> Joints Sites
-addNoncons (s0,s1) i0 = at (s0,s1) . non noSites . nonconstructive
-                        %~ ((+1) `bimap` IS.insert i0)
+-- addNoncons :: (Sym,Sym) -> Index -> Joints Sites -> Joints Sites
+-- addNoncons (s0,s1) i0 = at (s0,s1) . non noSites . nonconstructive
+--                         %~ ((+1) `bimap` IS.insert i0)
 
 -----------------
 -- RE-INDEXING --
 -----------------
 
-data Joints2 a = J2
-  { byFst2 :: !(IntMap (IntMap a))
-  , bySnd2 :: !(IntMap (IntMap a)) }
+data Joints2 a = J2                       -----------------------
+  { byFst2 :: !(IntMap (IntMap a))        -- TWO-WAYS INT MAPS --
+  , bySnd2 :: !(IntMap (IntMap a)) }      -----------------------
   deriving(Eq,Show)
 
 -- | Double up the index given the number of symbols (max s1 + 1)
 doubleIndex :: Int -> Joints a -> Joints2 a
 doubleIndex m jts = J2 (byFst jts) (bySnd m jts)
 
-data Joints2S a = J2S
-  { byFst2S :: !(Map Sym (Map Sym a))
-  , bySnd2S :: !(Map Sym (Map Sym a)) }
+data Joints2S a = J2S                     -------------------------
+  { byFst2S :: !(Map Sym (Map Sym a))     -- TWO-WAYS SIZED MAPS --
+  , bySnd2S :: !(Map Sym (Map Sym a)) }   -------------------------
 
 sized :: Joints2 a -> Joints2S a
 sized jts2 = J2S (im2m $ byFst2 jts2) (im2m $ bySnd2 jts2)

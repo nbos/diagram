@@ -26,15 +26,16 @@ import qualified Data.IntSet as IS
 import qualified Data.Vector.Unboxed as U
 
 import Diagram.Primitive
-import Diagram.Doubly (Doubly)
+import Diagram.Information
 
-import Diagram.Joints (Joints,Joints2(J2),Joints2S(J2S))
+import Diagram.Joints (Joints,Joints2(J2),Joints2S(J2S),Doubly)
 import qualified Diagram.Joints as Jts
 import Diagram.UnionType (Sym)
 import qualified Diagram.UnionType as UT
 import Diagram.JointType (JointType(..),left,right)
 import qualified Diagram.JointType as JT
-import Diagram.Mutation
+import Diagram.Mutation (MutationWithJoints(..), Mutation(..))
+import qualified Diagram.Mutation as Mut
 
 import Diagram.Util
 
@@ -212,14 +213,14 @@ genRandomWith r (J2S byFst0 bySnd0) =
 
 -- TODO: move to Diagram.Model
 data ModelParams = Params
-  { _numSymbols :: !Int
-  , _stringLength :: !Int
-  , _symbolCounts :: !(U.Vector Int) }
+  { _numSymbols :: !Int -- m
+  , _stringLength :: !Int -- N
+  , _symbolCounts :: !(U.Vector Int) } -- ns
 
 type RefinementT m = StateT (RefinementState (PrimState m)) m
 data RefinementState s = RefinementState
   { _modelParams :: !ModelParams -- :: (m, N, ns)
-  , _workingString :: !(Doubly U.MVector s Sym) -- :: ss (read only)
+  , _workingString :: !(Doubly s) -- :: ss (read only)
   -- , _parent :: !JointType
   , _jointCount :: !Int -- :: nm
   , _refinement :: !JointType -- :: rjt
@@ -245,8 +246,7 @@ makeLenses ''Membership
 -- STATE INITIALIZATION --
 --------------------------
 
-initState :: ModelParams -> Doubly U.MVector s Sym -> Joints2 Int ->
-             JointType -> RefinementState s
+initState :: ModelParams -> Doubly s -> Joints2 Int -> JointType -> RefinementState s
 initState mdl@(Params _ _ ns) str jts2 rjt =
   RefinementState { _modelParams = mdl
                   , _workingString = str
@@ -345,7 +345,7 @@ minMutation = do
   muts <- membership `uses` enumMutations
   (RefinementState (Params m bigN ns) _ nm rjt ns' _) <- get
   let vm = JT.variety rjt
-      emuts = toFst (evalMutation m bigN ns ns' nm vm) <$> muts
+      emuts = toFst (Mut.evalMutation m bigN ns ns' nm vm) <$> muts
   return $ L.minimumOn fst emuts
 
 negMutations :: PrimMonad m => RefinementT m [( Double
@@ -354,7 +354,7 @@ negMutations = do
   muts <- membership `uses` enumMutations
   (RefinementState (Params m bigN ns) _ nm rjt ns' _) <- get
   let vm = JT.variety rjt
-      emuts = toFst (evalMutation m bigN ns ns' nm vm) <$> muts
+      emuts = toFst (Mut.evalMutation m bigN ns ns' nm vm) <$> muts
   return $ L.filter ((<0) . fst) emuts
 
 -------------------------
@@ -427,9 +427,42 @@ bySndToAscList :: IntMap (IntMap Int) -> [((Sym,Sym),Int)]
 bySndToAscList = fmap (first swap) . byFstToAscList
 --
 
+-------------------
+-- EVAL MUTATION --
+-------------------
+
+-- | Computes the difference in the info delta from changing parameters:
+-- joint type count n_m (before,after), symbol (new) counts ns
+-- (before,after), and joint type variety (before,after)
+deltaDelta :: Int -> Int -> (Int,Int) -> [(Int,Int)] -> (Int,Int) -> Double
+deltaDelta m bigN (nm,nm') dns (vm,vm') =
+  nDeltaDelta + sDeltaDelta + rDeltaDelta
+  where
+    nDeltaDelta = logFactNpmmnm' - logFactNpmmnm
+    logFactNpmmnm = logFact $ mpN - nm
+    logFactNpmmnm' = logFact $ mpN - nm'
+    mpN = m + bigN -- m + N
+
+    sDeltaDelta = sDDltm + logFact nm - logFact nm'
+    sDDltm = sum $ (<$> dns) $ \(ni',ni'') ->
+      logFact ni' - logFact ni''
+      -- (`logFact ni` (old symbol count) cancel out)
+
+    rDeltaDelta = rInfo' - rInfo
+    rInfo' = fromIntegral nm' * ilog vm' -- rInfo == rDelta
+    rInfo = fromIntegral nm * ilog vm -- rInfo == rDelta
+
+-- | log(x!)
+logFact :: Int -> Double
+logFact = iLogFactorial
+
+-- | Natural logarithm of an integer
+ilog :: Int -> Double
+ilog = log . fromIntegral
+
 --------------------
 -- APPLY MUTATION --
----------------------
+--------------------
 
 appMutation :: Monad m => Mutation k -> RefinementT m ()
 appMutation mutation = case mutation of

@@ -132,7 +132,8 @@ breakingDeltaByMut jt str =
 -- incremented by 1 (while the count of s0 would be correspondingly
 -- decremented by 1).
 breakingOf :: JointType -> Sym -> NonEmpty (Sym,Sym) -> (SomeMutation, Int, Sym)
-breakingOf (JT u0 u1) s0 ((s1,s2):|rest) = uncurry (mut,,) $ go 1 s2 rest
+breakingOf (JT u0 u1) s0 ((s1,s2):|rest) = uncurry (mut,,) $
+                                           go 1 s2 rest
   where
     go !k s2' [] = (k,s2')
     go !k s2' ((s3,s4):rest')
@@ -237,7 +238,7 @@ deltaDelta m bigN (nm,nm') dns (vm,vm') =
     sDeltaDelta = sDDltm + logFact nm - logFact nm'
     sDDltm = sum $ (<$> dns) $ \(ni',ni'') ->
       logFact ni' - logFact ni''
-      -- (logFact ni (old symbol count) cancel out)
+      -- (`logFact ni` (old symbol count) cancel out)
 
     rDeltaDelta = rInfo' - rInfo
     rInfo' = fromIntegral nm' * ilog vm' -- rInfo == rDelta
