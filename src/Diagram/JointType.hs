@@ -12,6 +12,8 @@ import Data.Hashable
 import Data.Tuple.Extra
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.Extra as L
+import Data.IntMap.Strict (IntMap)
+import qualified Data.IntMap.Strict as IM
 import qualified Data.Map.Strict as M
 
 import Streaming hiding (first,second)
@@ -21,10 +23,12 @@ import qualified Codec.Arithmetic.Variety as Variety
 import Codec.Arithmetic.Variety.BitVec (BitVec)
 import qualified Codec.Arithmetic.Variety.BitVec as BV
 
+import Diagram.Primitive
 import Diagram.Information
 
 import Diagram.Doubly (Index)
-import Diagram.Joints (Joints)
+import qualified Diagram.Doubly as D
+import Diagram.Joints (Joints,Doubly)
 import Diagram.UnionType (Sym,UnionType(..))
 import qualified Diagram.UnionType as UT
 
@@ -120,9 +124,18 @@ meet (JT u0 u1) (JT u0' u1') =
 -- CONSTRUCTION --
 ------------------
 
-runs :: forall m r. Monad m => JointType -> Stream (Of (Index, Sym)) m r ->
-        Stream (Of (Index, NonEmpty (Sym,Sym))) m r
-runs (JT u0 u1) = go0
+runsByHead :: PrimMonad m => JointType -> Doubly (PrimState m) ->
+              m (IntMap (NonEmpty (Sym,Sym)))
+runsByHead jt ss = IM.fromDistinctAscList
+                   <$> S.toList_ (streamRuns jt ss)
+
+streamRuns :: PrimMonad m => JointType -> Doubly (PrimState m) ->
+              Stream (Of (Index, NonEmpty (Sym,Sym))) m ()
+streamRuns jt = streamRuns_ jt . D.streamWithKey
+
+streamRuns_ :: PrimMonad m => JointType -> Stream (Of (Index,Sym)) m r ->
+               Stream (Of (Index, NonEmpty (Sym,Sym))) m r
+streamRuns_ (JT u0 u1) = go0
   where
     go0 iss = (lift (S.next iss) >>=) $ \case
       Left r -> return r -- end
