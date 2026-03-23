@@ -465,19 +465,21 @@ countdown n = [n,n-1..0]
 -- | Apply f $ f $ ... $ f $ x , `n` times, collecting the
 -- results. Output length is `n` so e.g. `nest f 0 a` returns `[]`,
 -- `nest f 1 a` returns `[f a]`, etc.
-nest :: (a -> a) -> Int -> a -> [a]
-nest f n = take n . tail . L.iterate f
-{-# INLINE nest #-}
+iterateN :: (a -> a) -> Int -> a -> [a]
+iterateN f n = take n . tail . L.iterate f
+{-# INLINE iterateN #-}
 
 -- | Compose f a >>= f >>= ... >>= f, `n` times, collecting the
 -- results. Output length is `n` so e.g. `nest f 0 a` is `return []`.
-nestM :: Monad m => (a -> m a) -> Int -> a -> m [a]
-nestM f = go []
-  where go acc n a = case compare n 0 of
-          LT -> error "Util.nestM: negative argument"
-          EQ -> return $ reverse acc
-          GT -> do a' <- f a
-                   go (a':acc) (n-1) a'
+iterateNM :: Monad m => Int -> (a -> m a) -> a -> m [a]
+iterateNM n0 f = go [] $ max 0 n0
+  where go acc 0 a = return $ reverse (a:acc)
+        go acc n a = f a >>= go (a:acc) (n-1)
+
+nestM :: Monad m => Int -> (a -> m a) -> a -> m a
+nestM n0 f = go $ max 0 n0
+  where go 0 a = return a
+        go n a = f a >>= go (n-1)
 
 curry3 :: ((a, b, c) -> d) -> a -> b -> c -> d
 curry3 = (.:. (,,))

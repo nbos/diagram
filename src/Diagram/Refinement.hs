@@ -6,10 +6,9 @@
 module Diagram.Refinement (module Diagram.Refinement) where
 
 import Control.Monad as Monad
-import Control.Lens hiding (both,last1,Index)
+import Control.Lens hiding (both,last1,Index,(:>))
 import Control.Monad.State.Strict ( StateT
                                   , MonadState(get)
-                                  , MonadIO(..)
                                   , evalStateT )
 import Control.Monad.Random (MonadRandom(getRandomR, getRandom))
 
@@ -17,6 +16,7 @@ import Data.Maybe
 import Data.Tuple.Extra
 import qualified Data.List.Extra as L
 import Data.List.NonEmpty (NonEmpty((:|)))
+import Data.Strict.Tuple (Pair((:!:)))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.IntMap.Strict (IntMap)
@@ -34,7 +34,7 @@ import Diagram.Information
 
 import Diagram.Doubly (Index)
 import qualified Diagram.Doubly as D
-import Diagram.Joints (Joints,Joints2(J2),Joints2S(J2S),Doubly)
+import Diagram.Joints (Doubly,Joints,Sites,Joints2(J2),Joints2S(J2S))
 import qualified Diagram.Joints as Jts
 import Diagram.UnionType (Sym)
 import qualified Diagram.UnionType as UT
@@ -211,6 +211,86 @@ genRandomWith r (J2S byFst0 bySnd0) =
           else do fstUnion %= IS.insert s0
                   refJoints %= M.insert (s0,s1) a01 -- null staged0
 
+-----------
+-- SITES --
+-----------
+
+type Run = NonEmpty (Sym,Sym)
+
+runsByHead :: PrimMonad m => JointType -> Doubly (PrimState m) -> m (IntMap Run)
+runsByHead jt ss = IM.fromDistinctAscList
+                   <$> S.toList_ (streamRuns jt ss)
+
+streamRuns :: PrimMonad m => JointType -> Doubly (PrimState m) ->
+              Stream (Of (Index,Run)) m ()
+streamRuns jt = streamRuns_ jt . D.streamWithKey
+
+streamRuns_ :: PrimMonad m => JointType -> Stream (Of (Index,Sym)) m r ->
+               Stream (Of (Index,Run)) m r
+streamRuns_ (JT u0 u1) = go0
+  where
+    go0 iss = (lift (S.next iss) >>=) $ \case
+      Left r -> return r -- end
+      Right ((i0,s0),iss')
+        | s0 `UT.member` u0 -> go1 i0 s0 iss'
+        | otherwise -> go0 iss'
+
+    go1 i0 s0 iss = (lift (S.next iss) >>=) $ \case
+      Left r -> return r -- end
+      Right ((i1,s1),iss')
+        | s1 `UT.member` u1 -> do (tl, cont) <- lift $ go2 iss'
+                                  S.yield (i0, (s0,s1):|tl)
+                                  cont
+        | s1 `UT.member` u0 -> go1 i1 s1 iss'
+        | otherwise -> go0 iss'
+
+    go2 iss = (S.next iss >>=) $ \case
+      Left r -> return ([], return r)
+      Right ((_,s0),iss')
+        | s0 `UT.notMember` u0 -> return ([], go0 iss')
+        | otherwise -> (S.next iss' >>=) $ \case
+            Left r -> return ([], return r)
+            Right ((i1,s1), iss'')
+              | s1 `UT.member` u1 -> first ((s0,s1):) <$> go2 iss''
+              | s1 `UT.member` u0 -> return ([], go1 i1 s1 iss')
+              | otherwise -> return ([], go0 iss'')
+
+brokenSites :: forall m r. PrimMonad m => Doubly (PrimState m) ->
+               Stream (Of (Index,Run)) m r -> m (Of (Joints Sites) r)
+brokenSites = S.fold (flip insert) M.empty id .: brokenSites_
+  where insert (s0s1,i) = M.insertWith (const $ (+1) `bimap` IS.insert i)
+                          s0s1 (1 :!: IS.singleton i)
+
+brokenSites_ :: forall m r. PrimMonad m => Doubly (PrimState m) ->
+                Stream (Of (Index,Run)) m r -> Stream (Of ((Sym,Sym), Index)) m r
+brokenSites_ ss irs0 = lift (D.lastKey ss) -- \iNm1 ->
+                       >>= flip go irs0
+  where
+    next :: MonadTrans t => Index -> t m Index
+    next = lift . D.nextKey ss
+
+    go Nothing = error "Refinement.brokenSites: empty string"
+    go (Just iNm1) = goStr where
+
+      goStr :: Stream (Of (Index,Run)) m r -> Stream (Of ((Sym,Sym), Index)) m r
+      goStr irs = (lift (S.next irs) >>=) $ \case
+        Left r -> return r
+        Right ((i0,(_,s1):|rest), irs') ->
+          lift (D.nextKey ss i0) -- \i1 ->
+          >>= flip2 goRun s1 rest
+          >> goStr irs'
+
+      goRun :: Int -> Sym -> [(Sym,Sym)] -> Stream (Of ((Sym,Sym), Int)) m ()
+      goRun i1 s1 ((s2,s3):rest) =
+        S.yield ((s1,s2),i1)
+        >> (next i1 >>= next) -- \i3 ->
+        >>= flip2 goRun s3 rest
+
+      goRun i1 s1 []
+        | i1 == iNm1 = return () -- end of string, nothing broken
+        | otherwise = do s2 <- lift . D.read ss =<< next i1
+                         S.yield ((s1,s2),i1)
+
 -- -------------- --
 -- -- MUTATION -- --
 -- -------------- --
@@ -295,11 +375,11 @@ instance Ord SomeMutation where
 -- | O(N log(m)) Reads the whole string compiling differences in counts
 -- resulting from introduced mutations breaking old constructions
 -- through higher precedence.
-deltaByBreakingMut :: forall m. PrimMonad m => JointType -> Doubly (PrimState m) ->
-                      m (Map SomeMutation (IntMap Int))
-deltaByBreakingMut jt str =
+countDeltaByBreakingMut :: forall m. PrimMonad m =>
+  JointType -> Doubly (PrimState m) -> m (Map SomeMutation (IntMap Int))
+countDeltaByBreakingMut jt str =
   S.fold_ (flip $ uncurry $ M.insertWith (IM.unionWith (+))) M.empty id $
-  S.mapM mkEntry $ JT.streamRuns jt str
+  S.mapM mkEntry $ streamRuns jt str
   where
     mkEntry :: (Index, NonEmpty (Sym, Sym)) -> m (SomeMutation, IntMap Int)
     mkEntry (i,ps) = do
