@@ -61,6 +61,7 @@ executable diagram
     other-modules:    Diagram
                       Diagram.Types
                       Diagram.Model
+                      Diagram.Sites
                       Diagram.Joints
                       Diagram.Random
                       Diagram.Doubly
