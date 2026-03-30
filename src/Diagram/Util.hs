@@ -1,6 +1,7 @@
 {-# LANGUAGE PatternGuards, BangPatterns, TupleSections, ScopedTypeVariables #-}
 module Diagram.Util where
 
+import Control.Monad
 import Control.Exception
 import System.IO.Unsafe
 
@@ -643,3 +644,16 @@ g <==< f = \x y -> f x y >>= g
 
 returning :: Monad m => (a -> m b) -> a -> m a
 returning f a = f a >> return a
+
+-- | @numLoop start end f@: Loops over a contiguous numerical range,
+-- including @end@.
+--
+-- Does nothing when not @start <= end@.
+--
+-- It uses @(+ 1)@ so for most integer types it has no bounds (overflow)
+-- check. (from loop-0.3.0)
+numLoop :: (Num a, Ord a, Monad m) => a -> a -> (a -> m ()) -> m ()
+numLoop start end f = when (start <= end) $ go start
+  where go !x | x == end  = f x
+              | otherwise = f x >> go (x+1)
+{-# INLINE numLoop #-}

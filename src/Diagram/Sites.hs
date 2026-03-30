@@ -1,50 +1,94 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
-{-# LANGUAGE BangPatterns, LambdaCase #-}
+{-# LANGUAGE BangPatterns, LambdaCase, TypeOperators #-}
 module Diagram.Sites (module Diagram.Sites) where
 
 import Control.Monad
+import Control.Monad.Extra
 import Control.Lens hiding (Index)
 import Control.Monad.Primitive (PrimMonad(PrimState))
-import Control.Monad.ST
-
-import Data.Function
-import Data.Tuple.Extra ((&&&))
-import Data.Bifunctor
-import qualified Data.List.Extra as L
-
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as M
-
-import Data.IntMap.Strict (IntMap)
-import qualified Data.IntMap.Strict as IM
+import Control.Monad.State.Strict
 
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IS
-
-import qualified Data.Set as Set
-
 import Data.Strict.Tuple (Pair((:!:)),(:!:))
 
-import qualified Data.Vector.Mutable as MV
-import Data.Vector.Unboxed.Mutable (MVector)
-
-import Streaming hiding (first,second)
-import qualified Streaming.Prelude as S
-
 import Diagram.UnionType (Sym)
+import Diagram.Joints (Doubly)
+import Diagram.JointType (JointType)
+import qualified Diagram.JointType as JT
 import Diagram.Doubly (Index)
 import qualified Diagram.Doubly as D
 
 import Diagram.Util
 
 data Sites = Sites
-  { _runHeads       :: !(IntMap ())
-  , _bySndConstr    :: !(IntMap Index)
-  , _byFstNonConstr :: !(IntMap ())
-  , _runTails       :: !(IntMap ()) }
+  { _jointType      :: !JointType
+  , _runHeads       :: !IntSet
+  , _bySndConstr    :: !IntSet }
   deriving(Show,Eq)
 makeLenses ''Sites
+
+join :: forall m. PrimMonad m => Doubly (PrimState m) -> Sites -> Sites -> m Sites
+join ss sitesA sitesB = do
+  sitesA' :!: sitesB' <- flip execStateT (sitesA :!: sitesB) $ do
+    forM_ (IS.elems brokenAs) $ assertNext >=> goBroken _2 _1
+    forM_ (IS.elems brokenBs) $ assertNext >=> goBroken _1 _2
+
+  undefined
+
+  where
+    -- Given lenses into the breaking and broken sides, treat the
+    -- breaking of a joint at (i0,i1) from a joint at (im1,i0), given
+    -- only index i1.
+    goBroken :: Lens' (Sites :!: Sites) Sites -> Lens' (Sites :!: Sites) Sites ->
+                Index -> StateT (Sites :!: Sites) m ()
+    goBroken breaking broken = go
+      where
+        go :: Index -> StateT (Sites :!: Sites) m ()
+        go i1 = do
+          broken.bySndConstr %= IS.delete i1
+          whenJustM (next i1) $ \i2 -> do
+            s1 <- read i1
+            s2 <- read i2
+            moreBreaking <- (breaking.jointType) `uses` JT.member (s1,s2)
+            if not moreBreaking then zoom broken $ goNonConstr (i1,s1) (i2,s2)
+              else whenJustM (next i2) $ \i3 ->
+              do s3 <- read i3
+                 moreBroken <- (broken.jointType) `uses` JT.member (s2,s3)
+                 when moreBroken $ go i3 -- cont.
+
+    -- Upon the breaking of a joint at (i0,i1), at the end of a breaking
+    -- run (i.e. no joint at (i1,i2) on the breaking side) repeatedly
+    -- check if the freed i1 allows for a previously non-constructive
+    -- joint at (i1,i2) to become constructive on the broken side,
+    -- taking precedence from a possibly empty tail on the broken side.
+    goNonConstr :: (Index,Sym) -> (Index,Sym) -> StateT Sites m ()
+    goNonConstr (i1,s1) (i2,s2) = do
+      nonConstr <- jointType `uses` JT.member (s1,s2)
+
+      undefined
+
+    Sites jtA hdsA bySndA = sitesA
+    Sites jtB hdsB bySndB = sitesB
+
+    safeHdsA = hdsA IS.\\ bySndB
+    brokenAs = hdsA `IS.intersection` bySndB
+
+    safeHdsB = hdsB IS.\\ bySndA
+    brokenBs = hdsB `IS.intersection` bySndA
+
+    read :: MonadTrans t => Index -> t m Sym
+    read = lift . D.read ss
+    prev :: MonadTrans t => Index -> t m (Maybe Index)
+    prev = lift . D.prev ss
+    next :: MonadTrans t => Index -> t m (Maybe Index)
+    next = lift . D.next ss
+    assertNext :: MonadTrans t => Index -> t m Index
+    assertNext = lift . D.unsafeNext ss
+
+    err :: (Show k, Show v0, Show v1) => k -> v0 -> v1 -> a
+    err = error . ("Sites.join: collision: " ++) . show .:. (,,)
 
 -- NOTE: For a string of symbols and a joint construction rule which is
 --   a function on pairs of symbols (e.g. a decision (s0,s1) -> {True,
@@ -82,26 +126,4 @@ makeLenses ''Sites
 --
 --   With this representation, we avoid arbitrarily long chains of
 --   lookups to resolve a chain of conflicts because it is impossible
---   for a head to---
-
-join :: Sites -> Sites -> Sites
-join (Sites hds0 bySnd0 ncs0 tls0) (Sites hds1 bySnd1 ncs1 tls1) = undefined
-  where
-    safe0s = hds0 IM.\\ bySnd1
-    broken0s = hds0 `IM.intersection` bySnd1
-
-    safe1s = hds1 IM.\\ bySnd0
-    broken1s = hds1 `IM.intersection` bySnd0
-
-    hds = IM.unionWithKey err safe0s safe1s
-    
-    -- aConfirm = (a^.byFstConstr) IM.\\ (b^.bySndConstr)
-    -- bConfirm = (b^.byFstConstr) IM.\\ (a^.bySndConstr)
-
-    -- abConfirm = IM.unionWithKey err aConfirm bConfirm
-
-    -- aConflict = (a^.byFstConstr) `IM.intersection` (b^.bySndConstr)
-    -- bConflict = (b^.byFstConstr) `IM.intersection` (a^.bySndConstr)
-
-    err :: (Show k, Show v0, Show v1) => k -> v0 -> v1 -> a
-    err = error . ("Sites.join: collision: " ++) . show .:. (,,)
+--   for a head that is invalidated/broken--

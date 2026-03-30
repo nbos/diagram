@@ -19,6 +19,8 @@ import qualified Data.Vector.Generic.Mutable as MV
 import Streaming
 import qualified Streaming.Prelude as S
 
+import Diagram.Util
+
 type Index = Int
 data Doubly v s a = Doubly
   !(Maybe Index)       -- ^ head index
@@ -144,7 +146,7 @@ growBy n (Doubly mi0 free elems prevs nexts) = do
   elems' <- MV.grow elems n
   prevs' <- MV.grow prevs n
   nexts' <- MV.grow nexts n
-  forM_ [len..len'-1] $ \i -> do
+  numLoop len (len'-1) $ \i -> do
     MV.write prevs' i (-1)
     MV.write nexts' i (-1)
   return $ Doubly mi0 free' elems' prevs' nexts'
