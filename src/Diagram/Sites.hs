@@ -28,17 +28,18 @@ join :: Sites -> Sites -> Sites
 join sitesA sitesB = runIdentity $ flip evalStateT (sitesA :!: sitesB) $ do
   ns <- uses2 (_1.counts) (_2.counts) $ IM.unionWith (+)
   cAB <- uses2 (_1.tails) (_2.heads) $ IM.intersectionWith (,)
-  ns' <- goSeam (IM.toList cAB) ns
+  ns' <- go ns $ IM.toList cAB
   cBA <- uses2 (_2.tails) (_1.heads) $ IM.intersectionWith (,)
-  ns'' <- goSeam (IM.toList cBA) ns'
+  ns'' <- go ns' $ IM.toList cBA
   hds <- uses2 (_1.heads) (_2.heads) $ IM.unionWithKey err
   tls <- uses2 (_1.tails) (_2.tails) $ IM.unionWithKey err
   return $ Sites ns'' hds tls
 
   where
-    goSeam :: [(Index, (Len :!: Index, Len :!: (Index, Sym)))] -> IntMap Int ->
-              StateT (Sites :!: Sites) Identity (IntMap Int)
-    goSeam = flip $ foldM $ \dns (i, (lenA :!: hdA, lenB :!: (tlB,stl))) -> do
+    go :: IntMap Int -> [(Index, (Len :!: Index, Len :!: (Index, Sym)))] ->
+          StateT (Sites :!: Sites) Identity (IntMap Int)
+    go dns [] = return dns
+    go dns ((i, (lenA :!: hdA, lenB :!: (tlB,stl))):rest) = do
       let lenA' = lenA + lenB - 1
       _1.heads %= IM.insert hdA (lenA' :!: (tlB,stl))
       _1.tails %= IM.delete i
@@ -48,11 +49,12 @@ join sitesA sitesB = runIdentity $ flip evalStateT (sitesA :!: sitesB) $ do
                    | otherwise = 0
           newTailB | even lenA' = 1
                    | otherwise = 0
-          deltaTailB = newTailB - oldTailB
-      if deltaTailB == 0 then return dns
-        else return $ flip2 IM.alter stl dns $ \case
-        Nothing  -> Just deltaTailB
-        Just ntl -> nothingIf (== 0) (ntl + deltaTailB)
+          delta = newTailB - oldTailB
+          dns' | delta == 0 = dns
+               | otherwise = flip2 IM.alter stl dns $ \case
+                   Nothing  -> Just delta
+                   Just ntl -> nothingIf (== 0) (ntl + delta)
+      go dns' rest
 
     err :: (Show k, Show v0, Show v1) => k -> v0 -> v1 -> a
     err = error . ("Sites.join: collision: " ++) . show .:. (,,)
