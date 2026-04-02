@@ -4,15 +4,20 @@
 module Diagram.Sites (module Diagram.Sites) where
 
 import Control.Monad
-import Control.Lens hiding (Index)
+import Control.Lens hiding (Index,(:>))
 import Control.Monad.State.Strict
 
+import qualified Data.Map.Strict as M
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
 import Data.Strict.Tuple (Pair((:!:)),(:!:),swap)
 
+import Streaming
+import qualified Streaming.Prelude as S
+
 import Diagram.UnionType (Sym)
 import Diagram.Doubly (Index)
+import Diagram.Joints (Joints)
 
 import Diagram.Util
 
@@ -23,6 +28,53 @@ data Sites = Sites
   , _tails2heads :: !(IntMap (Len :!: Index)) }      -- :: tl --> (len, hd)
   deriving(Show,Eq)
 makeLenses ''Sites
+
+empty :: Sites
+empty = Sites e e e
+  where e = IM.empty
+
+singleton :: (Index,Sym) -> (Index,Sym) -> Sites
+singleton (i0,s0) (i1,s1) = Sites ns h2t t2h
+  where ns = IM.fromList [(s0,1),(s1,1)]
+        h2t = IM.singleton i0 (2 :!: (i1,s1))
+        t2h = IM.singleton i1 (2 :!: i0)
+
+fromStream :: Monad m => Stream (Of (Index,Sym)) m r -> m (Joints Sites, r)
+fromStream = flip fromStream_ M.empty
+
+fromStream_ :: Monad m =>
+  Stream (Of (Index,Sym)) m r -> Joints Sites -> m (Joints Sites, r)
+fromStream_ ss m = (S.next ss >>=) $ \case
+  Left r -> return (m, r)
+  Right (is,ss') -> fromStream_0 is ss' m
+
+fromStream_0 :: Monad m => (Index,Sym) ->
+  Stream (Of (Index,Sym)) m r -> Joints Sites -> m (Joints Sites, r)
+fromStream_0 is0@(i0,s0) ss !m = (S.next ss >>=) $ \case
+  Left r -> return (m, r)
+  Right (is1@(i1,s1),ss')
+    | s0 /= s1 -> fromStream_0 (i1,s1) ss' $
+      flip3 M.insertWith (s0,s1) (singleton is0 is1) m $ \_ ->
+        (counts %~ IM.insertWith (+) s0 1 . IM.insertWith (+) s1 1)
+        . (heads2tails %~ IM.insertWithKey err i0 (2 :!: (i1,s1)))
+        . (tails2heads %~ IM.insertWithKey err i1 (2 :!: i0))
+
+    | otherwise -> do -- s0 == s1
+        is :> ss'' <- S.toList $ S.map fst $ S.span ((s0 ==) . snd) ss'
+        let len = length is + 2
+            itl = last $ i1:is
+            n | even len = len
+              | otherwise = len - 1
+
+        fromStream_0 (itl,s0) ss'' $ m & at (s0,s0) . non empty %~
+          (counts %~ IM.insertWith (+) s0 n)
+          . (heads2tails %~ IM.insertWithKey err i0 (len :!: (itl,s0)))
+          . (tails2heads %~ IM.insertWithKey err itl (len :!: i0))
+
+  where
+    err :: (Show k, Show v0, Show v1) => k -> v0 -> v1 -> a
+    err = error . ("Sites.fromStream: collision: " ++) . show .:. (,,)
+
 
 join :: Sites -> Sites -> Sites
 join sitesA sitesB = runIdentity $ flip evalStateT (sitesA :!: sitesB) $ do
