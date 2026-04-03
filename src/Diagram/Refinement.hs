@@ -16,7 +16,6 @@ import Data.Maybe
 import Data.Tuple.Extra
 import qualified Data.List.Extra as L
 import Data.List.NonEmpty (NonEmpty((:|)))
-import Data.Strict.Tuple (Pair((:!:)))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.IntMap.Strict (IntMap)
@@ -34,7 +33,7 @@ import Diagram.Information
 
 import Diagram.Doubly (Index)
 import qualified Diagram.Doubly as D
-import Diagram.Joints (Doubly,Joints,Sites,Joints2(J2),Joints2S(J2S))
+import Diagram.Joints (Doubly,Joints,Joints2(J2),Joints2S(J2S))
 import qualified Diagram.Joints as Jts
 import Diagram.UnionType (Sym)
 import qualified Diagram.UnionType as UT
@@ -215,18 +214,20 @@ genRandomWith r (J2S byFst0 bySnd0) =
 -- SITES --
 -----------
 
-type Run = NonEmpty (Sym,Sym)
+data IxdJoint = IJ !Index !Sym -- i0 s0
+                !Index !Sym -- i1 s2
 
-runsByHead :: PrimMonad m => JointType -> Doubly (PrimState m) -> m (IntMap Run)
-runsByHead jt ss = IM.fromDistinctAscList
-                   <$> S.toList_ (streamRuns jt ss)
+-- runsByHead :: PrimMonad m => JointType -> Doubly (PrimState m) ->
+--               m (IntMap (NonEmpty (Sym,Sym)))
+-- runsByHead jt ss = IM.fromDistinctAscList
+--                    <$> S.toList_ (streamRuns jt ss)
 
 streamRuns :: PrimMonad m => JointType -> Doubly (PrimState m) ->
-              Stream (Of (Index,Run)) m ()
+              Stream (Of (NonEmpty IxdJoint)) m ()
 streamRuns jt = streamRuns_ jt . D.streamWithKey
 
-streamRuns_ :: PrimMonad m => JointType -> Stream (Of (Index,Sym)) m r ->
-               Stream (Of (Index,Run)) m r
+streamRuns_ :: Monad m => JointType -> Stream (Of (Index,Sym)) m r ->
+               Stream (Of (NonEmpty IxdJoint)) m r
 streamRuns_ (JT u0 u1) = go0
   where
     go0 iss = (lift (S.next iss) >>=) $ \case
@@ -239,57 +240,105 @@ streamRuns_ (JT u0 u1) = go0
       Left r -> return r -- end
       Right ((i1,s1),iss')
         | s1 `UT.member` u1 -> do (tl, cont) <- lift $ go2 iss'
-                                  S.yield (i0, (s0,s1):|tl)
+                                  S.yield (IJ i0 s0 i1 s1 :| tl)
                                   cont
         | s1 `UT.member` u0 -> go1 i1 s1 iss'
         | otherwise -> go0 iss'
 
     go2 iss = (S.next iss >>=) $ \case
       Left r -> return ([], return r)
-      Right ((_,s0),iss')
+      Right ((i0,s0),iss')
         | s0 `UT.notMember` u0 -> return ([], go0 iss')
         | otherwise -> (S.next iss' >>=) $ \case
             Left r -> return ([], return r)
             Right ((i1,s1), iss'')
-              | s1 `UT.member` u1 -> first ((s0,s1):) <$> go2 iss''
+              | s1 `UT.member` u1 -> first (IJ i0 s0 i1 s1:) <$> go2 iss''
               | s1 `UT.member` u0 -> return ([], go1 i1 s1 iss')
               | otherwise -> return ([], go0 iss'')
 
-brokenSites :: forall m r. PrimMonad m => Doubly (PrimState m) ->
-               Stream (Of (Index,Run)) m r -> m (Of (Joints Sites) r)
-brokenSites = S.fold (flip insert) M.empty id .: brokenSites_
-  where insert (s0s1,i) = M.insertWith (const $ (+1) `bimap` IS.insert i)
-                          s0s1 (1 :!: IS.singleton i)
+deltaByMut :: forall m r. PrimMonad m => JointType -> Doubly (PrimState m) ->
+              Stream (Of (NonEmpty IxdJoint)) m r ->
+              Stream (Of (SomeMutation, IntMap Int)) m r
+deltaByMut jt ss ijts = (lift (D.lastKey ss) >>=) $ \case
+  Nothing -> lift $ S.effects ijts -- ijts should be empty so drain
+  Just iLast -> deltaByMut_ jt ss iLast ijts
 
-brokenSites_ :: forall m r. PrimMonad m => Doubly (PrimState m) ->
-                Stream (Of (Index,Run)) m r -> Stream (Of ((Sym,Sym), Index)) m r
-brokenSites_ ss irs0 = lift (D.lastKey ss) -- \iNm1 ->
-                       >>= flip go irs0
+deltaByMut_ :: forall m r. PrimMonad m => JointType -> Doubly (PrimState m) -> Index ->
+               Stream (Of (NonEmpty IxdJoint)) m r ->
+               Stream (Of (SomeMutation, IntMap Int)) m r
+deltaByMut_ (JT u0 u1) ss iLast = go
   where
+    go :: Stream (Of (NonEmpty IxdJoint)) m r ->
+          Stream (Of (SomeMutation, IntMap Int)) m r
+    go ijts = (lift (S.next ijts) >>=) $ \case
+      Left r -> return r -- end
+      Right (IJ i0 s0 i1 s1 :| rest, ijts') -> do
+        im1 <- prev i0
+        if im1 == iLast then go ijts' -- skip
+          else do
+          sm1 <- read im1
+          let inLeft = sm1 `UT.member` u0
+              inRight = s0 `UT.member` u1
+
+              mut | inLeft = Mut (AddRight s0) -- assert (not inRight)
+                  | inRight = Mut (AddLeft sm1) -- assert (not inLeft)
+                  | otherwise = Mut (Add2 sm1 s0)
+
+              u0' | inLeft = u0
+                  | otherwise = UT.insertMissing sm1 u0
+
+              u1' | inRight = u1
+                  | otherwise = UT.insertMissing s0 u1
+
+          undefined
+
+
+    prev :: MonadTrans t => Index -> t m Index
+    prev = lift . D.unsafePrev ss
+
     next :: MonadTrans t => Index -> t m Index
-    next = lift . D.nextKey ss
+    next = lift . D.unsafeNext ss
 
-    go Nothing = error "Refinement.brokenSites: empty string"
-    go (Just iNm1) = goStr where
+    read :: MonadTrans t => Index -> t m Sym
+    read = lift . D.read ss
 
-      goStr :: Stream (Of (Index,Run)) m r -> Stream (Of ((Sym,Sym), Index)) m r
-      goStr irs = (lift (S.next irs) >>=) $ \case
-        Left r -> return r
-        Right ((i0,(_,s1):|rest), irs') ->
-          lift (D.nextKey ss i0) -- \i1 ->
-          >>= flip2 goRun s1 rest
-          >> goStr irs'
+-- brokenSites :: forall m r. PrimMonad m => Doubly (PrimState m) ->
+--                Stream (Of (Index, NonEmpty (Sym,Sym))) m r -> m (Of (Joints Sites) r)
+-- brokenSites = S.fold (flip insert) M.empty id .: brokenSites_
+--   where insert (s0s1,i) = M.insertWith (const $ (+1) `bimap` IS.insert i)
+--                           s0s1 (1 :!: IS.singleton i)
 
-      goRun :: Int -> Sym -> [(Sym,Sym)] -> Stream (Of ((Sym,Sym), Int)) m ()
-      goRun i1 s1 ((s2,s3):rest) =
-        S.yield ((s1,s2),i1)
-        >> (next i1 >>= next) -- \i3 ->
-        >>= flip2 goRun s3 rest
+-- -- | Given a reference string and a stream of construction runs, enumerate the
+-- brokenSites_ :: forall m r. PrimMonad m => Doubly (PrimState m) ->
+--                 Stream (Of (Index, NonEmpty (Sym,Sym))) m r ->
+--                 Stream (Of ((Sym,Sym), Index)) m r
+-- brokenSites_ ss irs0 = (lift (D.lastKey ss) >>=) $ \case
+--   Nothing -> error "Refinement.brokenSites: empty string"
+--   Just iLast -> go iLast irs0
+--   where
+--     next :: MonadTrans t => Index -> t m Index
+--     next = lift . D.nextKey ss
 
-      goRun i1 s1 []
-        | i1 == iNm1 = return () -- end of string, nothing broken
-        | otherwise = do s2 <- lift . D.read ss =<< next i1
-                         S.yield ((s1,s2),i1)
+--     go iLast = goStr where
+--       goStr :: Stream (Of (Index, NonEmpty (Sym,Sym))) m r ->
+--                Stream (Of ((Sym,Sym), Index)) m r
+--       goStr irs = (lift (S.next irs) >>=) $ \case
+--         Left r -> return r
+--         Right ((i0,(_,s1):|rest), irs') ->
+--           lift (D.nextKey ss i0) -- \i1 ->
+--           >>= flip2 goRun s1 rest
+--           >> goStr irs'
+
+--       goRun :: Int -> Sym -> [(Sym,Sym)] -> Stream (Of ((Sym,Sym), Int)) m ()
+--       goRun i1 s1 ((s2,s3):rest) =
+--         S.yield ((s1,s2),i1)
+--         >> (next i1 >>= next) -- \i3 ->
+--         >>= flip2 goRun s3 rest
+
+--       goRun i1 s1 []
+--         | i1 == iLast = return () -- end of string, nothing broken
+--         | otherwise = do s2 <- lift . D.read ss =<< next i1
+--                          S.yield ((s1,s2),i1)
 
 -- -------------- --
 -- -- MUTATION -- --
@@ -372,49 +421,49 @@ instance Ord SomeMutation where
       mutOrd DelRight{} = 4
       mutOrd Del2{}     = 5
 
--- | O(N log(m)) Reads the whole string compiling differences in counts
--- resulting from introduced mutations breaking old constructions
--- through higher precedence.
-countDeltaByBreakingMut :: forall m. PrimMonad m =>
-  JointType -> Doubly (PrimState m) -> m (Map SomeMutation (IntMap Int))
-countDeltaByBreakingMut jt str =
-  S.fold_ (flip $ uncurry $ M.insertWith (IM.unionWith (+))) M.empty id $
-  S.mapM mkEntry $ streamRuns jt str
-  where
-    mkEntry :: (Index, NonEmpty (Sym, Sym)) -> m (SomeMutation, IntMap Int)
-    mkEntry (i,ps) = do
-      s0 <- D.read str =<< D.prevKey str i
-      let (mut, _, s2) = breakingOf jt s0 ps
-          im = case compare s0 s2 of
-            LT -> IM.fromDistinctAscList [(s0,-1),(s2,1)]
-            EQ -> IM.empty -- cancel out
-            GT -> IM.fromDistinctAscList [(s2,1),(s0,-1)]
-      return (mut, im)
+-- -- | O(N log(m)) Reads the whole string compiling differences in counts
+-- -- resulting from introduced mutations breaking old constructions
+-- -- through higher precedence.
+-- countDeltaByBreakingMut :: forall m. PrimMonad m =>
+--   JointType -> Doubly (PrimState m) -> m (Map SomeMutation (IntMap Int))
+-- countDeltaByBreakingMut jt str =
+--   S.fold_ (flip $ uncurry $ M.insertWith (IM.unionWith (+))) M.empty id $
+--   S.mapM mkEntry $ streamRuns jt str
+--   where
+--     mkEntry :: (Index, NonEmpty (Sym, Sym)) -> m (SomeMutation, IntMap Int)
+--     mkEntry (i,ps) = do
+--       s0 <- D.read str =<< D.prevKey str i
+--       let (mut, _, s2) = breakingOf jt s0 ps
+--           im = case compare s0 s2 of
+--             LT -> IM.fromDistinctAscList [(s0,-1),(s2,1)]
+--             EQ -> IM.empty -- cancel out
+--             GT -> IM.fromDistinctAscList [(s2,1),(s0,-1)]
+--       return (mut, im)
 
--- | For a joint type and a non-empty sequence of consecutive
--- construction sites (s1,s2):rest, preceded by a non-constructive
--- symbol s0, returns the mutation to that type that would break the
--- sequence, the length of the new run, and the trailing symbol that
--- would be left unconstructed, i.e. whose count would have to be
--- incremented by 1 (while the count of s0 would be correspondingly
--- decremented by 1).
-breakingOf :: JointType -> Sym -> NonEmpty (Sym,Sym) -> (SomeMutation, Int, Sym)
-breakingOf (JT u0 u1) s0 ((s1,s2):|rest) = uncurry (mut,,) $
-                                           go 1 s2 rest
-  where
-    go !k s2' [] = (k,s2')
-    go !k s2' ((s3,s4):rest')
-      | (s2',s3) `JT.member` jt' = go (k+1) s4 rest' -- breaking propagates
-      | otherwise = (k,s2') -- breaking stops, leaving s2' unconstructed
+-- -- | For a joint type and a non-empty sequence of consecutive
+-- -- construction sites (s1,s2):rest, preceded by a non-constructive
+-- -- symbol s0, returns the mutation to that type that would break the
+-- -- sequence, the length of the new run, and the trailing symbol that
+-- -- would be left unconstructed, i.e. whose count would have to be
+-- -- incremented by 1 (while the count of s0 would be correspondingly
+-- -- decremented by 1).
+-- breakingOf :: JointType -> Sym -> NonEmpty (Sym,Sym) -> (SomeMutation, Int, Sym)
+-- breakingOf (JT u0 u1) s0 ((s1,s2):|rest) = uncurry (mut,,) $
+--                                            go 1 s2 rest
+--   where
+--     go !k s2' [] = (k,s2')
+--     go !k s2' ((s3,s4):rest')
+--       | (s2',s3) `JT.member` jt' = go (k+1) s4 rest' -- breaking propagates
+--       | otherwise = (k,s2') -- breaking stops, leaving s2' unconstructed
 
-    (mut, jt')
-      | s0 `UT.member` u0 = -- assert $ not (s1 `UT.member` u1)
-          (Mut (AddRight s1), JT u0 u1')
-      | s1 `UT.member` u1 = (Mut (AddLeft s0), JT u0' u1)
-      | otherwise = (Mut (Add2 s0 s1), JT u0' u1')
-      where
-        u0' = UT.insertMissing s0 u0
-        u1' = UT.insertMissing s1 u1
+--     (mut, jt')
+--       | s0 `UT.member` u0 = -- assert $ not (s1 `UT.member` u1)
+--           (Mut (AddRight s1), JT u0 u1')
+--       | s1 `UT.member` u1 = (Mut (AddLeft s0), JT u0' u1)
+--       | otherwise = (Mut (Add2 s0 s1), JT u0' u1')
+--       where
+--         u0' = UT.insertMissing s0 u0
+--         u1' = UT.insertMissing s1 u1
 
 ----------------------------
 -- STATE & INITIALIZATION --
@@ -438,14 +487,14 @@ data RefinementState s = RefinementState
 
 type MembershipT a = StateT (Membership a)
 data Membership a = Membership -- :: {In,Out} <--> {In,Out}
-  { _byFstInIn   :: !(IntMap (IntMap a))   --  In --> In
-  , _byFstInOut  :: !(IntMap (IntMap a))   --  In --> Out
-  , _byFstOutIn  :: !(IntMap (IntMap a))   -- Out --> In
-  , _byFstOutOut :: !(IntMap (IntMap a))   -- Out --> Out
-  , _bySndInIn   :: !(IntMap (IntMap a))   --  In <-- In
-  , _bySndInOut  :: !(IntMap (IntMap a))   -- Out <-- In
-  , _bySndOutIn  :: !(IntMap (IntMap a))   --  In <-- Out
-  , _bySndOutOut :: !(IntMap (IntMap a)) } -- Out <-- Out
+  { _byFstInIn   :: !(IntMap (IntMap a))   --  In  --> In
+  , _byFstInOut  :: !(IntMap (IntMap a))   --  In  --> Out
+  , _byFstOutIn  :: !(IntMap (IntMap a))   -- Out  --> In
+  , _byFstOutOut :: !(IntMap (IntMap a))   -- Out  --> Out
+  , _bySndInIn   :: !(IntMap (IntMap a))   --  In <--  In
+  , _bySndInOut  :: !(IntMap (IntMap a))   -- Out <--  In
+  , _bySndOutIn  :: !(IntMap (IntMap a))   --  In <--  Out
+  , _bySndOutOut :: !(IntMap (IntMap a)) } -- Out <--  Out
 
 makeLenses ''ModelParams
 makeLenses ''RefinementState
@@ -582,7 +631,7 @@ bySndToAscList = fmap (first swap) . byFstToAscList
 -- EVAL MUTATION --
 -------------------
 
--- | MutDuate the loss incurred by the application of a mutation
+-- | Compute the loss incurred by the application of a mutation
 evalMutation :: Int -> Int -> U.Vector Int -> IntMap Int -> Int -> Int ->
                 MutationWithJoints -> Double
 evalMutation m bigN ns ns' nm vm = go
