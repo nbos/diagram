@@ -18,7 +18,7 @@ import Diagram.Information
 import Diagram.Dynamic (BoxedVec, UnboxedVec)
 import qualified Diagram.Dynamic as Dyn
 
-import Diagram.UnionType (Sym)
+import Diagram.String
 import Diagram.JointType (JointType)
 import qualified Diagram.JointType as JT
 import Diagram.Refinement (ModelParams(..))

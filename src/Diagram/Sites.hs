@@ -15,8 +15,7 @@ import Data.Strict.Tuple (Pair((:!:)),(:!:),swap)
 import Streaming
 import qualified Streaming.Prelude as S
 
-import Diagram.UnionType (Sym)
-import Diagram.Doubly (Index)
+import Diagram.String
 import Diagram.Joints (Joints)
 
 import Diagram.Util

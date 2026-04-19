@@ -31,11 +31,10 @@ import qualified Streaming.Prelude as S
 import Diagram.Primitive
 import Diagram.Information
 
-import Diagram.Doubly (Index)
+import Diagram.String
 import qualified Diagram.Doubly as D
-import Diagram.Joints (Doubly,Joints,Joints2(J2),Joints2S(J2S))
+import Diagram.Joints (Joints,Joints2(J2),Joints2S(J2S))
 import qualified Diagram.Joints as Jts
-import Diagram.UnionType (Sym)
 import qualified Diagram.UnionType as UT
 import Diagram.JointType (JointType(..),left,right)
 import qualified Diagram.JointType as JT
@@ -474,16 +473,9 @@ data ModelParams = Params
   { _numSymbols :: !Int -- m
   , _stringLength :: !Int -- N
   , _symbolCounts :: !(U.Vector Int) } -- ns
+makeLenses ''ModelParams
 
-type RefinementT m = StateT (RefinementState (PrimState m)) m
-data RefinementState s = RefinementState
-  { _modelParams     :: !ModelParams  -- :: (m, N, ns)
-  , _workingString   :: !(Doubly s)   -- :: ss (read only)
-  -- , _parent          :: !JointType
-  , _jointCount      :: !Int          -- :: nm
-  , _refinement      :: !JointType    -- :: rjt
-  , _newSymbolCounts :: !(IntMap Int) -- :: ns'
-  , _membership      :: !(Membership Int) }
+-- Membership --
 
 type MembershipT a = StateT (Membership a)
 data Membership a = Membership -- :: {In,Out} <--> {In,Out}
@@ -495,27 +487,7 @@ data Membership a = Membership -- :: {In,Out} <--> {In,Out}
   , _bySndInOut  :: !(IntMap (IntMap a))   -- Out <--  In
   , _bySndOutIn  :: !(IntMap (IntMap a))   --  In <--  Out
   , _bySndOutOut :: !(IntMap (IntMap a)) } -- Out <--  Out
-
-makeLenses ''ModelParams
-makeLenses ''RefinementState
 makeLenses ''Membership
-
-initState :: ModelParams -> Doubly s -> Joints2 Int -> JointType -> RefinementState s
-initState mdl@(Params _ _ ns) str jts2 rjt =
-  RefinementState { _modelParams = mdl
-                  , _workingString = str
-                  , _jointCount = nm
-                  , _refinement = rjt
-                  , _newSymbolCounts = ns'
-                  , _membership = coverage }
-  where
-    coverage = initMembership jts2 rjt
-    nm = sum $ snd <$> byFstInInL
-    byFstInInL = byFstToAscList $ coverage ^. byFstInIn
-    ns' = IM.mapWithKey (\s dn -> (ns U.! s) - dn ) $
-          IM.fromListWith (+) $
-          foldr (\((s0,s1),n01) l -> (s0,n01):(s1,n01):l)
-          [] byFstInInL
 
 initMembership :: Joints2 a -> JointType -> Membership a
 initMembership (J2 byFst bySnd) (JT u0 u1) =
@@ -544,15 +516,45 @@ initMembership (J2 byFst bySnd) (JT u0 u1) =
     bySndOutIn_  = (`IM.restrictKeys` UT.set u0) <$> bySndOut
     bySndOutOut_ = (`IM.withoutKeys`  UT.set u0) <$> bySndOut
 
+-- Refinement --
+
+type RefinementT m = StateT (RefinementState (PrimState m)) m
+data RefinementState s = RefinementState
+  { _modelParams     :: !ModelParams  -- :: (m, N, ns)
+  , _workingString   :: !(Doubly s)   -- :: ss (read only)
+  -- , _parent          :: !JointType
+  , _jointCount      :: !Int          -- :: nm
+  , _refinement      :: !JointType    -- :: rjt
+  , _newSymbolCounts :: !(IntMap Int) -- :: ns'
+  , _membership      :: !(Membership Int) }
+makeLenses ''RefinementState
+
+initState :: ModelParams -> Doubly s -> Joints2 Int -> JointType -> RefinementState s
+initState mdl@(Params _ _ ns) str jts2 rjt =
+  RefinementState { _modelParams = mdl
+                  , _workingString = str
+                  , _jointCount = nm
+                  , _refinement = rjt
+                  , _newSymbolCounts = ns'
+                  , _membership = coverage }
+  where
+    coverage = initMembership jts2 rjt
+    nm = sum $ snd <$> byFstInInL
+    byFstInInL = byFstToAscList $ coverage ^. byFstInIn
+    ns' = IM.mapWithKey (\s dn -> (ns U.! s) - dn ) $
+          IM.fromListWith (+) $
+          foldr (\((s0,s1),n01) l -> (s0,n01):(s1,n01):l)
+          [] byFstInInL
+
 -------------------------
 -- ENUMERATE MUTATIONS --
 -------------------------
 
-data MutationWithJoints where
-  MutD :: !(Mutation k) -> !(NewConstrJoints k) -> MutationWithJoints
+data MutationJoints where
+  MutD :: !(Mutation k) -> !(NewConstrJoints k) -> MutationJoints
 
-instance Show MutationWithJoints where
-  show :: MutationWithJoints -> String
+instance Show MutationJoints where
+  show :: MutationJoints -> String
   show (MutD mut ncjts) = case mut of
     AddLeft  s   -> "AddLeft "  ++ show s ++ " " ++ show ncjts
     AddRight s   -> "AddRight " ++ show s ++ " " ++ show ncjts
@@ -561,7 +563,7 @@ instance Show MutationWithJoints where
     DelRight s   -> "DelRight " ++ show s ++ " " ++ show ncjts
     Del2     a b -> "Del2 "     ++ show a ++ " " ++ show b ++ " " ++ show ncjts
 
-enumMutations :: Membership Int -> [MutationWithJoints]
+enumMutations :: Membership Int -> [MutationJoints]
 enumMutations (Membership byFstInIn_ _ byFstOutIn_ byFstOutOut_
                 bySndInIn_ _ bySndOutIn_ _) =
   als ++ ars ++ a2s ++ dls ++ drs ++ d2s
@@ -633,13 +635,13 @@ bySndToAscList = fmap (first swap) . byFstToAscList
 
 -- | Compute the loss incurred by the application of a mutation
 evalMutation :: Int -> Int -> U.Vector Int -> IntMap Int -> Int -> Int ->
-                MutationWithJoints -> Double
+                MutationJoints -> Double
 evalMutation m bigN ns ns' nm vm = go
   where
     deltaDelta_ :: Int -> [(Int,Int)] -> Int -> Double
     deltaDelta_ nm' dns vm' = deltaDelta m bigN (nm,nm') dns (vm,vm')
 
-    go :: MutationWithJoints -> Double
+    go :: MutationJoints -> Double
     go (MutD (AddLeft s0) jtns) = goAdd1 s0 jtns
     go (MutD (AddRight s1) jtns) = goAdd1 s1 jtns
     go (MutD (Add2 s0 s1) n01) = deltaDelta_ nm' dns (vm+2)
@@ -736,7 +738,6 @@ appMutation mutation = case mutation of
       -- (In,Out): insert (In[s0] <--> Out[outs])
       byFstInOut %= IM.insertWithKey (col "byFstInOut") s0 outs
       bySndOutIn %= IM.insertWithKey (col "bySndOutIn") s0 `atEvery` outs
-
 
     let dnm = sum ins
     jointCount += dnm
@@ -969,7 +970,7 @@ hillClimb = (stepHillClimb >>=) $ \case
   Just jt -> return jt
 
 minMutation :: PrimMonad m => RefinementT m ( Double
-                                            , MutationWithJoints )
+                                            , MutationJoints )
 minMutation = do
   muts <- membership `uses` enumMutations
   (RefinementState (Params m bigN ns) _ nm rjt ns' _) <- get
@@ -978,7 +979,7 @@ minMutation = do
   return $ L.minimumOn fst emuts
 
 negMutations :: PrimMonad m => RefinementT m [( Double
-                                              , MutationWithJoints)]
+                                              , MutationJoints)]
 negMutations = do
   muts <- membership `uses` enumMutations
   (RefinementState (Params m bigN ns) _ nm rjt ns' _) <- get

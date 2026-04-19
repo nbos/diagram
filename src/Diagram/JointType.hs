@@ -19,8 +19,9 @@ import qualified Codec.Arithmetic.Variety.BitVec as BV
 
 import Diagram.Information
 
+import Diagram.String
 import Diagram.Joints (Joints)
-import Diagram.UnionType (Sym,UnionType(..))
+import Diagram.UnionType (UnionType(..))
 import qualified Diagram.UnionType as UT
 
 import Diagram.Util

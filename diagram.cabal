@@ -62,6 +62,7 @@ executable diagram
                       Diagram.Types
                       Diagram.Model
                       Diagram.Sites
+                      Diagram.String
                       Diagram.Joints
                       Diagram.Random
                       Diagram.Doubly

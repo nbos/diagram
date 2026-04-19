@@ -1,4 +1,3 @@
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
 {-# LANGUAGE BangPatterns, LambdaCase #-}
 module Diagram.Joints (module Diagram.Joints, Sym) where
@@ -22,13 +21,11 @@ import qualified Data.Set as Set
 import Data.Strict.Tuple (Pair((:!:)))
 
 import qualified Data.Vector.Mutable as MV
-import Data.Vector.Unboxed.Mutable (MVector)
 
 import Streaming hiding (first,second)
 import qualified Streaming.Prelude as S
 
-import Diagram.UnionType (Sym)
-import Diagram.Doubly (Index)
+import Diagram.String
 import qualified Diagram.Doubly as D
 
 -- | Count and location of each candidate/joint symbol in the string
@@ -55,7 +52,6 @@ noSites = 0 :!: IS.empty
 fromList :: [Sym] -> Joints Sites
 fromList = fst . runIdentity . fromStream . S.each . zip [0..]
 
-type Doubly s = D.Doubly MVector s Sym
 -- | Construction using the indices of the doubly-linked list
 fromDoubly :: PrimMonad m =>
               Doubly (PrimState m) -> m (Joints Sites)
