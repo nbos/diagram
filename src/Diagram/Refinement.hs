@@ -355,9 +355,9 @@ deltaByMut_ (JT u0 u1) ss iLast = go
 data SidesAffected = One | Two
   deriving (Show,Eq,Ord)
 
-type family NewConstrJoints (k :: SidesAffected) where
-  NewConstrJoints One = IntMap Int -- ins opposite side
-  NewConstrJoints Two = Int -- n01
+type family NewJoints (k :: SidesAffected) where
+  NewJoints One = IntMap Int -- ins opposite side
+  NewJoints Two = Int -- n01
 
 data Mutation (k :: SidesAffected) where
   AddLeft  :: !Sym         -> Mutation One
@@ -551,7 +551,7 @@ initState mdl@(Params _ _ ns) str jts2 rjt =
 -------------------------
 
 data MutationJoints where
-  MutD :: !(Mutation k) -> !(NewConstrJoints k) -> MutationJoints
+  MutD :: !(Mutation k) -> !(NewJoints k) -> MutationJoints
 
 instance Show MutationJoints where
   show :: MutationJoints -> String

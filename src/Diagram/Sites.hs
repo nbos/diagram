@@ -1,9 +1,10 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
 {-# LANGUAGE BangPatterns, LambdaCase, TypeOperators #-}
+{-# LANGUAGE InstanceSigs #-}
 module Diagram.Sites (module Diagram.Sites) where
 
-import Control.Monad
+import Control.Monad hiding (join)
 import Control.Lens hiding (Index,(:>))
 import Control.Monad.State.Strict
 
@@ -12,7 +13,7 @@ import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
 import Data.Strict.Tuple (Pair((:!:)),(:!:),swap)
 
-import Streaming
+import Streaming hiding (join)
 import qualified Streaming.Prelude as S
 
 import Diagram.String
@@ -20,13 +21,20 @@ import Diagram.Joints (Joints)
 
 import Diagram.Util
 
-type Len = Int
 data Sites = Sites
   { _counts      :: !(IntMap Int) -- :: s --> n
   , _heads2tails :: !(IntMap (Len :!: (Index, Sym))) -- :: hd --> (len, (tl,stl))
   , _tails2heads :: !(IntMap (Len :!: Index)) }      -- :: tl --> (len, hd)
   deriving(Show,Eq)
 makeLenses ''Sites
+
+instance Semigroup Sites where
+  (<>) :: Sites -> Sites -> Sites
+  (<>) = join
+
+instance Monoid Sites where
+  mempty :: Sites
+  mempty = empty
 
 empty :: Sites
 empty = Sites e e e
@@ -62,11 +70,10 @@ fromStream_0 is0@(i0,s0) ss !m = (S.next ss >>=) $ \case
         is :> ss'' <- S.toList $ S.map fst $ S.span ((s0 ==) . snd) ss'
         let len = length is + 2
             itl = last $ i1:is
-            n | even len = len
-              | otherwise = len - 1
+            constrlen = (len `div` 2) * 2
 
         fromStream_0 (itl,s0) ss'' $ m & at (s0,s0) . non empty %~
-          (counts %~ IM.insertWith (+) s0 n)
+          (counts %~ IM.insertWith (+) s0 constrlen)
           . (heads2tails %~ IM.insertWithKey err i0 (len :!: (itl,s0)))
           . (tails2heads %~ IM.insertWithKey err itl (len :!: i0))
 

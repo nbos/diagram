@@ -19,6 +19,9 @@ import Diagram.String
 import Diagram.Information (log2)
 import Diagram.Util
 
+-- TODO: There should be a mutable `FastUnionType s` type using Vector
+-- Bit from bitvec for O(1) everything when synthesizing types
+
 -- | A sized union of symbols
 data UnionType = UT {
   size :: !Int, -- size of the set

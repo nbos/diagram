@@ -1,15 +1,15 @@
-{-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables, RankNTypes, TypeOperators #-}
 {-# LANGUAGE BangPatterns, LambdaCase #-}
 module Diagram.Joints (module Diagram.Joints, Sym) where
 
 import Control.Monad
 import Control.Lens hiding (Index)
 import Control.Monad.Primitive (PrimMonad(PrimState))
-import Control.Monad.ST
+import Control.Monad.ST (runST)
 
-import Data.Function
+import Data.Function (on)
 import Data.Tuple.Extra ((&&&))
-import Data.Bifunctor
+import Data.Bifunctor (Bifunctor(second, first))
 import qualified Data.List.Extra as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -18,7 +18,7 @@ import qualified Data.IntMap as IM
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IS
 import qualified Data.Set as Set
-import Data.Strict.Tuple (Pair((:!:)))
+import Data.Strict.Tuple (Pair((:!:)),(:!:))
 
 import qualified Data.Vector.Mutable as MV
 
@@ -34,13 +34,7 @@ type Joints a = Map (Sym,Sym) a
 size :: Joints a -> Int
 size = M.size
 
-type Sites = Pair Int IntSet
--- -- | Constructive and non-constructive sites
--- data Sites = Sites
---   {    _constructive :: !(Pair Int IntSet)
---   , _nonconstructive :: !(Pair Int IntSet) }
---   deriving(Eq,Ord,Show)
--- makeLenses ''Sites
+type Sites = Int :!: IntSet
 
 noSites :: Sites
 noSites = 0 :!: IS.empty
