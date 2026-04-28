@@ -8,6 +8,7 @@ import Control.Monad hiding (join)
 import Control.Lens hiding (Index,(:>))
 import Control.Monad.State.Strict
 
+import qualified Data.List as L
 import qualified Data.Map.Strict as M
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
@@ -22,15 +23,15 @@ import Diagram.Joints (Joints)
 import Diagram.Util
 
 data Sites = Sites
-  { _counts      :: !(IntMap Int) -- :: s --> n
-  , _heads2tails :: !(IntMap (Len :!: (Index, Sym))) -- :: hd --> (len, (tl,stl))
-  , _tails2heads :: !(IntMap (Len :!: Index)) }      -- :: tl --> (len, hd)
-  deriving(Show,Eq)
+  { _counts      :: IntMap Int -- :: s --> n
+  , _heads2tails :: IntMap (Len :!: (Index, Sym)) -- :: hd --> (len, (tl,stl))
+  , _tails2heads :: IntMap (Len :!: Index) }      -- :: tl --> (len, hd)
+  deriving(Show,Eq) -- lazy fields for efficient counts join?
 makeLenses ''Sites
 
 instance Semigroup Sites where
   (<>) :: Sites -> Sites -> Sites
-  (<>) = join
+  (<>) = fst .: join
 
 instance Monoid Sites where
   mempty :: Sites
@@ -82,20 +83,26 @@ fromStream_0 is0@(i0,s0) ss !m = (S.next ss >>=) $ \case
     err = error . ("Sites.fromStream: collision: " ++) . show .:. (,,)
 
 
-join :: Sites -> Sites -> Sites
+join :: Sites -> Sites -> (Sites, IntMap Int)
 join sitesA sitesB = runIdentity $ flip evalStateT (sitesA :!: sitesB) $ do
   ns <- uses2 (_1.counts) (_2.counts) $ IM.unionWith (+)
   cAB <- uses2 (_2.heads2tails) (_1.tails2heads) IM.intersection
-  ns' <- go ns $ IM.toList cAB
+  dns <- go IM.empty $ IM.toList cAB
 
   modify swap -- A <--> B
   cBA <- uses2 (_2.heads2tails) (_1.tails2heads) IM.intersection
-  ns'' <- go ns' $ IM.toList cBA
+  dns' <- go dns $ IM.toList cBA
   modify swap -- B <--> A
+
+  let ns' = flip2 L.foldl' ns (IM.toList dns') $ \im (s,dn) ->
+        flip2 IM.alter s im $ \case
+        Nothing -> Just dn
+        Just n -> nothingIf (==0) $ n + dn
 
   hds <- uses2 (_1.heads2tails) (_2.heads2tails) $ IM.unionWithKey err
   tls <- uses2 (_1.tails2heads) (_2.tails2heads) $ IM.unionWithKey err
-  return $ Sites ns'' hds tls
+
+  return (Sites ns' hds tls, dns')
 
   where
     go :: IntMap Int -> [(Index, Len :!: (Index, Sym))] ->
@@ -121,9 +128,9 @@ join sitesA sitesB = runIdentity $ flip evalStateT (sitesA :!: sitesB) $ do
                      | otherwise = 0
               delta = newInc - oldInc
 
-          return $ if delta == 0 then dns
+          return $ if delta == 0 then dns -- (no change)
             else flip2 IM.alter stlB dns $ \case
-            Nothing  -> Just delta -- assert (delta == 1)
+            Nothing -> Just delta
             Just stln -> nothingIf (== 0) (stln + delta)
 
         -- fancy: seam [hdA..tlA) <> [hdB..tlB) <> [hdA2..tlA2] ==> [hdA..tlA2]
@@ -140,7 +147,10 @@ join sitesA sitesB = runIdentity $ flip evalStateT (sitesA :!: sitesB) $ do
                        | otherwise = 0
               delta = newIncA2 - oldIncA2
 
-          return $ (if even lenB then id else IM.adjust (+1) stlB) $
+          return $
+            (if even lenB then id else flip IM.alter stlB $ \case
+                Nothing -> Just 1
+                Just stln -> nothingIf (== 0) (stln + 1)) $
             (if delta == 0 then id else flip IM.alter stlA2 $ \case
                 Nothing -> Just delta -- assert (delta == 1)
                 Just stln -> nothingIf (== 0) (stln + delta)) dns
