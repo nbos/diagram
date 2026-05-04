@@ -22,10 +22,12 @@ import Diagram.Joints (Joints)
 
 import Diagram.Util
 
+type Head = Index -- = Int
+type Tail = Index -- = Int
 data Sites = Sites
-  { _counts      :: IntMap Int -- :: s --> n
-  , _heads2tails :: IntMap (Len :!: (Index, Sym)) -- :: hd --> (len, (tl,stl))
-  , _tails2heads :: IntMap (Len :!: Index) }      -- :: tl --> (len, hd)
+  { _counts      :: IntMap Count -- :: s --> n
+  , _heads2tails :: IntMap (Len :!: (Tail, Sym)) -- :: hd --> (len, (tl,stl))
+  , _tails2heads :: IntMap (Len :!: Head) }      -- :: tl --> (len, hd)
   deriving(Show,Eq) -- lazy fields for efficient counts join?
 makeLenses ''Sites
 
