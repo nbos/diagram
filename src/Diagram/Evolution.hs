@@ -36,6 +36,10 @@ import qualified Diagram.Sites as Sites
 
 import Diagram.Util
 
+--------------
+-- MUTATION --
+--------------
+
 data Mutation = AddLeft  !Sym
               | AddRight !Sym
               | Add2     !Sym !Sym
@@ -54,12 +58,39 @@ typeOfMut (DelLeft _)  = Del
 typeOfMut (DelRight _) = Del
 typeOfMut (Del2 _ _)   = Del
 
+---------------------
+-- EVOLUTION STATE --
+---------------------
+
+type EvolutionT m = StateT (EvolutionState (PrimState m)) m
+-- | Evolution state of a JointType in a given string
+data EvolutionState s = EvolutionState
+  -- string
+  { _string :: !(Doubly s) -- underlying string :: [N]Sym (readonly)
+  , _counts :: !(U.Vector Count) -- (readonly)
+
+  -- joint type
+  , _jointType :: !JointType
+  , _leftSyms  :: !(MV.MVector s SymState) -- :: [m]SymState
+  , _rightSyms :: !(MV.MVector s SymState) -- :: [m]SymState
+
+  , _constructed :: !(BV.MVector s Bit) -- :: [N]Bool, only toggle s0s
+  , _count :: !Count -- constructed popCount
+  , _deltaCounts :: !(IntMap Int) -- dns :: u0 U u1 -> dn
+
+  -- mutations
+  , _entries :: !(Map Mutation MutEntry) -- mut -> ddns
+  , _byLoss :: !(Map Double Mutation) } -- delta loss -> mut
+
+-- SYMBOL MEMBERSHIP INFO --
+
 data SymState = SymState
-  { _member :: !Bool -- true if self is member of the union type, false otherwise
-  , _memCoSyms :: !(Count :!: IntSet) -- other side member syms w/ a joint w/ self
-  , _dependents :: !IntSet } -- cosyms that have self as only cosym
+  { _member :: !Bool -- ^ True iff self is member of the union type
+  , _memCoSyms :: !(Count :!: IntSet) -- ^ Other-side member symbols
+                                      -- that have a joint with self
+  , _dependents :: !IntSet } -- ^ CoSyms that have self as only CoSym
+                             -- (not null only if member)
   deriving (Show,Eq,Ord)
-makeLenses ''SymState
 
 emptyIn :: SymState
 emptyIn = SymState True (0 :!: IS.empty) IS.empty
@@ -67,23 +98,7 @@ emptyIn = SymState True (0 :!: IS.empty) IS.empty
 emptyOut :: SymState
 emptyOut = SymState False (0 :!: IS.empty) IS.empty
 
-type EvolutionT m = StateT (EvolutionState (PrimState m)) m
-data EvolutionState s = EvolutionState
-  -- string O(N)
-  { _string :: !(Doubly s) -- underlying string :: [N]Sym
-  , _counts :: !(U.Vector Count)
-  , _constructed :: !(BV.MVector s Bit) -- :: [N]Bool, only toggle s0s
-  , _count :: !Count -- constructed popCount
-
-  -- joint type O(mc)
-  , _jointType :: !JointType
-  , _leftSyms  :: !(MV.MVector s SymState) -- :: [m]SymState
-  , _rightSyms :: !(MV.MVector s SymState) -- :: [m]SymState
-  , _deltaCounts :: !(IntMap Int) -- dns :: u0 U u1 -> dn
-
-  -- mutations O(m)
-  , _entries :: !(Map Mutation MutEntry) -- mut -> ddns
-  , _byLoss :: !(Map Double Mutation) } -- delta loss -> mut
+-- MUTATION INFO --
 
 data MutEntry = MutEntry
   { _ddCount :: !Int           -- delta delta nm
@@ -91,7 +106,46 @@ data MutEntry = MutEntry
   , _ddSites :: !Sites }       -- constr. sites
   deriving (Show,Eq)
 
+makeLenses ''SymState
+makeLenses ''MutEntry
 makeLenses ''EvolutionState
+
+-------------
+-- GETTERS --
+-------------
+
+-- | m
+numSymbols :: Monad m => EvolutionT m Int
+numSymbols = leftSyms `uses` MV.length
+
+-- | N, bigN
+stringLen :: Monad m => EvolutionT m Int
+stringLen = constructed `uses` MU.length
+
+-- | Retrieve the mutation with the minimal delta loss.
+getMin :: Monad m => EvolutionT m (Double, Mutation)
+getMin = uses byLoss M.findMin
+
+-- | Compute the loss in information/code length incurred by the
+-- introduction of the current joint type (no further mutation)
+getCurrentLoss :: Monad m => EvolutionT m Double
+getCurrentLoss = do
+  m <- numSymbols
+  bigN <- stringLen
+  nm <- use count
+
+  ns <- use counts
+  dns <- uses deltaCounts $ IM.elems . IM.mapWithKey (\s adn ->
+    let ni = ns U.! s
+        ni' = ni - adn
+    in (ni,ni')) -- (before, after)
+
+  vm <- uses jointType JT.variety
+  return $ deltaInfo m bigN nm dns vm
+
+----------
+-- INIT --
+----------
 
 initState :: PrimMonad m => Int -> Int -> Doubly (PrimState m) -> U.Vector Int ->
   Joints Sites -> (JointType, Joints Sites) -> m (EvolutionState (PrimState m))
@@ -130,9 +184,10 @@ initState m bigN str ns allSites (jt@(JT u0 u1), members) = do
 
   ---- mutations ----
   allSitesByMutRef <- newPrimRef @_ @Boxed M.empty
-  forM_ (M.toList allSites) $ \(s0s1,sites) -> do
-    muts <- mutOf uLeft uRight s0s1
-    forM_ muts $ \mut -> do
+  forM_ (M.toList allSites) $ \(s0s1@(s0,s1),sites) -> do
+    muts <- mutsOf s0s1 <$> MV.read uLeft s0
+                        <*> MV.read uRight s1
+    forM_ muts $ \mut ->
       modifyPrimRef allSitesByMutRef $ M.insertWith (<>) mut sites
 
   allSitesByMut <- readPrimRef allSitesByMutRef
@@ -156,14 +211,16 @@ initState m bigN str ns allSites (jt@(JT u0 u1), members) = do
         return $ MutEntry ddnm ddns' sites
 
   let mutsByLoss = M.fromList $ (<$> M.toList mutEntries) $
-                   \(mut,me) -> (mutLoss mut me, mut)
+                   \(mut,me) -> (deltaLoss mut me, mut)
   return $
-    EvolutionState str ns constr nm jt uLeft uRight dns mutEntries mutsByLoss
+    EvolutionState str ns jt uLeft uRight constr nm dns mutEntries mutsByLoss
 
   where
     memSites@(Sites dns runs _) = foldr1 (<>) members
     nm = sum dns `div` 2
     vm = JT.variety jt
+
+    deltaLoss = deltaLossOf m bigN ns nm dns vm
 
     -- decrement the count of a symbol by 1
     decr :: Sym -> IntMap Count -> IntMap Count
@@ -172,37 +229,16 @@ initState m bigN str ns allSites (jt@(JT u0 u1), members) = do
     s0s = UT.toList u0 -- left member symbols
     s1s = UT.toList u1 -- right member symbols
 
-    mutLoss :: Mutation -> MutEntry -> Double
-    mutLoss mut (MutEntry ddnm ddns _) = loss
-      where
-        loss = deltaDeltaInfo m bigN (nm,nm') (IM.elems dns') (vm,vm')
-        nm' = nm + ddnm
-        dns' = flip2 IM.intersectionWithKey dns ddns $ \s dn ddn ->
-          let n = ns U.! s
-              n' = n + dn
-              n'' = n' + ddn
-          in (n',n'')
-        vm' = (vm +) $ case mut of
-          AddLeft _  ->  1
-          AddRight _ ->  1
-          Add2 _ _   ->  2
-          DelLeft _  -> -1
-          DelRight _ -> -1
-          Del2 _ _   -> -2
-
     in2s :: [a] -> [(a,a)]
     in2s (a:b:rest) = (a,b):in2s rest
     in2s _ = []
 
+-- WHERE --
+
 -- | Give the (possibly empty) set of available mutations that would
 -- switch the membership of the joint in the type
-mutOf :: PrimMonad m => MV.MVector (PrimState m) SymState ->
-         MV.MVector (PrimState m) SymState -> (Sym,Sym) -> m [Mutation]
-mutOf v0 v1 (s0,s1) = do
-  SymState mem0 (nc0 :!: _) ds0 <- MV.read v0 s0
-  SymState mem1 (nc1 :!: _) ds1 <- MV.read v1 s1
-
-  return $ case (mem0, mem1) of
+mutsOf :: (Sym,Sym) -> SymState -> SymState -> [Mutation]
+mutsOf (s0,s1) st0 st1 = case (mem0, mem1) of
     (False, True) -> [AddLeft s0]
     (True, False) -> [AddRight s1]
     (False, False) | nc0 == 0 && nc1 == 0 -> [Add2 s0 s1]
@@ -212,31 +248,30 @@ mutOf v0 v1 (s0,s1) = do
       , ds1 == IS.singleton s0 -> [Add2 s0 s1]
       | otherwise -> (if IS.null ds0 then (DelLeft s0:) else id) $
                      (if IS.null ds1 then (DelRight s1:) else id) []
+  where
+    SymState mem0 (nc0 :!: _) ds0 = st0
+    SymState mem1 (nc1 :!: _) ds1 = st1
 
--- | m
-numSymbols :: Monad m => EvolutionT m Int
-numSymbols = leftSyms `uses` MV.length
-
--- | N, bigN
-stringLen :: Monad m => EvolutionT m Int
-stringLen = constructed `uses` MU.length
-
--- | Compute the loss in information/code length incurred by the
--- introduction of the current joint type (no further mutation)
-getCurrentLoss :: Monad m => EvolutionT m Double
-getCurrentLoss = do
-  m <- numSymbols
-  bigN <- stringLen
-  nm <- use count
-
-  ns <- use counts
-  dns <- uses deltaCounts $ IM.elems . IM.mapWithKey (\s adn ->
-    let ni = ns U.! s
-        ni' = ni - adn
-    in (ni,ni')) -- (before, after)
-
-  vm <- uses jointType JT.variety
-  return $ deltaInfo m bigN nm dns vm
+-- | Compute the difference in loss of a mutation, given all requires
+-- params and the difference in params it would produce (MutEntry)
+deltaLossOf :: Int -> Int -> U.Vector Count -> Int -> IntMap Count -> Int ->
+               Mutation -> MutEntry -> Double
+deltaLossOf m bigN ns nm dns vm mut (MutEntry ddnm ddns _) = dl
+  where
+    dl = deltaDeltaInfo m bigN (nm,nm') (IM.elems dns') (vm,vm')
+    nm' = nm + ddnm
+    dns' = flip2 IM.intersectionWithKey dns ddns $ \s dn ddn ->
+      let n = ns U.! s
+          n' = n + dn
+          n'' = n' + ddn
+      in (n',n'')
+    vm' = (vm +) $ case mut of
+      AddLeft _  ->  1
+      AddRight _ ->  1
+      Add2 _ _   ->  2
+      DelLeft _  -> -1
+      DelRight _ -> -1
+      Del2 _ _   -> -2
 
 -- | Compute the info delta from the introduction of a joint type given
 -- parameters
