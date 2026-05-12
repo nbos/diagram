@@ -288,6 +288,17 @@ mergePairsBy cmp = go
                       in x : go xs
         go xs = xs
 
+-- | Keyed `mergeBy` that will preserve uniqueness of keys (as well as
+-- ordering) given an ordering and combining function
+mergeByWith :: (k -> k -> Ordering) -> (a -> a -> a) ->
+               [(k, a)] -> [(k, a)] -> [(k, a)]
+mergeByWith _ _ xs [] = xs
+mergeByWith _ _ [] ys = ys
+mergeByWith f g xs@((k0,x):xs') ys@((k1,y):ys') = case f k0 k1 of
+  LT -> (k0, x) : mergeByWith f g xs' ys
+  EQ -> (k0, g x y) : mergeByWith f g xs' ys'
+  GT -> (k1, y) : mergeByWith f g xs ys'
+
 liftOrdList :: (a -> a -> Ordering) -> [a] -> [a] -> Ordering
 liftOrdList comp = go
   where go (x:xs) (y:ys) = case comp x y of EQ -> go xs ys
