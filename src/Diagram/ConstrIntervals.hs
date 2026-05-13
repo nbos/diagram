@@ -2,7 +2,7 @@
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
 {-# LANGUAGE BangPatterns, LambdaCase, TypeOperators #-}
 {-# LANGUAGE InstanceSigs #-}
-module Diagram.Sites (module Diagram.Sites) where
+module Diagram.ConstrIntervals (module Diagram.ConstrIntervals) where
 
 import Control.Monad hiding (join)
 import Control.Lens hiding (Index,(:>))
@@ -24,42 +24,45 @@ import Diagram.Util
 
 type Head = Index -- = Int
 type Tail = Index -- = Int
-data Sites = Sites
+
+-- | All construction sites, as intervals, for fast join\/union but no
+-- delete\/subtract.
+data CIs = CIs
   { _counts      :: IntMap Count -- :: s --> n
   , _heads2tails :: IntMap (Len :!: (Tail, Sym)) -- :: hd --> (len, (tl,stl))
   , _tails2heads :: IntMap (Len :!: Head) }      -- :: tl --> (len, hd)
   deriving(Show,Eq) -- lazy fields for efficient counts join?
-makeLenses ''Sites
+makeLenses ''CIs
 
-instance Semigroup Sites where
-  (<>) :: Sites -> Sites -> Sites
+instance Semigroup CIs where
+  (<>) :: CIs -> CIs -> CIs
   (<>) = fst .: join
 
-instance Monoid Sites where
-  mempty :: Sites
+instance Monoid CIs where
+  mempty :: CIs
   mempty = empty
 
-empty :: Sites
-empty = Sites e e e
+empty :: CIs
+empty = CIs e e e
   where e = IM.empty
 
-singleton :: (Index,Sym) -> (Index,Sym) -> Sites
-singleton (i0,s0) (i1,s1) = Sites ns h2t t2h
+singleton :: (Index,Sym) -> (Index,Sym) -> CIs
+singleton (i0,s0) (i1,s1) = CIs ns h2t t2h
   where ns = IM.fromList [(s0,1),(s1,1)]
         h2t = IM.singleton i0 (2 :!: (i1,s1))
         t2h = IM.singleton i1 (2 :!: i0)
 
-fromStream :: Monad m => Stream (Of (Index,Sym)) m r -> m (Joints Sites, r)
+fromStream :: Monad m => Stream (Of (Index,Sym)) m r -> m (Joints CIs, r)
 fromStream = flip fromStream_ M.empty
 
 fromStream_ :: Monad m =>
-  Stream (Of (Index,Sym)) m r -> Joints Sites -> m (Joints Sites, r)
+  Stream (Of (Index,Sym)) m r -> Joints CIs -> m (Joints CIs, r)
 fromStream_ ss m = (S.next ss >>=) $ \case
   Left r -> return (m, r)
   Right (is,ss') -> fromStream_0 is ss' m
 
 fromStream_0 :: Monad m => (Index,Sym) ->
-  Stream (Of (Index,Sym)) m r -> Joints Sites -> m (Joints Sites, r)
+  Stream (Of (Index,Sym)) m r -> Joints CIs -> m (Joints CIs, r)
 fromStream_0 is0@(i0,s0) ss !m = (S.next ss >>=) $ \case
   Left r -> return (m, r)
   Right (is1@(i1,s1),ss')
@@ -85,15 +88,15 @@ fromStream_0 is0@(i0,s0) ss !m = (S.next ss >>=) $ \case
     err = error . ("Sites.fromStream: collision: " ++) . show .:. (,,)
 
 
-join :: Sites -> Sites -> (Sites, IntMap Int)
+join :: CIs -> CIs -> (CIs, IntMap Int)
 join sitesA sitesB = runIdentity $ flip evalStateT (sitesA :!: sitesB) $ do
   ns <- uses2 (_1.counts) (_2.counts) $ IM.unionWith (+)
-  cAB <- uses2 (_2.heads2tails) (_1.tails2heads) IM.intersection
-  dns <- go IM.empty $ IM.toList cAB
+  colABs <- uses2 (_2.heads2tails) (_1.tails2heads) IM.intersection
+  dns <- go IM.empty $ IM.toList colABs
 
   modify swap -- A <--> B
-  cBA <- uses2 (_2.heads2tails) (_1.tails2heads) IM.intersection
-  dns' <- go dns $ IM.toList cBA
+  colBAs <- uses2 (_2.heads2tails) (_1.tails2heads) IM.intersection
+  dns' <- go dns $ IM.toList colBAs
   modify swap -- B <--> A
 
   let ns' = flip2 L.foldl' ns (IM.toList dns') $ \im (s,dn) ->
@@ -101,14 +104,14 @@ join sitesA sitesB = runIdentity $ flip evalStateT (sitesA :!: sitesB) $ do
         Nothing -> Just dn
         Just n -> nothingIf (==0) $ n + dn
 
-  hds <- uses2 (_1.heads2tails) (_2.heads2tails) $ IM.unionWithKey err
-  tls <- uses2 (_1.tails2heads) (_2.tails2heads) $ IM.unionWithKey err
+  h2ts <- uses2 (_1.heads2tails) (_2.heads2tails) $ IM.unionWithKey err
+  t2hs <- uses2 (_1.tails2heads) (_2.tails2heads) $ IM.unionWithKey err
 
-  return (Sites ns' hds tls, dns')
+  return (CIs ns' h2ts t2hs, dns')
 
   where
     go :: IntMap Int -> [(Index, Len :!: (Index, Sym))] ->
-          StateT (Sites :!: Sites) Identity (IntMap Int)
+          StateT (CIs :!: CIs) Identity (IntMap Int)
     go dns [] = return dns
     go dns ((tlA@hdB, lenB :!: (tlB,stlB)):rest) = do
       _1.tails2heads %= IM.delete tlA -- delete tlA

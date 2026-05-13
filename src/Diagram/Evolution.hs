@@ -34,8 +34,8 @@ import Diagram.JointType (JointType(..))
 import qualified Diagram.JointType as JT
 import Diagram.String
 import qualified Diagram.Doubly as D
-import Diagram.Sites (Sites(..))
-import qualified Diagram.Sites as Sites
+import Diagram.ConstrIntervals (CIs(..))
+import qualified Diagram.ConstrIntervals as Construction
 
 import Diagram.Util
 
@@ -74,8 +74,8 @@ data EvolutionState s = EvolutionState
 
   -- joint type
   , _jointType :: !JointType
-  , _leftSyms  :: !(MV.MVector s SymState) -- :: [m]SymState
-  , _rightSyms :: !(MV.MVector s SymState) -- :: [m]SymState
+  , _leftSyms  :: !(MV.MVector s SymEntry) -- :: [m]SymEntry
+  , _rightSyms :: !(MV.MVector s SymEntry) -- :: [m]SymEntry
 
   , _constructed :: !(BV.MVector s Bit) -- :: [N]Bool, only toggle s0s
   , _jointCount :: !Count -- constructed popCount
@@ -85,9 +85,9 @@ data EvolutionState s = EvolutionState
   , _entries :: !(Map Mutation MutEntry) -- mut -> ddns
   , _byLoss :: !(Map Double Mutation) } -- ddi -> mut
 
--- SYMBOL INFO (MEMBERSHIP) --
+-- SYM ENTRY (MEMBERSHIP INFO) --
 
-data SymState = SymState
+data SymEntry = SymEntry
   { _member :: !Bool -- ^ True iff self is member of the union type
   , _coSymsIn :: !(Count :!: IntSet) -- ^ Symbols that have a joint with
                                      -- self and member of the co-union
@@ -96,30 +96,25 @@ data SymState = SymState
                             -- *not* member of the co-union
   deriving (Show,Eq,Ord)
 
-emptyIn :: SymState
-emptyIn = SymState True (0 :!: IS.empty) IS.empty IS.empty
+emptyIn :: SymEntry
+emptyIn = SymEntry True (0 :!: IS.empty) IS.empty IS.empty
 
-emptyOut :: SymState
-emptyOut = SymState False (0 :!: IS.empty) IS.empty IS.empty
+emptyOut :: SymEntry
+emptyOut = SymEntry False (0 :!: IS.empty) IS.empty IS.empty
 
--- MUTATION INFO --
+-- MUT ENTRY (COUNTS, SITES) --
 
 data MutEntry = MutEntry
   { _ddJointCount :: !Int -- delta delta nm
   , _ddSymbolCounts :: !(IntMap Int) -- delta delta string ns
-  , _ddSites :: !Sites } -- constr. sites
+  , _ddCIs :: !CIs } -- constr. sites
   deriving (Show,Eq)
 
-makeLenses ''SymState
+makeLenses ''SymEntry
 makeLenses ''MutEntry
 makeLenses ''EvolutionState
 
--- MUTATIONS BY LOSS --
-
-type ByCount  = IntMap
-type ByLoss   = Map Double
-type SymSet   = IntSet
-type JointSet = Set (Int,Int)
+-- LOSS ENTRY (COUNTS) --
 
 data LossBooks s = LBs
   { _addLeft  :: !(IntMap        LossEntry)
@@ -208,8 +203,8 @@ getDeltaInfo = do
 ----------
 
 initState :: PrimMonad m => Int -> Int -> Doubly (PrimState m) -> U.Vector Int ->
-  Joints Sites -> (JointType, Joints Sites) -> m (EvolutionState (PrimState m))
-initState m bigN str ns allSites (jt@(JT u0 u1), members) = do
+  Joints CIs -> (JointType, Joints CIs) -> m (EvolutionState (PrimState m))
+initState m bigN str ns allCIs (jt@(JT u0 u1), members) = do
   ---- string ----
   constr <- MU.new bigN
   forM_ (IM.toList runs) $ \(hd, len :!: _tl) -> do
@@ -250,24 +245,24 @@ initState m bigN str ns allSites (jt@(JT u0 u1), members) = do
   --
 
   ---- mutations ----
-  allSitesByMutRef <- newPrimRef @_ @Boxed M.empty
-  forM_ (M.toList allSites) $ \(s0s1@(s0,s1),sites) -> do
+  allCIsByMutRef <- newPrimRef @_ @Boxed M.empty
+  forM_ (M.toList allCIs) $ \(s0s1@(s0,s1),sites) -> do
     muts <- mutsOf s0s1 <$> MV.read uLeft s0
                         <*> MV.read uRight s1
     forM_ muts $ \mut ->
-      modifyPrimRef allSitesByMutRef $ M.insertWith (<>) mut sites
+      modifyPrimRef allCIsByMutRef $ M.insertWith (<>) mut sites
 
-  allSitesByMut <- readPrimRef allSitesByMutRef
-  mutEntries <- flip M.traverseWithKey allSitesByMut $ \mut sites ->
+  allCIsByMut <- readPrimRef allCIsByMutRef
+  mutEntries <- flip M.traverseWithKey allCIsByMut $ \mut sites ->
     case typeOfMut mut of
       Add -> pure $
-        let jddns = snd $ Sites.join memSites sites -- joint ddns
+        let jddns = snd $ Construction.join memCIs sites -- joint ddns
             ddnm = sum jddns `div` 2
             sddns = negate <$> jddns -- string ddns == - joint ddns
         in MutEntry ddnm sddns sites
 
       Del -> do
-        let (Sites ddns h2ts _) = sites
+        let (CIs ddns h2ts _) = sites
         ddns' <- flip2 foldM ddns (IM.toList h2ts) $
           \dd (hd, len :!: (_, s1)) -> do
             hdIsConstr <- unBit <$> MU.read constr hd
@@ -283,9 +278,9 @@ initState m bigN str ns allSites (jt@(JT u0 u1), members) = do
     EvolutionState str ns jt uLeft uRight constr nm dns mutEntries mutsByLoss
 
   where
-    allJoints = M.keys allSites
+    allJoints = M.keys allCIs
 
-    memSites@(Sites jns runs _) = foldr1 (<>) members
+    memCIs@(CIs jns runs _) = foldr1 (<>) members
     nm = sum jns `div` 2
     dns = negate <$> jns
     eval = uncurry $ evalMutation m bigN ns jt nm dns
@@ -305,7 +300,7 @@ initState m bigN str ns allSites (jt@(JT u0 u1), members) = do
 
 -- | Give the (possibly empty) set of available mutations that would
 -- switch the membership of the joint in the type
-mutsOf :: (Sym,Sym) -> SymState -> SymState -> [Mutation]
+mutsOf :: (Sym,Sym) -> SymEntry -> SymEntry -> [Mutation]
 mutsOf (s0,s1) sst0 sst1 = case (mem0, mem1) of
     (False, True) -> [AddLeft s0]
     (True, False) -> [AddRight s1]
@@ -317,8 +312,8 @@ mutsOf (s0,s1) sst0 sst1 = case (mem0, mem1) of
       | otherwise -> (if IS.null d0s then (DelLeft s0:) else id) $
                      (if IS.null d1s then (DelRight s1:) else id) []
   where
-    SymState mem0 (nic0 :!: _) d0s _ = sst0
-    SymState mem1 (nic1 :!: _) d1s _ = sst1
+    SymEntry mem0 (nic0 :!: _) d0s _ = sst0
+    SymEntry mem1 (nic1 :!: _) d1s _ = sst1
 
 -- | Compute the difference in delta-info of a mutation, given all
 -- required params and the difference in params it would result in
