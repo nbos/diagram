@@ -5,8 +5,9 @@ import Prelude hiding (length)
 
 import GHC.Generics (Generic)
 
-import Data.Hashable
-import Data.Tuple.Extra
+import Data.Function (on)
+import Data.Hashable (Hashable)
+import Data.Tuple.Extra (first)
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IS
 
@@ -15,9 +16,9 @@ import qualified Codec.Arithmetic.Variety as Variety
 import Codec.Arithmetic.Variety.BitVec (BitVec)
 import qualified Codec.Arithmetic.Variety.BitVec as BV
 
-import Diagram.String
+import Diagram.String (Sym)
 import Diagram.Information (log2)
-import Diagram.Util
+import Diagram.Util ((.:))
 
 -- TODO: There should be a mutable `FastUnionType s` type using Vector
 -- Bit from bitvec for O(1) everything when synthesizing types
@@ -35,6 +36,9 @@ instance Semigroup UnionType where
 instance Monoid UnionType where
   mempty :: UnionType
   mempty = bot
+
+singleton :: Sym -> UnionType
+singleton = UT 1 . IS.singleton
 
 fromList :: [Sym] -> UnionType
 fromList = fromSet . IS.fromList
@@ -61,6 +65,9 @@ member s = IS.member s . set
 
 notMember :: Sym -> UnionType -> Bool
 notMember = not .: member
+
+disjoint :: UnionType -> UnionType -> Bool
+disjoint = IS.disjoint `on` set
 
 -- | Safe insertion
 insert :: Sym -> UnionType -> UnionType

@@ -41,6 +41,11 @@ instance Show JointType where
 size :: JointType -> (Int, Int)
 size (JT u0 u1) = (UT.size u0, UT.size u1)
 
+singleton :: Sym -> Sym -> JointType
+singleton s0 s1 = JT u0 u1
+  where u0 = UT.singleton s0
+        u1 = UT.singleton s1
+
 fromJoints :: Joints a -> JointType
 fromJoints = uncurry JT . both UT.fromList . unzip . M.keys
 

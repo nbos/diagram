@@ -262,7 +262,7 @@ initState m bigN str ns allCIs (jt@(JT u0 u1), members) = do
         in MutEntry ddnm sddns sites
 
       Del -> do
-        let (CIs ddns h2ts _) = sites
+        let (CIs _ ddns h2ts _) = sites
         ddns' <- flip2 foldM ddns (IM.toList h2ts) $
           \dd (hd, len :!: (_, s1)) -> do
             hdIsConstr <- unBit <$> MU.read constr hd
@@ -280,7 +280,7 @@ initState m bigN str ns allCIs (jt@(JT u0 u1), members) = do
   where
     allJoints = M.keys allCIs
 
-    memCIs@(CIs jns runs _) = foldr1 (<>) members
+    memCIs@(CIs _ jns runs _) = foldr1 (<>) members
     nm = sum jns `div` 2
     dns = negate <$> jns
     eval = uncurry $ evalMutation m bigN ns jt nm dns

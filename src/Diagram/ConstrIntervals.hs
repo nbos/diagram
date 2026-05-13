@@ -9,6 +9,7 @@ import Control.Lens hiding (Index,(:>))
 import Control.Monad.State.Strict
 
 import qualified Data.List as L
+import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
@@ -18,7 +19,9 @@ import Streaming hiding (join)
 import qualified Streaming.Prelude as S
 
 import Diagram.String
-import Diagram.Joints (Joints)
+import Diagram.JointType (JointType(..))
+import qualified Diagram.JointType as JT
+import qualified Diagram.UnionType as UT
 
 import Diagram.Util
 
@@ -28,10 +31,11 @@ type Tail = Index -- = Int
 -- | All construction sites, as intervals, for fast join\/union but no
 -- delete\/subtract.
 data CIs = CIs
-  { _counts      :: IntMap Count -- :: s --> n
-  , _heads2tails :: IntMap (Len :!: (Tail, Sym)) -- :: hd --> (len, (tl,stl))
+  { _jointType   :: !JointType
+  , _symCounts   :: !(IntMap Count) -- :: s --> n
+  , _heads2tails :: IntMap (Len :!: (Tail, Sym)) -- :: hd --> (len, (tl,s[tl]))
   , _tails2heads :: IntMap (Len :!: Head) }      -- :: tl --> (len, hd)
-  deriving(Show,Eq) -- lazy fields for efficient counts join?
+  deriving(Show,Eq)
 makeLenses ''CIs
 
 instance Semigroup CIs where
@@ -43,32 +47,33 @@ instance Monoid CIs where
   mempty = empty
 
 empty :: CIs
-empty = CIs e e e
+empty = CIs JT.bot e e e
   where e = IM.empty
 
 singleton :: (Index,Sym) -> (Index,Sym) -> CIs
-singleton (i0,s0) (i1,s1) = CIs ns h2t t2h
-  where ns = IM.fromList [(s0,1),(s1,1)]
+singleton (i0,s0) (i1,s1) = CIs jt ns h2t t2h
+  where jt = JT.singleton s0 s1
+        ns = IM.fromList [(s0,1),(s1,1)]
         h2t = IM.singleton i0 (2 :!: (i1,s1))
         t2h = IM.singleton i1 (2 :!: i0)
 
-fromStream :: Monad m => Stream (Of (Index,Sym)) m r -> m (Joints CIs, r)
+fromStream :: Monad m => Stream (Of (Index,Sym)) m r -> m (Map (Sym,Sym) CIs, r)
 fromStream = flip fromStream_ M.empty
 
 fromStream_ :: Monad m =>
-  Stream (Of (Index,Sym)) m r -> Joints CIs -> m (Joints CIs, r)
+  Stream (Of (Index,Sym)) m r -> Map (Sym,Sym) CIs -> m (Map (Sym,Sym) CIs, r)
 fromStream_ ss m = (S.next ss >>=) $ \case
   Left r -> return (m, r)
   Right (is,ss') -> fromStream_0 is ss' m
 
 fromStream_0 :: Monad m => (Index,Sym) ->
-  Stream (Of (Index,Sym)) m r -> Joints CIs -> m (Joints CIs, r)
+  Stream (Of (Index,Sym)) m r -> Map (Sym,Sym) CIs -> m (Map (Sym,Sym) CIs, r)
 fromStream_0 is0@(i0,s0) ss !m = (S.next ss >>=) $ \case
   Left r -> return (m, r)
   Right (is1@(i1,s1),ss')
     | s0 /= s1 -> fromStream_0 (i1,s1) ss' $
       flip3 M.insertWith (s0,s1) (singleton is0 is1) m $ \_ ->
-        (counts %~ IM.insertWith (+) s0 1 . IM.insertWith (+) s1 1)
+        (symCounts %~ IM.insertWith (+) s0 1 . IM.insertWith (+) s1 1)
         . (heads2tails %~ IM.insertWithKey err i0 (2 :!: (i1,s1)))
         . (tails2heads %~ IM.insertWithKey err i1 (2 :!: i0))
 
@@ -77,55 +82,68 @@ fromStream_0 is0@(i0,s0) ss !m = (S.next ss >>=) $ \case
         let len = length is + 2
             itl = last $ i1:is
             constrlen = (len `div` 2) * 2
+            empty' = empty{ _jointType = JT.singleton s0 s0 }
 
-        fromStream_0 (itl,s0) ss'' $ m & at (s0,s0) . non empty %~
-          (counts %~ IM.insertWith (+) s0 constrlen)
+        fromStream_0 (itl,s0) ss'' $ m & at (s0,s0) . non empty' %~
+          (symCounts %~ IM.insertWith (+) s0 constrlen)
           . (heads2tails %~ IM.insertWithKey err i0 (len :!: (itl,s0)))
           . (tails2heads %~ IM.insertWithKey err itl (len :!: i0))
 
   where
     err :: (Show k, Show v0, Show v1) => k -> v0 -> v1 -> a
-    err = error . ("Sites.fromStream: collision: " ++) . show .:. (,,)
+    err = error . ("ConstrIntervals.fromStream: collision: " ++) . show .:. (,,)
 
 
 join :: CIs -> CIs -> (CIs, IntMap Int)
-join sitesA sitesB = runIdentity $ flip evalStateT (sitesA :!: sitesB) $ do
-  ns <- uses2 (_1.counts) (_2.counts) $ IM.unionWith (+)
-  colABs <- uses2 (_2.heads2tails) (_1.tails2heads) IM.intersection
-  dns <- go IM.empty $ IM.toList colABs
+join ciAs ciBs = runIdentity $ flip evalStateT (ciAs :!: ciBs) $ do
+  dns <- if uB0 `UT.disjoint` uA1 then return IM.empty else
+    uses2 (_B.heads2tails) (_A.tails2heads) IM.intersection
+    >>= go IM.empty . IM.toList
 
-  modify swap -- A <--> B
-  colBAs <- uses2 (_2.heads2tails) (_1.tails2heads) IM.intersection
-  dns' <- go dns $ IM.toList colBAs
-  modify swap -- B <--> A
+  dns' <- if uA0 `UT.disjoint` uB1 then return dns else do
+    cols <- uses2 (_A.heads2tails) (_B.tails2heads) IM.intersection
+    modify swap -- A <--> B
+    res <- go dns $ IM.toList cols
+    modify swap -- B <--> A
+    return res
 
   let ns' = flip2 L.foldl' ns (IM.toList dns') $ \im (s,dn) ->
         flip2 IM.alter s im $ \case
         Nothing -> Just dn
         Just n -> nothingIf (==0) $ n + dn
 
-  h2ts <- uses2 (_1.heads2tails) (_2.heads2tails) $ IM.unionWithKey err
-  t2hs <- uses2 (_1.tails2heads) (_2.tails2heads) $ IM.unionWithKey err
+  h2ts <- uses2 (_A.heads2tails) (_B.heads2tails) $ IM.unionWithKey err
+  t2hs <- uses2 (_A.tails2heads) (_B.tails2heads) $ IM.unionWithKey err
 
-  return (CIs ns' h2ts t2hs, dns')
+  return (CIs jt ns' h2ts t2hs, dns')
 
   where
+    JT uA0 uA1 = ciAs^.jointType
+    JT uB0 uB1 = ciBs^.jointType
+    jt = JT.join (ciAs^.jointType) (ciBs^.jointType)
+    ns = IM.unionWith (+) (ciAs^.symCounts) (ciBs^.symCounts)
+
+    _A :: forall s t a b. Field1 s t a b => Lens s t a b
+    _B :: forall s t a b. Field2 s t a b => Lens s t a b
+    _A = _1
+    _B = _2
+
     go :: IntMap Int -> [(Index, Len :!: (Index, Sym))] ->
           StateT (CIs :!: CIs) Identity (IntMap Int)
     go dns [] = return dns
     go dns ((tlA@hdB, lenB :!: (tlB,stlB)):rest) = do
-      _1.tails2heads %= IM.delete tlA -- delete tlA
-      _2.heads2tails %= IM.delete hdB -- delete hdB (1/2)
-      _2.tails2heads %= IM.delete tlB -- delete tlB (2/2)
+      _A.tails2heads %= IM.delete tlA -- delete tlA
+      _B.heads2tails %= IM.delete hdB -- delete hdB (1/2)
+      _B.tails2heads %= IM.delete tlB -- delete tlB (2/2)
 
-      (lenA :!: hdA) <- (_1.tails2heads) `uses` (IM.! tlA)
-      dns' <- ((_1.heads2tails) %%= deleteLookup tlB >>=) $ \case
+      (lenA :!: hdA) <- (_A.tails2heads) `uses` (IM.! tlA)
+      dns' <- ((_A.heads2tails) %%= deleteLookup tlB >>=) $ \case
 
         -- simple: seam [hdA..tlA) <> [hdB..tlB] ==> [hdA..tlB]
         Nothing -> do
           let lenA' = lenA + lenB - 1
-          _1.heads2tails %= IM.insert hdA (lenA' :!: (tlB,stlB)) -- update hdA
-          _1.tails2heads %= IM.insert tlB (lenA' :!: hdA)        -- insert tlB
+          _A.heads2tails %= IM.insert hdA (lenA' :!: (tlB,stlB)) -- update hdA
+          _A.tails2heads %= IM.insert tlB (lenA' :!: hdA)        -- insert tlB
 
           let oldInc | even lenB = 1
                      | otherwise = 0
@@ -142,9 +160,9 @@ join sitesA sitesB = runIdentity $ flip evalStateT (sitesA :!: sitesB) $ do
         Just (lenA2 :!: (tlA2,stlA2)) -> do
           let hdA2 = tlB -- aliases
               lenA' = lenA + lenB + lenA2 - 2
-          _1.heads2tails %= IM.insert hdA (lenA' :!: (tlA2,stlA2)) -- update hdA
-          _1.heads2tails %= IM.delete hdA2                 -- delete hdA2
-          _1.tails2heads %= IM.insert tlA2 (lenA' :!: hdA) -- update tlA2
+          _A.heads2tails %= IM.insert hdA (lenA' :!: (tlA2,stlA2)) -- update hdA
+          _A.heads2tails %= IM.delete hdA2                 -- delete hdA2
+          _A.tails2heads %= IM.insert tlA2 (lenA' :!: hdA) -- update tlA2
 
           let oldIncA2 | even lenA2 = 1
                        | otherwise = 0
@@ -163,7 +181,7 @@ join sitesA sitesB = runIdentity $ flip evalStateT (sitesA :!: sitesB) $ do
       go dns' rest -- continue
 
     err :: (Show k, Show v0, Show v1) => k -> v0 -> v1 -> a
-    err = error . ("Sites.join: collision: " ++) . show .:. (,,)
+    err = error . ("ConstrIntervals.join: collision: " ++) . show .:. (,,)
 
 
 -- | Use the target of two lenses in the current state with a function
