@@ -9,16 +9,22 @@ import Control.Lens hiding (Index,(:>))
 import Control.Monad.State.Strict
 
 import qualified Data.List as L
+import Data.Strict.Tuple (Pair((:!:)),(:!:))
+import qualified Data.Strict.Tuple as Pair
+
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
-import Data.Strict.Tuple (Pair((:!:)),(:!:),swap)
+import Data.IntSet (IntSet)
+import qualified Data.IntSet as IS
 
 import Streaming hiding (join)
 import qualified Streaming.Prelude as S
 
+import Diagram.Primitive
 import Diagram.String
+import qualified Diagram.Doubly as D
 import Diagram.JointType (JointType(..))
 import qualified Diagram.JointType as JT
 import qualified Diagram.UnionType as UT
@@ -40,11 +46,15 @@ makeLenses ''CIs
 
 instance Semigroup CIs where
   (<>) :: CIs -> CIs -> CIs
-  (<>) = fst .: join
+  (<>) = join
 
 instance Monoid CIs where
   mempty :: CIs
   mempty = empty
+
+------------------
+-- CONSTRUCTION --
+------------------
 
 empty :: CIs
 empty = CIs JT.bot e e e
@@ -93,18 +103,59 @@ fromStream_0 is0@(i0,s0) ss !m = (S.next ss >>=) $ \case
     err :: (Show k, Show v0, Show v1) => k -> v0 -> v1 -> a
     err = error . ("ConstrIntervals.fromStream: collision: " ++) . show .:. (,,)
 
+----------------
+-- CONVERSION --
+----------------
 
-join :: CIs -> CIs -> (CIs, IntMap Int)
-join ciAs ciBs = runIdentity $ flip evalStateT (ciAs :!: ciBs) $ do
+-- | Produce a list of heads + len determining the set of intervals
+toList :: CIs -> [(Head,Len)]
+toList = fmap (second Pair.fst) . IM.toList . _heads2tails
+
+-- | Intervals are great for join-ing but differences (subtracting
+-- sites) and tracking delta delta deleta (d3) counts requires a more
+-- explicit representation. Sites contain all constructive indexes (s0's
+-- specifically) of a set of joints.
+type Sites = IntSet
+
+-- | Given the reference string (read only), convert the
+-- constr. intervals to the explicit set of constructive indexes.
+toSites :: PrimMonad m => Doubly (PrimState m) -> CIs -> m Sites
+toSites str cis = fmap (IS.fromList . concat) $
+  forM (toList cis) $ \(hd, len) ->
+    if len < 4 then return [hd]
+    else fmap everyOther $ S.toList_ $
+         S.take len $ D.streamKeysFrom str hd
+  where
+    everyOther [] = []
+    everyOther [a] = [a]
+    everyOther (a:_:rest) = a:everyOther rest
+
+-----------------
+-- COMPOSITION --
+-----------------
+
+-- | "Union" or "join" of two sets of constructive intervals which are
+-- assumed to be disjoint in their joint types (implying also disjoint
+-- in the constructive sites/intervals). Under this assumption,
+-- collisions only have to be detected on the ends (head and tail) of
+-- each interval without considering the symbols in between.
+join :: CIs -> CIs -> CIs
+join = fst .: join_
+
+-- | More general join function which leaks the difference in counts
+-- between the sum of the counts of each set of intervals and the counts
+-- of the returned set of intervals (snd)
+join_ :: CIs -> CIs -> (CIs, IntMap Int)
+join_ ciAs ciBs = runIdentity $ flip evalStateT (ciAs :!: ciBs) $ do
   dns <- if uB0 `UT.disjoint` uA1 then return IM.empty else
     uses2 (_B.heads2tails) (_A.tails2heads) IM.intersection
     >>= go IM.empty . IM.toList
 
   dns' <- if uA0 `UT.disjoint` uB1 then return dns else do
     cols <- uses2 (_A.heads2tails) (_B.tails2heads) IM.intersection
-    modify swap -- A <--> B
+    modify Pair.swap -- A <--> B
     res <- go dns $ IM.toList cols
-    modify swap -- B <--> A
+    modify Pair.swap -- B <--> A
     return res
 
   let ns' = flip2 L.foldl' ns (IM.toList dns') $ \im (s,dn) ->
@@ -139,7 +190,7 @@ join ciAs ciBs = runIdentity $ flip evalStateT (ciAs :!: ciBs) $ do
       (lenA :!: hdA) <- (_A.tails2heads) `uses` (IM.! tlA)
       dns' <- ((_A.heads2tails) %%= deleteLookup tlB >>=) $ \case
 
-        -- simple: seam [hdA..tlA) <> [hdB..tlB] ==> [hdA..tlB]
+        -- simple collision: [hdA..tlA) <> [hdB..tlB] ==> [hdA..tlB]
         Nothing -> do
           let lenA' = lenA + lenB - 1
           _A.heads2tails %= IM.insert hdA (lenA' :!: (tlB,stlB)) -- update hdA
@@ -156,7 +207,7 @@ join ciAs ciBs = runIdentity $ flip evalStateT (ciAs :!: ciBs) $ do
             Nothing -> Just delta
             Just stln -> nothingIf (== 0) (stln + delta)
 
-        -- fancy: seam [hdA..tlA) <> [hdB..tlB) <> [hdA2..tlA2] ==> [hdA..tlA2]
+        -- double: [hdA..tlA) <> [hdB..tlB) <> [hdA2..tlA2] ==> [hdA..tlA2]
         Just (lenA2 :!: (tlA2,stlA2)) -> do
           let hdA2 = tlB -- aliases
               lenA' = lenA + lenB + lenA2 - 2

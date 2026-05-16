@@ -1,14 +1,15 @@
 {-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE TypeApplications, TypeOperators #-}
+{-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
+{-# LANGUAGE TypeApplications, TypeOperators, LambdaCase #-}
 module Diagram.Evolution (module Diagram.Evolution) where
 
 import Control.Monad
 import Control.Lens hiding (both,last1,Index,(:>))
-import Control.Monad.State.Strict (StateT(..))
+import Control.Monad.State.Strict
 
 import Data.Tuple.Extra
-
 import Data.Strict (type (:!:), Pair((:!:)))
+
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Set (Set)
@@ -35,7 +36,7 @@ import qualified Diagram.JointType as JT
 import Diagram.String
 import qualified Diagram.Doubly as D
 import Diagram.ConstrIntervals (CIs(..))
-import qualified Diagram.ConstrIntervals as Construction
+import qualified Diagram.ConstrIntervals as CIs
 
 import Diagram.Util
 
@@ -202,6 +203,48 @@ getDeltaInfo = do
 -- INIT --
 ----------
 
+type Sites = IntSet
+
+-- | Enumerate the indexes of all constructive joints that would get
+-- deleted from a type given only the reference string (read only), the
+-- boolean vector marking the construction sites of the type (read only)
+-- and a set of construction intervals to be deleted (assumed to be
+-- sub-intervals of the construction of the type).
+delSites :: PrimMonad m =>
+  Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m [Index]
+delSites str constr delCIs = fmap concat $
+  forM (CIs.toList delCIs) $ \(hd, len) -> do
+  hdIsConstr <- BV.unBit <$> MU.read constr hd
+  if len < 3 && hdIsConstr
+    then return [hd] -- simple case
+    else fmap everyOther $ S.toList_ $ -- general case
+         (if hdIsConstr then id else S.drop 1) $
+         S.take len $ D.streamKeysFrom str hd
+
+-- | Enumerate the indexes of all constructive joints that would get
+-- added to a type given only the reference string (read only), the
+-- boolean vector marking the construction sites of the type (read only)
+-- and a set of construction intervals to be added (assumed to be
+-- disjoint from the constructive intervals of the type).
+addSites :: PrimMonad m =>
+  Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m [Index]
+addSites str constr addCIs = fmap concat $
+  forM (CIs.toList addCIs) $ \(hd, len) -> do
+  phdIsConstr <- (D.prev str hd >>=) $ \case
+    Nothing -> return False
+    Just phd -> BV.unBit <$> MU.read constr phd
+  if len < 3 then return [ hd | phdIsConstr ] -- simple case
+    else fmap everyOther $ S.toList_ $ -- general case
+         (if phdIsConstr then S.drop 1 else id) $
+         S.take len $ D.streamKeysFrom str hd
+
+-- | Skip every second value, returning every other, starting with the
+-- first.
+everyOther :: [a] -> [a]
+everyOther [] = []
+everyOther [a] = [a]
+everyOther (a:_:rest) = a:everyOther rest
+
 initState :: PrimMonad m => Int -> Int -> Doubly (PrimState m) -> U.Vector Int ->
   Joints CIs -> (JointType, Joints CIs) -> m (EvolutionState (PrimState m))
 initState m bigN str ns allCIs (jt@(JT u0 u1), members) = do
@@ -256,7 +299,7 @@ initState m bigN str ns allCIs (jt@(JT u0 u1), members) = do
   mutEntries <- flip M.traverseWithKey allCIsByMut $ \mut sites ->
     case typeOfMut mut of
       Add -> pure $
-        let jddns = snd $ Construction.join memCIs sites -- joint ddns
+        let jddns = snd $ CIs.join_ memCIs sites -- joint ddns
             ddnm = sum jddns `div` 2
             sddns = negate <$> jddns -- string ddns == - joint ddns
         in MutEntry ddnm sddns sites
