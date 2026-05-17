@@ -66,27 +66,40 @@ typeOfMut (Del2 _ _)   = Del
 -- EVOLUTION STATE --
 ---------------------
 
+-- state of model  :: ST               = D0
+-- across intro    :: (ST' - ST) = DD0 = D1
+-- across mutation :: (D1' - D1) = DD1 = D2
+-- mut. update     :: (D2' - D2) = DD2 = D3
+
+--  o <---------> o        o <---------> o
+--         ^                      ^
+--         |                      |
+--         | <------------------> |
+--         |                      |
+--         v                      v
+--  o <---------> o        o <---------> o
+
 type EvolutionT m = StateT (EvolutionState (PrimState m)) m
 -- | Evolution state of a JointType in a given string
 data EvolutionState s = EvolutionState
-  -- string
+  -- string (D0)
   { _string :: !(Doubly s) -- underlying string :: [N]Sym (readonly)
-  , _symbolCounts :: !(U.Vector Count) -- (readonly)
+  , _symbolD0s :: !(U.Vector Count) -- symbol counts (readonly)
+  -- , _jointD0 = 0 by def. (no joint count prior to intro)
 
-  -- joint type
+  -- joint type (D1)
   , _jointType :: !JointType
   , _leftSyms  :: !(MV.MVector s SymEntry) -- :: [m]SymEntry
   , _rightSyms :: !(MV.MVector s SymEntry) -- :: [m]SymEntry
+  , _constructed :: !(BV.MVector s Bit) -- :: [N]Bool, only s0s toggled
+  , _symbolD1s :: !(IntMap Int) -- delta symbol count :: u0 U u1 -> dn
+  , _jointD1 :: !Count -- joint count, popCount of constructed
 
-  , _constructed :: !(BV.MVector s Bit) -- :: [N]Bool, only toggle s0s
-  , _jointCount :: !Count -- constructed popCount
-  , _deltaSymbolCounts :: !(IntMap Int) -- dns :: u0 U u1 -> dn
-
-  -- mutations
+  -- mutations (D2s)
   , _entries :: !(Map Mutation MutEntry) -- mut -> ddns
   , _byLoss :: !(Map Double Mutation) } -- ddi -> mut
 
--- SYM ENTRY (MEMBERSHIP INFO) --
+-- SYM ENTRY (MEMBERSHIP REL.) --
 
 data SymEntry = SymEntry
   { _member :: !Bool -- ^ True iff self is member of the union type
@@ -106,9 +119,9 @@ emptyOut = SymEntry False (0 :!: IS.empty) IS.empty IS.empty
 -- MUT ENTRY (COUNTS, SITES) --
 
 data MutEntry = MutEntry
-  { _ddJointCount :: !Int -- delta delta nm
-  , _ddSymbolCounts :: !(IntMap Int) -- delta delta string ns
-  , _ddCIs :: !CIs } -- constr. sites
+  { _jointD2  :: !Int -- delta joint count (dnm)
+  , _symbolD2 :: !(IntMap Int) -- delta delta string symbol counts (ddns)
+  , _constrD2 :: !CIs } -- constr. sites
   deriving (Show,Eq)
 
 makeLenses ''SymEntry
@@ -127,9 +140,9 @@ data LossBooks s = LBs
   , _affected :: !(MV.MVector s (Set Mutation)) }
 
 data LossEntry = LossEntry
-  { _countIntervalsLoss :: !Double -- ils loss
-  , _countIntervals :: !(IntMap (Count, Count)) -- ils :: s -> (before, after)
-  , _deltaJointCount :: !Int } -- dnm
+  { _symbolD2IntervalsLoss :: !Double -- ils loss
+  , _symbolD2Intervals :: !(IntMap (Count, Count)) -- ils :: s -> (before, after)
+  , _jointCountDelta :: !Int } -- dnm
 
 getLoss :: Int -> Int -> Int -> Int -> LossEntry -> Double
 getLoss m bigN nm vm' (LossEntry sLossB _ dnm) = nLoss + sLoss + rLoss
@@ -145,7 +158,6 @@ evalLosses :: Int -> Int -> JointType -> Int -> LossBooks s ->
               [(Double, Mutation)]
 evalLosses m bigN jt nm (LBs als ars a2s dls drs d2s _) =
   concat $ zipWith (fmap . first) lossFns mutEntries
-
   where
     JT u0 u1 = jt
     sz0 = UT.size u0
@@ -186,18 +198,18 @@ getMin = uses byLoss M.findMin
 
 -- | Compute the difference in information/code length incurred by the
 -- introduction of the current joint type (i.e. no further mutation)
-getDeltaInfo :: Monad m => EvolutionT m Double
-getDeltaInfo = do
+getD1Info :: Monad m => EvolutionT m Double
+getD1Info = do
   m <- numSymbols
   bigN <- stringLen
-  nm <- use jointCount
+  nm <- use jointD1
 
-  ns <- use symbolCounts
-  ils <- uses deltaSymbolCounts $
+  ns <- use symbolD0s
+  ils <- uses symbolD1s $
          IM.elems . IM.mapWithKey (\s dn -> toSnd (+dn) (ns U.! s))
 
   vm <- uses jointType JT.variety
-  return $ deltaInfo m bigN nm ils vm
+  return $ d1Info m bigN nm ils vm
 
 ----------
 -- INIT --
@@ -222,12 +234,12 @@ initState m bigN str ns allCIs (jt@(JT u0 u1), members) = do
 
   -- cosyms (in/out)
   forM_ allJoints $ \(s0,s1) -> do
-    sst0 <- MV.read uLeft s0
-    sst1 <- MV.read uRight s1
-    MV.write uLeft s0 $ sst0 & if sst1^.member
+    se0 <- MV.read uLeft s0
+    se1 <- MV.read uRight s1
+    MV.write uLeft s0 $ se0 & if se1^.member
       then coSymsIn %~ ((+1) `bimap` IS.insert s1)
       else coSymsOut %~ IS.insert s1
-    MV.write uRight s1 $ sst1 & if sst0^.member
+    MV.write uRight s1 $ se1 & if se0^.member
       then coSymsIn %~ ((+1) `bimap` IS.insert s0)
       else coSymsOut %~ IS.insert s0
 
@@ -276,7 +288,7 @@ initState m bigN str ns allCIs (jt@(JT u0 u1), members) = do
   let mutsByLoss = M.fromList $
                    (eval &&& fst) <$> M.toList mutEntries
   return $
-    EvolutionState str ns jt uLeft uRight constr nm dns mutEntries mutsByLoss
+    EvolutionState str ns jt uLeft uRight constr dns nm mutEntries mutsByLoss
 
   where
     allJoints = M.keys allCIs
@@ -302,7 +314,7 @@ initState m bigN str ns allCIs (jt@(JT u0 u1), members) = do
 -- | Give the (possibly empty) set of available mutations that would
 -- switch the membership of the joint in the type
 mutsOf :: (Sym,Sym) -> SymEntry -> SymEntry -> [Mutation]
-mutsOf (s0,s1) sst0 sst1 = case (mem0, mem1) of
+mutsOf (s0,s1) se0 se1 = case (mem0, mem1) of
     (False, True) -> [AddLeft s0]
     (True, False) -> [AddRight s1]
     (False, False) | nic0 == 0 && nic1 == 0 -> [Add2 s0 s1]
@@ -313,8 +325,8 @@ mutsOf (s0,s1) sst0 sst1 = case (mem0, mem1) of
       | otherwise -> (if IS.null d0s then (DelLeft s0:) else id) $
                      (if IS.null d1s then (DelRight s1:) else id) []
   where
-    SymEntry mem0 (nic0 :!: _) d0s _ = sst0
-    SymEntry mem1 (nic1 :!: _) d1s _ = sst1
+    SymEntry mem0 (nic0 :!: _) d0s _ = se0
+    SymEntry mem1 (nic1 :!: _) d1s _ = se1
 
 -- | Compute the difference in delta-info of a mutation, given all
 -- required params and the difference in params it would result in
@@ -322,7 +334,7 @@ evalMutation :: Int -> Int -> U.Vector Count -> JointType -> Int ->
                 IntMap Count -> Mutation -> MutEntry -> Double
 evalMutation m bigN ns jt nm dns mut (MutEntry ddnm ddns _) = loss
   where
-    loss = mutLoss m bigN ils' nm' vm'
+    loss = d2Loss m bigN ils' nm' vm'
     nm' = nm + ddnm
     ils' = IM.elems $ flip2 IM.intersectionWithKey dns ddns $
       \s dn ddn -> toSnd (+ddn) ((ns U.! s) + dn) -- (ni',ni'')
@@ -339,8 +351,6 @@ evalMutation m bigN ns jt nm dns mut (MutEntry ddnm ddns _) = loss
     sz0 = UT.size u0
     sz1 = UT.size u1
     vm = sz0 * sz1
-
-type Sites = IntSet
 
 -- | Enumerate the indexes of all constructive joints that would get
 -- deleted from a type given only the reference string (read only), the
@@ -426,20 +436,20 @@ addCounts str constr (CIs _ ns0 h2ts _) = flip execStateT ns0 $
 -- MATH --
 ----------
 
--- | Loss function is the delta-delta-info of mutations without the
--- terms which are constant accross all mutations
-mutLoss :: Int -> Int -> [(Int,Int)] -> Int -> Int -> Double
-mutLoss m bigN ils' nm' vm' = nLoss + sLoss + rLoss
+-- | Loss function is the delta-delta-info (d2Info) of mutations without
+-- the terms which are constant accross all mutations
+d2Loss :: Int -> Int -> [(Int,Int)] -> Int -> Int -> Double
+d2Loss m bigN ils' nm' vm' = nLoss + sLoss + rLoss
   where
     nLoss = logFact (m + bigN - nm')
     sLoss = logFact nm' + sum (uncurry (-) . both logFact <$> ils')
     rLoss = fromIntegral nm' * ilog vm'
 
--- | Return the difference between the deltaDeltaInfo and the
--- mutLoss. This is the sum of the terms of deltaDeltaInfo which are
+-- | Return the difference between the deltaDeltaInfo and the mutLoss
+-- (d2Loss). This is the sum of the terms of deltaDeltaInfo which are
 -- constant across all mutations.
-mutLossComplement :: Int -> Int -> Int -> Int -> Double
-mutLossComplement m bigN nm vm = nLossC + sLossC + rLossC
+d2LossComplement :: Int -> Int -> Int -> Int -> Double
+d2LossComplement m bigN nm vm = nLossC + sLossC + rLossC
   where
     nLossC = - logFact (m + bigN - nm)
     sLossC = logFact nm
@@ -448,8 +458,8 @@ mutLossComplement m bigN nm vm = nLossC + sLossC + rLossC
 -- | Compute the difference in the info delta from changing parameters:
 -- joint type count n_m (before,after), symbol (new) counts ns
 -- (before,after), and joint type variety (before,after)
-deltaDeltaInfo :: Int -> Int -> [(Int,Int)] -> (Int,Int) -> (Int,Int) -> Double
-deltaDeltaInfo m bigN ils' (nm,nm') (vm,vm') = nDeltaDelta
+d2Info :: Int -> Int -> [(Int,Int)] -> (Int,Int) -> (Int,Int) -> Double
+d2Info m bigN ils' (nm,nm') (vm,vm') = nDeltaDelta
                                                + sDeltaDelta
                                                + rDeltaDelta
   where
@@ -466,8 +476,8 @@ deltaDeltaInfo m bigN ils' (nm,nm') (vm,vm') = nDeltaDelta
 
 -- | Compute the info delta from the introduction of a joint type given
 -- parameters
-deltaInfo :: Int -> Int -> Int -> [(Int,Int)] -> Int -> Double
-deltaInfo m bigN nm ils vm = nDelta + sDelta + rDelta
+d1Info :: Int -> Int -> Int -> [(Int,Int)] -> Int -> Double
+d1Info m bigN nm ils vm = nDelta + sDelta + rDelta
   where
     mpN = m + bigN
     nDelta = logFact (mpN - nm) - ilog m - logFact (mpN - 1)
