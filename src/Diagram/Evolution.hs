@@ -203,48 +203,6 @@ getDeltaInfo = do
 -- INIT --
 ----------
 
-type Sites = IntSet
-
--- | Enumerate the indexes of all constructive joints that would get
--- deleted from a type given only the reference string (read only), the
--- boolean vector marking the construction sites of the type (read only)
--- and a set of construction intervals to be deleted (assumed to be
--- sub-intervals of the construction of the type).
-delSites :: PrimMonad m =>
-  Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m [Index]
-delSites str constr delCIs = fmap concat $
-  forM (CIs.toList delCIs) $ \(hd, len) -> do
-  hdIsConstr <- BV.unBit <$> MU.read constr hd
-  if len < 3 && hdIsConstr
-    then return [hd] -- simple case
-    else fmap everyOther $ S.toList_ $ -- general case
-         (if hdIsConstr then id else S.drop 1) $
-         S.take len $ D.streamKeysFrom str hd
-
--- | Enumerate the indexes of all constructive joints that would get
--- added to a type given only the reference string (read only), the
--- boolean vector marking the construction sites of the type (read only)
--- and a set of construction intervals to be added (assumed to be
--- disjoint from the constructive intervals of the type).
-addSites :: PrimMonad m =>
-  Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m [Index]
-addSites str constr addCIs = fmap concat $
-  forM (CIs.toList addCIs) $ \(hd, len) -> do
-  phdIsConstr <- (D.prev str hd >>=) $ \case
-    Nothing -> return False
-    Just phd -> BV.unBit <$> MU.read constr phd
-  if len < 3 then return [ hd | phdIsConstr ] -- simple case
-    else fmap everyOther $ S.toList_ $ -- general case
-         (if phdIsConstr then S.drop 1 else id) $
-         S.take len $ D.streamKeysFrom str hd
-
--- | Skip every second value, returning every other, starting with the
--- first.
-everyOther :: [a] -> [a]
-everyOther [] = []
-everyOther [a] = [a]
-everyOther (a:_:rest) = a:everyOther rest
-
 initState :: PrimMonad m => Int -> Int -> Doubly (PrimState m) -> U.Vector Int ->
   Joints CIs -> (JointType, Joints CIs) -> m (EvolutionState (PrimState m))
 initState m bigN str ns allCIs (jt@(JT u0 u1), members) = do
@@ -381,6 +339,88 @@ evalMutation m bigN ns jt nm dns mut (MutEntry ddnm ddns _) = loss
     sz0 = UT.size u0
     sz1 = UT.size u1
     vm = sz0 * sz1
+
+type Sites = IntSet
+
+-- | Enumerate the indexes of all constructive joints that would get
+-- deleted from a type given only the reference string (read only), the
+-- boolean vector marking the construction sites of the type (read only)
+-- and a set of construction intervals to be deleted (assumed to be
+-- sub-intervals of the construction of the type).
+delSites :: PrimMonad m =>
+  Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m [Index]
+delSites str constr delCIs = fmap concat $
+  forM (CIs.toList delCIs) $ \(hd, len) -> do
+  hdIsConstr <- BV.unBit <$> MU.read constr hd
+  if len < 3 && hdIsConstr
+    then return [hd] -- simple case
+    else fmap everyOther $ S.toList_ $ -- general case
+         (if hdIsConstr then id else S.drop 1) $
+         S.take len $ D.streamKeysFrom str hd
+
+-- | Enumerate the indexes of all constructive joints that would get
+-- added to a type given only the reference string (read only), the
+-- boolean vector marking the construction sites of the type (read only)
+-- and a set of construction intervals to be added (assumed to be
+-- disjoint from the constructive intervals of the type).
+addSites :: PrimMonad m =>
+  Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m [Index]
+addSites str constr addCIs = fmap concat $
+  forM (CIs.toList addCIs) $ \(hd, len) -> do
+  phdIsConstr <- (D.prev str hd >>=) $ \case
+    Nothing -> return False
+    Just phd -> BV.unBit <$> MU.read constr phd
+  if len < 3 then return [ hd | not phdIsConstr ] -- simple case
+    else fmap everyOther $ S.toList_ $ -- general case
+         (if phdIsConstr then S.drop 1 else id) $
+         S.take len $ D.streamKeysFrom str hd
+
+-- | Skip every second value, returning every other, starting with the
+-- first.
+everyOther :: [a] -> [a]
+everyOther [] = []
+everyOther [a] = [a]
+everyOther (a:_:rest) = a:everyOther rest
+
+delCounts :: PrimMonad m =>
+  Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m (IntMap Count)
+delCounts str constr (CIs _ ns0 h2ts _) = flip execStateT ns0 $
+  forM (IM.toList h2ts) $ \(hd, len :!: (_, stl)) -> do
+  hdIsConstr <- BV.unBit <$> MU.read constr hd
+  unless hdIsConstr $ do -- parity rotates
+    modify . decr =<< D.read str hd
+    when (len > 2) $ do
+      let tlIsConstr = odd len -- normally `even`, but hd isn't constr
+      modify $ (if tlIsConstr then decr else incr) stl
+  where
+    -- decrement the count of a symbol by 1, assumes present
+    decr :: Sym -> IntMap Count -> IntMap Count
+    decr = IM.update (nothingIf (==0) . (+(-1)))
+
+    -- increment the count of a symbol by 1, assumes positive
+    incr :: Sym -> IntMap Count -> IntMap Count
+    incr = flip (IM.insertWith (+)) 1
+
+addCounts :: PrimMonad m =>
+  Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m (IntMap Count)
+addCounts str constr (CIs _ ns0 h2ts _) = flip execStateT ns0 $
+  forM (IM.toList h2ts) $ \(hd, len :!: (_, stl)) -> do
+  phdIsConstr <- (D.prev str hd >>=) $ \case
+    Nothing -> return False
+    Just phd -> BV.unBit <$> MU.read constr phd
+  when phdIsConstr $ do -- parity rotates
+    modify . decr =<< D.read str hd
+    when (len > 2) $ do
+      let tlIsConstr = odd len -- normally `even`, but hd isn't constr
+      modify $ (if tlIsConstr then incr else decr) stl
+  where
+    -- decrement the count of a symbol by 1, assumes present
+    decr :: Sym -> IntMap Count -> IntMap Count
+    decr = IM.update (nothingIf (==0) . (+(-1)))
+
+    -- increment the count of a symbol by 1, assumes positive
+    incr :: Sym -> IntMap Count -> IntMap Count
+    incr = flip (IM.insertWith (+)) 1
 
 ----------
 -- MATH --
