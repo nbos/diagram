@@ -8,7 +8,6 @@ import Control.Lens hiding (both,last1,Index,(:>))
 import Control.Monad.State.Strict
 
 import Data.Tuple.Extra
-import Data.Strict (Pair((:!:)))
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -35,7 +34,7 @@ import Diagram.JointType (JointType(..))
 import qualified Diagram.JointType as JT
 import Diagram.String
 import qualified Diagram.Doubly as D
-import Diagram.ConstrIntervals (CIs(..))
+import Diagram.ConstrIntervals (CIs(..),CI(..))
 import qualified Diagram.ConstrIntervals as CIs
 
 import Diagram.Util
@@ -248,7 +247,7 @@ initState :: PrimMonad m => Int -> Int -> Doubly (PrimState m) -> U.Vector Int -
 initState m bigN str ns allCIs (jt, members) = do
   ---- string ----
   constr <- MU.new bigN
-  forM_ (IM.toList runs) $ \(hd, len :!: _tl) -> do
+  forM_ (IM.elems runs) $ \(CI hd _ len _ _) -> do
     let constrlen = (len `div` 2) * 2
     iss <- S.toList_ $ S.take constrlen $ D.streamWithKeyFrom str hd
     forM_ (in2s iss) $ BV.flipBit constr . fst . fst -- ((i0,s0),(i1,s1))
@@ -275,12 +274,12 @@ initState m bigN str ns allCIs (jt, members) = do
 
       Del -> do
         let (CIs _ ddns h2ts _) = sites
-        ddns' <- flip2 foldM ddns (IM.toList h2ts) $
-          \dd (hd, len :!: (_, s1)) -> do
+        ddns' <- flip2 foldM ddns (IM.elems h2ts) $
+          \dd (CI hd s0 len _ s1) -> do
             hdIsConstr <- unBit <$> MU.read constr hd
-            if hdIsConstr then return dd else do
-              s0 <- D.read str hd
-              return $ decr s0 $ if odd len then dd else decr s1 dd
+            return $ if hdIsConstr then dd
+                     else decr s0 $ if odd len then dd
+                                    else decr s1 dd
         let ddnm = sum ddns' `div` 2
         return $ MutEntry ddnm ddns' sites
 
@@ -379,7 +378,7 @@ evalMutation m bigN ns jt nm dns mut (MutEntry ddnm ddns _) = loss
 sitesFromDelIls :: PrimMonad m =>
   Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m [Index]
 sitesFromDelIls str constr delCIs = fmap concat $
-  forM (CIs.toList delCIs) $ \(hd, len) -> do
+  forM (CIs.toList delCIs) $ \(CI hd _ len _ _) -> do
   hdIsConstr <- BV.unBit <$> MU.read constr hd
   if len < 3 && hdIsConstr
     then return [hd] -- simple case
@@ -395,7 +394,7 @@ sitesFromDelIls str constr delCIs = fmap concat $
 sitesFromAddIls :: PrimMonad m =>
   Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m [Index]
 sitesFromAddIls str constr addCIs = fmap concat $
-  forM (CIs.toList addCIs) $ \(hd, len) -> do
+  forM (CIs.toList addCIs) $ \(CI hd _ len _ _) -> do
   phdIsConstr <- (D.prev str hd >>=) $ \case
     Nothing -> return False
     Just phd -> BV.unBit <$> MU.read constr phd
@@ -414,7 +413,7 @@ everyOther (a:_:rest) = a:everyOther rest
 symD2sFromDelIls :: PrimMonad m =>
   Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m (IntMap Count)
 symD2sFromDelIls str constr (CIs _ ns0 h2ts _) = flip execStateT ns0 $
-  forM (IM.toList h2ts) $ \(hd, len :!: (_, stl)) -> do
+  forM (IM.elems h2ts) $ \(CI hd _ len _ stl) -> do
   hdIsConstr <- BV.unBit <$> MU.read constr hd
   unless hdIsConstr $ do -- parity rotates
     modify . decr =<< D.read str hd
@@ -433,7 +432,7 @@ symD2sFromDelIls str constr (CIs _ ns0 h2ts _) = flip execStateT ns0 $
 symD2sFromAddIls :: PrimMonad m =>
   Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m (IntMap Count)
 symD2sFromAddIls str constr (CIs _ ns0 h2ts _) = flip execStateT ns0 $
-  forM (IM.toList h2ts) $ \(hd, len :!: (_, stl)) -> do
+  forM (IM.elems h2ts) $ \(CI hd _ len _ stl) -> do
   phdIsConstr <- (D.prev str hd >>=) $ \case
     Nothing -> return False
     Just phd -> BV.unBit <$> MU.read constr phd
