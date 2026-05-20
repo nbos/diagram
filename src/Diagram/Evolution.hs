@@ -8,7 +8,7 @@ import Control.Lens hiding (both,last1,Index,(:>))
 import Control.Monad.State.Strict
 
 import Data.Tuple.Extra
-import Data.Strict (type (:!:), Pair((:!:)))
+import Data.Strict (Pair((:!:)))
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -91,7 +91,7 @@ data EvolutionState s = EvolutionState
   , _jointType :: !JointType
   , _leftSyms  :: !(MV.MVector s SymEntry) -- :: [m]SymEntry
   , _rightSyms :: !(MV.MVector s SymEntry) -- :: [m]SymEntry
-  , _constructed :: !(BV.MVector s Bit) -- :: [N]Bool, only s0s toggled
+  , _constructed :: !(BV.MVector s Bit) -- :: [N-1]Bool, only s0s toggled
   , _symbolD1s :: !(IntMap Int) -- delta symbol count :: u0 U u1 -> dn
   , _jointD1 :: !Count -- joint count, popCount of constructed
 
@@ -99,22 +99,48 @@ data EvolutionState s = EvolutionState
   , _entries :: !(Map Mutation MutEntry) -- mut -> ddns
   , _byLoss :: !(Map Double Mutation) } -- ddi -> mut
 
--- SYM ENTRY (MEMBERSHIP REL.) --
+-- SYM ENTRY (MEMBERSHIP, DEPS) --
 
 data SymEntry = SymEntry
-  { _member :: !Bool -- ^ True iff self is member of the union type
-  , _coSymsIn :: !(Count :!: IntSet) -- ^ Symbols that have a joint with
-                                     -- self and member of the co-union
+  { _isMember :: !Bool -- ^ True iff self is member of the union type
+  , _coSymsIn :: !IntSet -- ^ Symbols that have a joint with
+                         -- self and member of the co-union
   , _dependents :: !IntSet -- ^ CoSymsIn that have self as only coSymsIn
   , _coSymsOut :: !IntSet } -- ^ Symbols that have a joint with self and
                             -- *not* member of the co-union
   deriving (Show,Eq,Ord)
 
 emptyIn :: SymEntry
-emptyIn = SymEntry True (0 :!: IS.empty) IS.empty IS.empty
+emptyIn = SymEntry True IS.empty IS.empty IS.empty
 
 emptyOut :: SymEntry
-emptyOut = SymEntry False (0 :!: IS.empty) IS.empty IS.empty
+emptyOut = SymEntry False IS.empty IS.empty IS.empty
+
+-- | Give the (possibly empty) set of available mutations that would
+-- switch the membership of the given joint in the type
+mutsOf :: (Sym,SymEntry) -> (Sym,SymEntry) -> [Mutation]
+mutsOf se0@(_, SymEntry mem0 _ _ _) se1@(_, SymEntry mem1 _ _ _)
+  | mem0, mem1 = delMutsOf se0 se1
+  | Just mut <- addMutsOf se0 se1 = [mut]
+  | otherwise = []
+
+-- | Give the (possibly empty) set of available Del mutations that would
+-- take the given joint out of the type (assumes it's in)
+delMutsOf :: (Sym,SymEntry) -> (Sym,SymEntry) -> [Mutation]
+delMutsOf (s0, SymEntry _ _ d0s _) (s1, SymEntry _ _ d1s _)
+  | d0s == IS.singleton s1
+  , d1s == IS.singleton s0 = [Del2 s0 s1]
+  | otherwise = [ DelLeft s0 | IS.null d0s ]
+                ++ [ DelRight s1 | IS.null d1s ]
+
+-- | Give the (possibly missing) mutation that would make the given
+-- joint member of the type (assumes it's not)
+addMutsOf :: (Sym,SymEntry) -> (Sym,SymEntry) -> Maybe Mutation
+addMutsOf (s0, SymEntry mem0 ic0s _ _) (s1, SymEntry mem1 ic1s _ _)
+  | mem0 = Just $ AddRight s1 -- assert (not mem1)
+  | mem1 = Just $ AddLeft s0  -- assert (not mem0)
+  | IS.null ic0s && IS.null ic1s = Just $ Add2 s0 s1
+  | otherwise = Nothing -- some other mut intros s0 or s1
 
 -- MUT ENTRY (COUNTS, SITES) --
 
@@ -144,8 +170,8 @@ data LossEntry = LossEntry
   , _symbolD2Intervals :: !(IntMap (Count, Count)) -- ils :: s -> (before, after)
   , _jointCountDelta :: !Int } -- dnm
 
-getLoss :: Int -> Int -> Int -> Int -> LossEntry -> Double
-getLoss m bigN nm vm' (LossEntry sLossB _ dnm) = nLoss + sLoss + rLoss
+entryLoss :: Int -> Int -> Int -> Int -> LossEntry -> Double
+entryLoss m bigN nm vm' (LossEntry sLossB _ dnm) = nLoss + sLoss + rLoss
   where
     nm' = nm + dnm
     nLoss = logFact (m + bigN - nm')
@@ -164,14 +190,16 @@ evalLosses m bigN jt nm (LBs als ars a2s dls drs d2s _) =
     sz1 = UT.size u1
     vm = sz0 * sz1
 
-    lossFns = getLoss m bigN nm <$> vm's
+    lossFns :: [LossEntry -> Double]
+    lossFns = entryLoss m bigN nm <$> vm's
     vm's = [ vm + sz1 -- addLeft
            , vm + sz0 -- addRight
            , vm + sz0 + sz1 -- add2
            , vm - sz1 -- delLeft
            , vm - sz0 -- delRight
-           , vm - sz0 - sz1 ] -- del2
+           , vm - sz0 - sz1 ] :: [Int] -- del2
 
+    mutEntries :: [[(LossEntry, Mutation)]]
     mutEntries = [ swap . first AddLeft   <$> IM.toList als
                  , swap . first AddRight  <$> IM.toList ars
                  , swap . first (uc Add2) <$>  M.toList a2s
@@ -217,7 +245,7 @@ getD1Info = do
 
 initState :: PrimMonad m => Int -> Int -> Doubly (PrimState m) -> U.Vector Int ->
   Joints CIs -> (JointType, Joints CIs) -> m (EvolutionState (PrimState m))
-initState m bigN str ns allCIs (jt@(JT u0 u1), members) = do
+initState m bigN str ns allCIs (jt, members) = do
   ---- string ----
   constr <- MU.new bigN
   forM_ (IM.toList runs) $ \(hd, len :!: _tl) -> do
@@ -226,42 +254,13 @@ initState m bigN str ns allCIs (jt@(JT u0 u1), members) = do
     forM_ (in2s iss) $ BV.flipBit constr . fst . fst -- ((i0,s0),(i1,s1))
   --
 
-  ---- joint type ----
-  uLeft  <- MV.replicate m emptyOut -- uLeft
-  uRight <- MV.replicate m emptyOut -- uRight
-  forM_ s0s $ flip (MV.write uLeft ) emptyIn
-  forM_ s1s $ flip (MV.write uRight) emptyIn
-
-  -- cosyms (in/out)
-  forM_ allJoints $ \(s0,s1) -> do
-    se0 <- MV.read uLeft s0
-    se1 <- MV.read uRight s1
-    MV.write uLeft s0 $ se0 & if se1^.member
-      then coSymsIn %~ ((+1) `bimap` IS.insert s1)
-      else coSymsOut %~ IS.insert s1
-    MV.write uRight s1 $ se1 & if se0^.member
-      then coSymsIn %~ ((+1) `bimap` IS.insert s0)
-      else coSymsOut %~ IS.insert s0
-
-  -- deps
-  forM_ s0s $ \s0 -> do
-    nic0 :!: ic0s <- _coSymsIn <$> MV.read uLeft s0
-    when (nic0 == 1) $ case IS.toList ic0s of
-      [s1] -> MV.modify uRight (dependents %~ IS.insert s0) s1
-      _else -> error $ "expected singleton, got: " ++ show _else
-
-  forM_ s1s $ \s1 -> do
-    nic1 :!: ic1s <- _coSymsIn <$> MV.read uRight s1
-    when (nic1 == 1) $ case IS.toList ic1s of
-      [s0] -> MV.modify uLeft (dependents %~ IS.insert s1) s0
-      _else -> error $ "expected singleton, got: " ++ show _else
-  --
+  (uLeft, uRight) <- mkSymEntries m allJoints jt
 
   ---- mutations ----
   allCIsByMutRef <- newPrimRef @_ @Boxed M.empty
-  forM_ (M.toList allCIs) $ \(s0s1@(s0,s1),sites) -> do
-    muts <- mutsOf s0s1 <$> MV.read uLeft s0
-                        <*> MV.read uRight s1
+  forM_ (M.toList allCIs) $ \((s0,s1),sites) -> do
+    muts <- mutsOf <$> sequence (s0, MV.read uLeft s0)
+                   <*> sequence (s1, MV.read uRight s1)
     forM_ muts $ \mut ->
       modifyPrimRef allCIsByMutRef $ M.insertWith (<>) mut sites
 
@@ -302,31 +301,51 @@ initState m bigN str ns allCIs (jt@(JT u0 u1), members) = do
     decr :: Sym -> IntMap Count -> IntMap Count
     decr = IM.alter (nothingIf (==0) . maybe (-1) (+(-1)))
 
-    s0s = UT.toList u0 -- left member symbols
-    s1s = UT.toList u1 -- right member symbols
-
     in2s :: [a] -> [(a,a)]
     in2s (a:b:rest) = (a,b):in2s rest
     in2s _ = []
 
 -- WHERE --
 
--- | Give the (possibly empty) set of available mutations that would
--- switch the membership of the joint in the type
-mutsOf :: (Sym,Sym) -> SymEntry -> SymEntry -> [Mutation]
-mutsOf (s0,s1) se0 se1 = case (mem0, mem1) of
-    (False, True) -> [AddLeft s0]
-    (True, False) -> [AddRight s1]
-    (False, False) | nic0 == 0 && nic1 == 0 -> [Add2 s0 s1]
-                   | otherwise -> [] -- some other mut intros s0 or s1
-    (True, True)
-      | d0s == IS.singleton s1
-      , d1s == IS.singleton s0 -> [Del2 s0 s1]
-      | otherwise -> (if IS.null d0s then (DelLeft s0:) else id) $
-                     (if IS.null d1s then (DelRight s1:) else id) []
+-- | Given the number of symbols, a list of all joints and a joint type,
+-- return the SymEntries of the left and right unions of the type
+mkSymEntries :: PrimMonad m => Int -> [(Sym,Sym)] -> JointType ->
+                m ( MV.MVector (PrimState m) SymEntry
+                  , MV.MVector (PrimState m) SymEntry )
+mkSymEntries m allJoints (JT u0 u1) = do
+  uLeft  <- MV.replicate m emptyOut -- uLeft
+  uRight <- MV.replicate m emptyOut -- uRight
+  forM_ s0s $ flip (MV.write uLeft ) emptyIn
+  forM_ s1s $ flip (MV.write uRight) emptyIn
+
+  -- cosyms (in/out)
+  forM_ allJoints $ \(s0,s1) -> do
+    se0 <- MV.read uLeft s0
+    se1 <- MV.read uRight s1
+    MV.write uLeft s0 $ se0 & if se1^.isMember
+      then coSymsIn %~ IS.insert s1
+      else coSymsOut %~ IS.insert s1
+    MV.write uRight s1 $ se1 & if se0^.isMember
+      then coSymsIn %~ IS.insert s0
+      else coSymsOut %~ IS.insert s0
+
+  -- deps
+  forM_ s0s $ \s0 -> do
+    ic0s <- _coSymsIn <$> MV.read uLeft s0
+    case IS.toList ic0s of
+      [s1] -> MV.modify uRight (dependents %~ IS.insert s0) s1
+      _else -> return ()
+
+  forM_ s1s $ \s1 -> do
+    ic1s <- _coSymsIn <$> MV.read uRight s1
+    case IS.toList ic1s of
+      [s0] -> MV.modify uLeft (dependents %~ IS.insert s1) s0
+      _else -> return ()
+
+  return (uLeft, uRight)
   where
-    SymEntry mem0 (nic0 :!: _) d0s _ = se0
-    SymEntry mem1 (nic1 :!: _) d1s _ = se1
+    s0s = UT.toList u0 -- left member symbols
+    s1s = UT.toList u1 -- right member symbols
 
 -- | Compute the difference in delta-info of a mutation, given all
 -- required params and the difference in params it would result in
@@ -357,9 +376,9 @@ evalMutation m bigN ns jt nm dns mut (MutEntry ddnm ddns _) = loss
 -- boolean vector marking the construction sites of the type (read only)
 -- and a set of construction intervals to be deleted (assumed to be
 -- sub-intervals of the construction of the type).
-delSites :: PrimMonad m =>
+sitesFromDelIls :: PrimMonad m =>
   Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m [Index]
-delSites str constr delCIs = fmap concat $
+sitesFromDelIls str constr delCIs = fmap concat $
   forM (CIs.toList delCIs) $ \(hd, len) -> do
   hdIsConstr <- BV.unBit <$> MU.read constr hd
   if len < 3 && hdIsConstr
@@ -373,9 +392,9 @@ delSites str constr delCIs = fmap concat $
 -- boolean vector marking the construction sites of the type (read only)
 -- and a set of construction intervals to be added (assumed to be
 -- disjoint from the constructive intervals of the type).
-addSites :: PrimMonad m =>
+sitesFromAddIls :: PrimMonad m =>
   Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m [Index]
-addSites str constr addCIs = fmap concat $
+sitesFromAddIls str constr addCIs = fmap concat $
   forM (CIs.toList addCIs) $ \(hd, len) -> do
   phdIsConstr <- (D.prev str hd >>=) $ \case
     Nothing -> return False
@@ -392,9 +411,9 @@ everyOther [] = []
 everyOther [a] = [a]
 everyOther (a:_:rest) = a:everyOther rest
 
-delCounts :: PrimMonad m =>
+symD2sFromDelIls :: PrimMonad m =>
   Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m (IntMap Count)
-delCounts str constr (CIs _ ns0 h2ts _) = flip execStateT ns0 $
+symD2sFromDelIls str constr (CIs _ ns0 h2ts _) = flip execStateT ns0 $
   forM (IM.toList h2ts) $ \(hd, len :!: (_, stl)) -> do
   hdIsConstr <- BV.unBit <$> MU.read constr hd
   unless hdIsConstr $ do -- parity rotates
@@ -411,9 +430,9 @@ delCounts str constr (CIs _ ns0 h2ts _) = flip execStateT ns0 $
     incr :: Sym -> IntMap Count -> IntMap Count
     incr = flip (IM.insertWith (+)) 1
 
-addCounts :: PrimMonad m =>
+symD2sFromAddIls :: PrimMonad m =>
   Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m (IntMap Count)
-addCounts str constr (CIs _ ns0 h2ts _) = flip execStateT ns0 $
+symD2sFromAddIls str constr (CIs _ ns0 h2ts _) = flip execStateT ns0 $
   forM (IM.toList h2ts) $ \(hd, len :!: (_, stl)) -> do
   phdIsConstr <- (D.prev str hd >>=) $ \case
     Nothing -> return False
@@ -460,8 +479,8 @@ d2LossComplement m bigN nm vm = nLossC + sLossC + rLossC
 -- (before,after), and joint type variety (before,after)
 d2Info :: Int -> Int -> [(Int,Int)] -> (Int,Int) -> (Int,Int) -> Double
 d2Info m bigN ils' (nm,nm') (vm,vm') = nDeltaDelta
-                                               + sDeltaDelta
-                                               + rDeltaDelta
+                                       + sDeltaDelta
+                                       + rDeltaDelta
   where
     mpN = m + bigN
     nDeltaDelta = logFact (mpN - nm') - logFact (mpN - nm)
