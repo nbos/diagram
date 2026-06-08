@@ -31,8 +31,23 @@ import qualified Diagram.UnionType as UT
 
 import Diagram.Util
 
-type Head = Index -- = Int
-type Tail = Index -- = Int
+data CI = CI { _headIndex  :: !Index
+             , _headSymbol :: !Sym
+             , _ciLength   :: !Len
+             , _tailIndex  :: !Index
+             , _tailSymbol :: !Sym }
+  deriving(Show,Eq)
+
+-- | Given the reference string and a contructive interval, produce the
+-- list of indexed symbols that form the interval, starting at the head
+-- and ending at the tail.
+extension :: PrimMonad m => Doubly (PrimState m) -> CI -> m [(Index,Sym)]
+extension _ (CI hd shd 2 tl stl) = return [(hd,shd),(tl,stl)]
+extension str (CI hd shd len _ _)
+  | len < 3 = error $ "CI.extension: invalid length: " ++ show len
+  | otherwise = fmap ((hd,shd):) $
+                S.toList_ . S.take (len-1) . D.streamWithKeyFrom str
+                =<< D.unsafeNext str hd
 
 -- | All construction sites, as intervals, for fast join\/union but no
 -- delete\/subtract.
@@ -41,13 +56,6 @@ data CIs = CIs
   , _symCounts :: !(IntMap Count) -- ::  s --> n
   , _byHead    :: !(IntMap CI)    -- :: hd --> (hd, shd, len, tl, stl)
   , _byTail    :: !(IntMap CI) }  -- :: tl --> (hd, shd, len, tl, stl)
-  deriving(Show,Eq)
-
-data CI = CI { _headIndex  :: !Index
-             , _headSymbol :: !Sym
-             , _ciLength   :: !Len
-             , _tailIndex  :: !Index
-             , _tailSymbol :: !Sym }
   deriving(Show,Eq)
 
 makeLenses ''CIs

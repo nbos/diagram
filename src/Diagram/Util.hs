@@ -29,6 +29,11 @@ instance Ord (Squash a) where
 -- Misc --
 ----------
 
+-- | Uncurry
+uc :: (a -> b -> c) -> (a, b) -> c
+uc = uncurry
+{-# INLINE uc #-}
+
 -- | https://stackoverflow.com/questions/62680939/
 -- abusing-unsafeperformio-to-catch-partial-functions
 catchE :: Exception e => a -> Either e a

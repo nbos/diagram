@@ -607,7 +607,6 @@ enumMutations (Membership byFstInIn_ _ byFstOutIn_ byFstOutOut_
       where toList :: IntMap (s0, a) -> [((s0, Sym), a)]
             toList = IM.foldrWithKey (\s1 s0n l -> first (,s1) s0n : l) []
 
-    uc = uncurry
     err' = err . ("enumMutations: " ++)
     assertEq n n'
       | n /= n' = err' $ "should be eq: " ++ show (n,n')

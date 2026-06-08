@@ -5,10 +5,14 @@
 module Diagram.Evolution (module Diagram.Evolution) where
 
 import Control.Monad
+import Control.Monad.Extra
 import Control.Lens hiding (both,last1,Index,(:>))
 import Control.Monad.State.Strict
 
 import Data.Tuple.Extra
+import qualified Data.List as L
+import Data.List.NonEmpty (NonEmpty(..))
+import qualified Data.List.NonEmpty as NE
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -35,7 +39,9 @@ import Diagram.JointType (JointType(..))
 import qualified Diagram.JointType as JT
 import Diagram.String
 import qualified Diagram.Doubly as D
-import Diagram.ConstrIntervals (CIs(..), byHead, CI(..))
+import Diagram.ConstrIntervals (CIs(..), byHead,
+                                CI(..), -- headIndex,headSymbol,
+                                ciLength, tailSymbol) --tailIndex
 import qualified Diagram.ConstrIntervals as CIs
 
 import Diagram.Util
@@ -206,7 +212,6 @@ evalLosses m bigN jt nm (LBs als ars a2s dls drs d2s _) =
                  , swap . first DelLeft   <$> IM.toList dls
                  , swap . first DelRight  <$> IM.toList drs
                  , swap . first (uc Del2) <$>  M.toList d2s ]
-    uc = uncurry
 
 -------------
 -- GETTERS --
@@ -451,18 +456,136 @@ symD2sFromAddIls str constr (CIs _ ns0 h2ts _) = flip execStateT ns0 $
     incr :: Sym -> IntMap Count -> IntMap Count
     incr = flip (IM.insertWith (+)) 1
 
--- | Given the string and the constructive intervals of a joint type,
--- return the set of corrections on the
+-- | (WARNING: struggle code+comments) Given the string, a type and its
+-- constructive signal on the string (bool vector), and the constructive
+-- intervals of a joint type, return the set of corrections on the
+-- symCounts of the CIs associated with a mutation (add or del) required
+-- to be added in order for it to match the actual change in symbol
+-- counts produced by the mutation. Corrections are signed to be *added*
+-- to the CIs.symCounts before they are subtracted (add) or added (del)
+-- to the joint type's own CIs.symCounts.
 d2CountCorrections :: forall m. PrimMonad m => Doubly (PrimState m) ->
   MV.MVector (PrimState m) SymEntry -> MV.MVector (PrimState m) SymEntry ->
-  CIs -> m (Map Mutation (IntMap Int))
-d2CountCorrections str uLeft uRight cis = fmap (M.fromList . concat) $
-  forM (IM.elems $ cis^.byHead) $ \ci -> do
-  prev <- getPrev ci
-  nexts <- getNexts ci
-  undefined
-
+  BV.MVector (PrimState m) Bit -> CIs -> m (Map Mutation (IntMap Int))
+d2CountCorrections str uLeft uRight constrv cis = fmap clean $
+  flip execStateT M.empty $ forM_ cis_ $ \ci -> do
+  goDels ci -- decompose, treat all delMuts
+  -- grab the largest chain possible, if first in the chain
+  (lift (grabPrev ci) >>=) $ flip whenJust $ \case
+    Nothing -> (lift (grabFwd ci) >>=) $ flip whenJust $ \(addMut, nexts) ->
+      goAdd addMut (ci:|nexts)
+    Just (addMut, prv) -> (lift (grabFwd ci) >>=) $ \case
+      Nothing -> goAdd addMut (prv:|[ci])
+      Just (addMut', nexts)
+        | addMut == addMut' -> goAdd addMut (prv:|ci:nexts)
+        | otherwise -> goAdd addMut (prv:|[ci])
+                       >> goAdd addMut' (ci:|nexts)
   where
+    clean = M.filter IM.null . fmap (IM.filter (==0))
+    cis_ = IM.elems $ cis^.byHead
+
+    goAdd :: Mutation -> NonEmpty CI -> StateT (Map Mutation (IntMap Int)) m ()
+    goAdd addMut ils = modify $ M.insertWith (IM.unionWith (+)) addMut im'
+      where
+        newLen = sum ((^.ciLength) <$> ils) -- constituents lengths
+                 - (length ils - 1) -- overlaps
+
+        im = L.foldl' (flip f) IM.empty (NE.init ils)
+        f ci | even (ci^.ciLength) = IM.insertWith (+) (ci^.tailSymbol) (-1)
+             | otherwise = id
+
+        last_ = NE.last ils
+        im' = case compare (even newLen) (even $ last_^.ciLength) of
+          LT -> IM.insertWith (+) (last_^.tailSymbol) (-1) im
+          EQ -> im
+          GT -> IM.insertWith (+) (last_^.tailSymbol) 1 im
+
+    -- | Given a constructive interval of the joint type (in), count all
+    -- the differences in symbol counts between the symCounts of the CIs
+    -- for all joints removed by the same del-mutation and and the real
+    -- difference in symCounts from applying those mutations.
+    goDels :: CI -> StateT (Map Mutation (IntMap Int)) m ()
+    goDels ci = mapM_ (uc $ flip go True) -- True == constr
+              . M.toList . M.fromListWith (++)
+              . reverse . ffmap (:[]) -- reverse to maintain order
+              =<< lift (decomposeIn ci)
+      where
+        CI _ _ _ citl _ = ci
+
+        go :: Mutation -> Bool -> [CI] ->
+              StateT (Map Mutation (IntMap Int)) m ()
+        go delMut = go_ where
+          go_ _ [] = return ()
+          go_ phase (CI hd shd len tl stl : rest) = do
+            unless (tl == citl) $ dec stl -- tl
+
+            outOfPhase <- (phase /=) <$> lift (constr hd)
+            -- out of phase with super-CI means prev hd will be constr
+            -- means hd will still be constr. so hd will not be docked
+            when outOfPhase $ dec shd -- hd
+
+            let phase' = phase /= odd len -- xor
+            go_ phase' rest
+
+          dec :: Sym -> StateT (Map Mutation (IntMap Int)) m ()
+          dec s = modify $ M.insertWith (const $ IM.insertWith (+) s (-1))
+                  delMut (IM.singleton s (-1))
+
+    -- | Break a constructive interval of the joint type (in) into an
+    -- ordered (by tail) list of its segments by mutation.
+    decomposeIn :: CI -> m [(Mutation, CI)]
+    decomposeIn ci@(CI hd _ 2 tl _) = (,ci) <<$>> delMutsOf' hd tl
+    decomposeIn ci@(CI hd shd _ _ _) = CIs.extension str ci
+                                       >>= go [] hd shd . tail
+      where
+        go mcis _ _ [] = return mcis
+        go mcis i0 s0 ((i1,s1):rest) = do
+          muts <- delMutsOf' s0 s1
+          let (alive, ended) = L.partition (flip elem muts . fst) mcis
+              started = (, CI i0 s0 2 i1 s1) <$>
+                        filter (`notElem` (fst <$> mcis)) muts
+              mcis' = (++ started) $ (<<$>> alive) $ \c ->
+                c{ _ciLength = _ciLength c + 1
+                 , _tailIndex = i1
+                 , _tailSymbol = s1 }
+          (ended ++) <$> go mcis' i1 s1 rest
+
+    delMutsOf' :: Sym -> Sym -> m [Mutation]
+    delMutsOf' s0 s1 = delMutsOf <$> sequence (s0, MV.read uLeft s0)
+                                 <*> sequence (s1, MV.read uRight s1)
+
+    constr :: Index -> m Bool
+    constr = fmap BV.unBit . MU.read constrv
+
+    -- | Because there is at most one mutation that will make an
+    -- out-joint an in-joint, once we find the mutation from the
+    -- breaking joint, we go as far as that mutation goes backwards and
+    -- return the interval when it ends. Outer Maybe is to signals to
+    -- skip the CI (case handled by getNexts) and inner Maybe signals
+    -- whether or not there is a CI with a mutation before the provided
+    -- CI.
+    grabPrev :: CI -> m (Maybe (Maybe (Mutation, CI)))
+    grabPrev (CI tl stl _ _ _) = (D.prev str tl >>=) $ \case
+      Nothing -> return $ Just Nothing -- no prev symbol/interval
+      Just ptl -> do
+        sptl <- D.read str ptl
+        (addMutOf' sptl stl >>=) $ \case
+          Nothing -> return $ Just Nothing -- no mut
+          Just mut -> (mut,) <<<$>>> go 2 ptl sptl
+            where
+              go !len hd shd = (D.prev str hd >>=) $ \case
+                Nothing -> return $ Just $ Just ci -- hit start, end
+                Just phd -> do
+                  sphd <- D.read str phd
+                  (member sphd shd >>=) $ \case
+                    True -> return Nothing -- not first of a chain (grabFwd)
+                    False -> (addMutOf' sphd shd >>=) $ \case
+                      Just mut' | mut' == mut -> go (len+1) phd sphd
+                      _else -> return $ Just $ Just ci -- end of interval
+                where
+                  ci = CI hd shd len tl stl
+
+    addMutOf' :: Sym -> Sym -> m (Maybe Mutation)
     addMutOf' s0 s1 = addMutOf <$> sequence (s0, MV.read uLeft s0)
                                <*> sequence (s1, MV.read uRight s1)
 
@@ -470,67 +593,51 @@ d2CountCorrections str uLeft uRight cis = fmap (M.fromList . concat) $
                                (_isMember <$> MV.read uRight s1)
 
     -- | Because there is at most one mutation that will make an
-    -- out-joint an in-joint, once we find the mutation from the
-    -- breaking joint, we go as far as that mutation goes backwards and
-    -- return the interval when it ends.
-    getPrev :: CI -> m (Maybe (Mutation, CI))
-    getPrev (CI tl stl _ _ _) = (D.prev str tl >>=) $ \case
-      Nothing -> return Nothing -- hit start, no prev symbol/interval
-      Just ptl -> do
-        sptl <- D.read str ptl
-        (addMutOf' sptl stl >>=) $ \case
-          Nothing -> return Nothing
-          Just mut -> (mut,) <<$>> go 2 ptl sptl
-            where
-              go !len hd shd = (D.prev str hd >>=) $ \case
-                Nothing -> return $ Just ci -- hit start, end
-                Just phd -> do
-                  sphd <- D.read str phd
-                  (member sphd shd >>=) $ \case
-                    True -> return Nothing -- ci handled by getNext
-                    False -> (addMutOf' sphd shd >>=) $ \case
-                      Just mut' | mut' == mut -> go (len+1) phd sphd
-                      _else -> return $ Just ci -- end of interval
-                where
-                  ci = CI hd shd len tl stl
-
-    -- | Because there is at most one mutation that will make an
     -- out-joint an in-joint, once we find the mutation from the next
-    -- joint, we go as far as that mutation goes forwards and return the
-    -- interval when it ends.
-    getNexts :: CI -> m (Maybe Mutation, [CI])
-    getNexts ci@(CI _ _ _ i0 s0) = (D.next str i0 >>=) $ \case
-      Nothing -> return (Nothing, [ci]) -- hit end
+    -- joint, we go as far as that mutation goes forwards. Since
+    -- out-intervals of the same add-mutation could be separated by
+    -- in-intervals, cascading a parity change along an arbitrary number
+    -- of out-intervals of that add-mutation interspersed by
+    -- in-intervals, we return a list of intervals (both in/out),
+    -- starting with the given in-interval. Calling `getPrev` on any
+    -- in-interval stuck in such a sequence and not the first with
+    -- return Nothing so that the interval sequence returned here only
+    -- gets treated once.
+    grabFwd :: CI -> m (Maybe (Mutation, [CI]))
+    grabFwd ci@(CI _ _ _ i0 s0) = (D.next str i0 >>=) $ \case
+      Nothing -> return Nothing -- hit end
       Just i1 -> do
         s1 <- D.read str i1
         (addMutOf' s0 s1 >>=) $ \case
-          Nothing -> return (Nothing, [ci])
-          Just mut -> (Just mut,) <$> goOut [ci] (CI s0 i0) 2 i1 s1
+          Nothing -> return Nothing
+          Just addMut -> Just . (addMut,) <$> grabOut [ci] (CI s0 i0) 2 i1 s1
             where
-              goOut :: [CI] -> (Len -> Index -> Sym -> CI) ->
-                       Len -> Index -> Sym -> m [CI]
-              goOut acc mkCI !len tl stl = (D.next str tl >>=) $ \case
+              grabOut :: [CI] -> (Len -> Index -> Sym -> CI) ->
+                         Len -> Index -> Sym -> m [CI]
+              grabOut acc mkCI !len tl stl = (D.next str tl >>=) $ \case
                 Nothing -> return $ reverse acc' -- hit end of string
                 Just ntl -> do
                   sntl <- D.read str ntl
                   (member stl sntl >>=) $ \case
-                    True -> goIn acc' (CI tl stl) 2 ntl sntl -- switch
+                    True -> grabIn acc' (CI tl stl) 2 ntl sntl -- switch
                     False -> (addMutOf' stl sntl >>=) $ \case
-                      Just mut' | mut' == mut ->
-                        goOut acc mkCI (len+1) ntl sntl -- keep going
+                      Just addMut' | addMut' == addMut ->
+                        grabOut acc mkCI (len+1) ntl sntl -- keep going
                       _else -> return $ reverse acc' -- end of intervals
                 where
                   acc' = mkCI len tl stl : acc
 
-              goIn acc mkCI !len tl stl = (D.next str tl >>=) $ \case
+              grabIn :: [CI] -> (Len -> Index -> Sym -> CI) ->
+                        Len -> Index -> Sym -> m [CI]
+              grabIn acc mkCI !len tl stl = (D.next str tl >>=) $ \case
                 Nothing -> return $ reverse acc' -- hit end of string
                 Just ntl -> do
                   sntl <- D.read str ntl
                   (member stl sntl >>=) $ \case
-                    True -> goIn acc mkCI (len+1) ntl sntl -- keep going
+                    True -> grabIn acc mkCI (len+1) ntl sntl -- keep going
                     False -> (addMutOf' stl sntl >>=) $ \case
-                      Just mut' | mut' == mut ->
-                        goOut acc' (CI tl stl) 2 ntl sntl -- switch
+                      Just addMut' | addMut' == addMut ->
+                        grabOut acc' (CI tl stl) 2 ntl sntl -- switch
                       _else -> return $ reverse acc' -- end of intervals
                 where
                   acc' = mkCI len tl stl : acc
