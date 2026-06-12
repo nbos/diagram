@@ -36,8 +36,8 @@ import Diagram.Util
 -- | All construction sites, as intervals, for fast join\/union but no
 -- delete\/subtract.
 data CIs = CIs
-  { _jointType :: JointType
-  , _symCounts :: IntMap Count -- ::  s --> n
+  { _jointType :: JointType    -- :: (u0, u1)
+  , _symCounts :: IntMap Count -- :: s  --> n
   , _byHead    :: IntMap CI    -- :: hd --> (hd, shd, len, tl, stl)
   , _byTail    :: IntMap CI }  -- :: tl --> (hd, shd, len, tl, stl)
   deriving(Show,Eq)
@@ -55,10 +55,10 @@ empty = CIs JT.bot e e e
 
 -- | A singleton set containing a singleton interval
 singleton :: (Index,Sym) -> (Index,Sym) -> CIs
-singleton (i0,s0) (i1,s1) = CIs jt ns bhd btl
+singleton is0@(i0,s0) is1@(i1,s1) = CIs jt ns bhd btl
   where jt = JT.singleton s0 s1
         ns = IM.fromList [(s0,1),(s1,1)]
-        ci = CI i0 s0 2 i1 s1
+        ci = CI.singleton is0 is1
         bhd = IM.singleton i0 ci
         btl = IM.singleton i1 ci
 
@@ -180,7 +180,7 @@ join_ ciAs ciBs = runIdentity $ flip evalStateT (JoinState ciAs ciBs IM.empty) $
   dns <- use delta
   bhds <- uses2 (_A.byHead) (_B.byHead) $ IM.unionWithKey err
   btls <- uses2 (_A.byTail) (_B.byTail) $ IM.unionWithKey err
-  let ns' = L.foldl' (flip alter) ns (IM.toList dns)
+  let ns' = L.foldl' (flip $ uc alter) ns (IM.toList dns)
 
   return (CIs jt ns' bhds btls, dns)
 
@@ -190,16 +190,14 @@ join_ ciAs ciBs = runIdentity $ flip evalStateT (JoinState ciAs ciBs IM.empty) $
     jt = JT.join (ciAs^.jointType) (ciBs^.jointType)
     ns = IM.unionWith (+) (ciAs^.symCounts) (ciBs^.symCounts)
 
-    alter (s,d) = flip IM.alter s $ \case
+    alter s d = flip IM.alter s $ \case
       Nothing -> Just d
       Just n -> nothingIf (== 0) (n + d)
 
     inc = inc_ 1
     -- dec = inc_ (-1)
     inc_ :: Int -> Sym -> StateT JoinState Identity ()
-    inc_ d s = (delta %=) $ flip IM.alter s $ \case
-      Nothing -> Just d
-      Just n -> nothingIf (==0) $ n + d
+    inc_ d s = delta %= alter s d
 
     -- | Given a constructive interval from 'B' whose head collides with
     -- the tail of an interval of the other set 'A', join together, fix

@@ -42,7 +42,7 @@ import qualified Diagram.Doubly as D
 import Diagram.ConstrInterval( CI(..), -- headIndex,headSymbol,
                                ciLength, tailSymbol ) --tailIndex
 import qualified Diagram.ConstrInterval as CI
-import Diagram.ConstrIntervals (CIs(..), byHead)
+import Diagram.ConstrIntervals (CIs(..), byHead, symCounts)
 import qualified Diagram.ConstrIntervals as CIs
 
 import Diagram.Util
@@ -249,69 +249,78 @@ getD1Info = do
 -- INIT --
 ----------
 
-initState :: PrimMonad m => Int -> Int -> Doubly (PrimState m) -> U.Vector Int ->
+initState :: forall m. PrimMonad m => Int -> Int -> Doubly (PrimState m) -> U.Vector Int ->
   Joints CIs -> (JointType, Joints CIs) -> m (EvolutionState (PrimState m))
-initState m bigN str ns allCIs (jt, members) = do
+initState m bigN str ns jointCIs (jt, members) = do
   ---- string ----
-  constr <- MU.new bigN
+  constrv <- MU.new bigN
   forM_ (IM.elems runs) $ \(CI hd _ len _ _) -> do
     let constrlen = (len `div` 2) * 2
     iss <- S.toList_ $ S.take constrlen $ D.streamWithKeyFrom str hd
-    forM_ (in2s iss) $ BV.flipBit constr . fst . fst -- ((i0,s0),(i1,s1))
+    forM_ (in2s iss) $ BV.flipBit constrv . fst . fst -- ((i0,s0),(i1,s1))
   --
 
   (uLeft, uRight) <- mkSymEntries m allJoints jt
 
   ---- mutations ----
-  allCIsByMutRef <- newPrimRef @_ @Boxed M.empty
-  forM_ (M.toList allCIs) $ \((s0,s1),sites) -> do
-    muts <- mutsOf <$> sequence (s0, MV.read uLeft s0)
-                   <*> sequence (s1, MV.read uRight s1)
-    forM_ muts $ \mut ->
-      modifyPrimRef allCIsByMutRef $ M.insertWith (<>) mut sites
-
-  allCIsByMut <- readPrimRef allCIsByMutRef
-  mutEntries <- flip M.traverseWithKey allCIsByMut $ \mut sites ->
+  mutCIs <- joinByMut uLeft uRight CIs.join $ M.toList jointCIs
+  mutEntries <- flip M.traverseWithKey mutCIs $ \mut cis ->
     case typeOfMut mut of
-      Add -> pure $
-        let jddns = snd $ CIs.join_ memCIs sites -- joint ddns
-            ddnm = sum jddns `div` 2
-            sddns = negate <$> jddns -- string ddns == - joint ddns
-        in MutEntry ddnm sddns sites
+      Add -> let nd2ns = snd $ CIs.join_ memCIs cis -- neg delta delta ns
+                 d2nm = sum nd2ns `div` 2 -- delta delta nm
+                 d2ns = negate <$> nd2ns
+             in return $ MutEntry d2nm d2ns cis
 
       Del -> do
-        let (CIs _ ddns h2ts _) = sites
-        ddns' <- flip2 foldM ddns (IM.elems h2ts) $
-          \dd (CI hd s0 len _ s1) -> do
-            hdIsConstr <- unBit <$> MU.read constr hd
-            return $ if hdIsConstr then dd
-                     else decr s0 $ if odd len then dd
-                                    else decr s1 dd
-        let ddnm = sum ddns' `div` 2
-        return $ MutEntry ddnm ddns' sites
+        d2ns <- flip2 foldM (cis^.symCounts) (CIs.toList cis) $
+          \im (CI hd shd len _ stl) -> do -- CI potentially a subCI
+            hdConstr <- unBit <$> MU.read constrv hd
+            return $ if hdConstr then im -- count is delta
+                     else dec shd $ -- hd will still be constr. by super
+                          if even len then dec stl im -- tl wasn't constr.
+                          else inc stl im -- tl was constr.
 
-  let mutsByLoss = M.fromList $
-                   (eval &&& fst) <$> M.toList mutEntries
+        let d2nm = negate (sum d2ns `div` 2)
+        return $ MutEntry d2nm d2ns cis
+
+  let mutsByLoss = M.fromList $ (eval &&& fst) <$> M.toList mutEntries
+
   return $
-    EvolutionState str ns jt uLeft uRight constr dns nm mutEntries mutsByLoss
+    EvolutionState str ns jt uLeft uRight constrv d1ns nm mutEntries mutsByLoss
 
   where
-    allJoints = M.keys allCIs
+    allJoints = M.keys jointCIs
 
-    memCIs@(CIs _ jns runs _) = foldr1 (<>) members
-    nm = sum jns `div` 2
-    dns = negate <$> jns
-    eval = uncurry $ evalMutation m bigN ns jt nm dns
+    memCIs@(CIs _ _ runs _) = foldr1 CIs.join members
+    nd1ns = memCIs^.symCounts -- negative delta symbol counts
 
-    -- decrement the count of a symbol by 1
-    decr :: Sym -> IntMap Count -> IntMap Count
-    decr = IM.alter (nothingIf (==0) . maybe (-1) (+(-1)))
+    nm = sum nd1ns `div` 2 -- nm := d1nm because d0nm == 0
+    d1ns = negate <$> nd1ns -- delta symbol counts (intro's)
+    eval = uncurry $ evalMutation m bigN ns jt nm d1ns
+
+    inc = inc_ 1
+    dec = inc_ (-1)
+    inc_ d s = flip IM.alter s $ \case
+      Nothing -> Just d
+      Just n -> nothingIf (==0) $ n + d
 
     in2s :: [a] -> [(a,a)]
     in2s (a:b:rest) = (a,b):in2s rest
     in2s _ = []
 
 -- WHERE --
+
+-- | Combine values keyed by joints flipped (in/out) by the same
+-- mutation together, given a combining function
+joinByMut :: forall m a. PrimMonad m =>
+  MV.MVector (PrimState m) SymEntry -> MV.MVector (PrimState m) SymEntry ->
+  (a -> a -> a) -> [((Sym,Sym), a)] -> m (Map Mutation a)
+joinByMut u0 u1 f = fmap (M.fromListWith f . concat) . mapM g
+  where
+    g :: ((Sym,Sym), a) -> m [(Mutation, a)]
+    g ((s0,s1), a) = do
+      ffmap (,a) $ mutsOf <$> sequence (s0, MV.read u0 s0)
+                          <*> sequence (s1, MV.read u1 s1)
 
 -- | Given the number of symbols, a list of all joints and a joint type,
 -- return the SymEntries of the left and right unions of the type
@@ -357,11 +366,11 @@ mkSymEntries m allJoints (JT u0 u1) = do
 -- required params and the difference in params it would result in
 evalMutation :: Int -> Int -> U.Vector Count -> JointType -> Int ->
                 IntMap Count -> Mutation -> MutEntry -> Double
-evalMutation m bigN ns jt nm dns mut (MutEntry ddnm ddns _) = loss
+evalMutation m bigN ns jt nm dns mut (MutEntry d2nm d2ns _) = loss
   where
     loss = d2Loss m bigN ils' nm' vm'
-    nm' = nm + ddnm
-    ils' = IM.elems $ flip2 IM.intersectionWithKey dns ddns $
+    nm' = nm + d2nm
+    ils' = IM.elems $ flip2 IM.intersectionWithKey dns d2ns $
       \s dn ddn -> toSnd (+ddn) ((ns U.! s) + dn) -- (ni',ni'')
 
     vm' = (vm +) $ case mut of
