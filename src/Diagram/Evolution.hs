@@ -39,9 +39,10 @@ import Diagram.JointType (JointType(..))
 import qualified Diagram.JointType as JT
 import Diagram.String
 import qualified Diagram.Doubly as D
-import Diagram.ConstrIntervals (CIs(..), byHead,
-                                CI(..), -- headIndex,headSymbol,
-                                ciLength, tailSymbol) --tailIndex
+import Diagram.ConstrInterval( CI(..), -- headIndex,headSymbol,
+                               ciLength, tailSymbol ) --tailIndex
+import qualified Diagram.ConstrInterval as CI
+import Diagram.ConstrIntervals (CIs(..), byHead)
 import qualified Diagram.ConstrIntervals as CIs
 
 import Diagram.Util
@@ -77,13 +78,13 @@ typeOfMut (Del2 _ _)   = Del
 -- across mutation :: (D1' - D1) = DD1 = D2
 -- mut. update     :: (D2' - D2) = DD2 = D3
 
---  o <---------> o        o <---------> o
+--  0 <----1----> 0        0 <----1----> 0
 --         ^                      ^
 --         |                      |
---         | <------------------> |
+--         2 <---------3--------> 2
 --         |                      |
 --         v                      v
---  o <---------> o        o <---------> o
+--  0 <----1----> 0        0 <----1----> 0
 
 type EvolutionT m = StateT (EvolutionState (PrimState m)) m
 -- | Evolution state of a JointType in a given string
@@ -535,7 +536,7 @@ d2CountCorrections str uLeft uRight constrv cis = fmap clean $
     -- ordered (by tail) list of its segments by mutation.
     decomposeIn :: CI -> m [(Mutation, CI)]
     decomposeIn ci@(CI hd _ 2 tl _) = (,ci) <<$>> delMutsOf' hd tl
-    decomposeIn ci@(CI hd shd _ _ _) = CIs.extension str ci
+    decomposeIn ci@(CI hd shd _ _ _) = CI.extension str ci
                                        >>= go [] hd shd . tail
       where
         go mcis _ _ [] = return mcis

@@ -9,9 +9,6 @@ import Control.Lens hiding (Index,(:>))
 import Control.Monad.State.Strict
 
 import qualified Data.List as L
-import Data.Strict.Tuple (Pair((:!:)),(:!:))
-import qualified Data.Strict.Tuple as Pair
-
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.IntMap (IntMap)
@@ -19,64 +16,44 @@ import qualified Data.IntMap as IM
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IS
 
-import Streaming hiding (join)
+import Streaming (Of(..), Stream)
 import qualified Streaming.Prelude as S
 
-import Diagram.Primitive
-import Diagram.String
+import Diagram.Primitive (PrimMonad(..))
+import Diagram.String (Index, Count, Doubly, Sym)
 import qualified Diagram.Doubly as D
 import Diagram.JointType (JointType(..))
 import qualified Diagram.JointType as JT
 import qualified Diagram.UnionType as UT
 
+import Diagram.ConstrInterval ( CI(..)
+                              , headIndex --, headSymbol
+                              , tailIndex, tailSymbol )
+import qualified Diagram.ConstrInterval as CI
+
 import Diagram.Util
-
-data CI = CI { _headIndex  :: !Index
-             , _headSymbol :: !Sym
-             , _ciLength   :: !Len
-             , _tailIndex  :: !Index
-             , _tailSymbol :: !Sym }
-  deriving(Show,Eq)
-
--- | Given the reference string and a contructive interval, produce the
--- list of indexed symbols that form the interval, starting at the head
--- and ending at the tail.
-extension :: PrimMonad m => Doubly (PrimState m) -> CI -> m [(Index,Sym)]
-extension _ (CI hd shd 2 tl stl) = return [(hd,shd),(tl,stl)]
-extension str (CI hd shd len _ _)
-  | len < 3 = error $ "CI.extension: invalid length: " ++ show len
-  | otherwise = fmap ((hd,shd):) $
-                S.toList_ . S.take (len-1) . D.streamWithKeyFrom str
-                =<< D.unsafeNext str hd
 
 -- | All construction sites, as intervals, for fast join\/union but no
 -- delete\/subtract.
 data CIs = CIs
-  { _jointType :: !JointType
-  , _symCounts :: !(IntMap Count) -- ::  s --> n
-  , _byHead    :: !(IntMap CI)    -- :: hd --> (hd, shd, len, tl, stl)
-  , _byTail    :: !(IntMap CI) }  -- :: tl --> (hd, shd, len, tl, stl)
+  { _jointType :: JointType
+  , _symCounts :: IntMap Count -- ::  s --> n
+  , _byHead    :: IntMap CI    -- :: hd --> (hd, shd, len, tl, stl)
+  , _byTail    :: IntMap CI }  -- :: tl --> (hd, shd, len, tl, stl)
   deriving(Show,Eq)
 
 makeLenses ''CIs
-makeLenses ''CI
-
-instance Semigroup CIs where
-  (<>) :: CIs -> CIs -> CIs
-  (<>) = join
-
-instance Monoid CIs where
-  mempty :: CIs
-  mempty = empty
 
 ------------------
 -- CONSTRUCTION --
 ------------------
 
+-- | Empty set of construction intervals
 empty :: CIs
 empty = CIs JT.bot e e e
   where e = IM.empty
 
+-- | A singleton set containing a singleton interval
 singleton :: (Index,Sym) -> (Index,Sym) -> CIs
 singleton (i0,s0) (i1,s1) = CIs jt ns bhd btl
   where jt = JT.singleton s0 s1
@@ -85,15 +62,21 @@ singleton (i0,s0) (i1,s1) = CIs jt ns bhd btl
         bhd = IM.singleton i0 ci
         btl = IM.singleton i1 ci
 
+-- | Construction, for every pair of symbols in the given source string,
+-- of the set of continuous construction intervals.
 fromStream :: Monad m => Stream (Of (Index,Sym)) m r -> m (Map (Sym,Sym) CIs, r)
 fromStream = flip fromStream_ M.empty
 
+-- | Construction given a source string and an accumulator map keyed on
+-- joints.
 fromStream_ :: Monad m =>
   Stream (Of (Index,Sym)) m r -> Map (Sym,Sym) CIs -> m (Map (Sym,Sym) CIs, r)
 fromStream_ ss m = (S.next ss >>=) $ \case
   Left r -> return (m, r)
   Right (is,ss') -> fromStream_0 is ss' m
 
+-- | Construction given a head symbol, the rest of the source string and
+-- an accumulator map keyed on joints.
 fromStream_0 :: Monad m => (Index,Sym) ->
   Stream (Of (Index,Sym)) m r -> Map (Sym,Sym) CIs -> m (Map (Sym,Sym) CIs, r)
 fromStream_0 is0@(i0,s0) ss !m = (S.next ss >>=) $ \case
@@ -127,7 +110,6 @@ fromStream_0 is0@(i0,s0) ss !m = (S.next ss >>=) $ \case
 -- CONVERSION --
 ----------------
 
--- | Produce a list of heads + len determining the set of intervals
 toList :: CIs -> [CI]
 toList = IM.elems . _byHead
 
@@ -137,8 +119,9 @@ toList = IM.elems . _byHead
 -- specifically) of a set of joints.
 type Sites = IntSet
 
--- | Given the reference string (read only), convert the
--- constr. intervals to the explicit set of constructive indexes.
+-- | (TODO: DELETE (OLD LOGIC)) Given the reference string (read only),
+-- convert the constr. intervals to the explicit set of constructive
+-- indexes.
 toSites :: PrimMonad m => Doubly (PrimState m) -> CIs -> m Sites
 toSites str cis = fmap (IS.fromList . concat) $
   forM (toList cis) $ \(CI hd _ len _ _) ->
@@ -154,6 +137,21 @@ toSites str cis = fmap (IS.fromList . concat) $
 -- COMPOSITION --
 -----------------
 
+data JoinState = JoinState
+  { __A :: !CIs -- some set of intervals 'A'
+  , __B :: !CIs -- some other set of intervals 'B'
+  , _delta :: !(IntMap Int) -- sym count delta accumulator
+} deriving (Show,Eq)
+makeLenses ''JoinState
+
+instance Semigroup CIs where
+  (<>) :: CIs -> CIs -> CIs
+  (<>) = join
+
+instance Monoid CIs where
+  mempty :: CIs
+  mempty = empty
+
 -- | "Union" or "join" of two sets of constructive intervals which are
 -- assumed to be disjoint in their joint types (implying also disjoint
 -- in the constructive sites/intervals). Under this assumption,
@@ -166,27 +164,25 @@ join = fst .: join_
 -- between the sum of the counts of each set of intervals and the counts
 -- of the returned set of intervals (snd)
 join_ :: CIs -> CIs -> (CIs, IntMap Int)
-join_ ciAs ciBs = runIdentity $ flip evalStateT (ciAs :!: ciBs) $ do
-  dns <- if uB0 `UT.disjoint` uA1 then return IM.empty else
+join_ ciAs ciBs = runIdentity $ flip evalStateT (JoinState ciAs ciBs IM.empty) $ do
+
+  unless (uB0 `UT.disjoint` uA1) $ -- short-circuit intersection (O(m) <<< O(N))
     uses2 (_B.byHead) (_A.byTail) IM.intersection
-    >>= go IM.empty . IM.elems
+    >>= mapM_ go
 
-  dns' <- if uA0 `UT.disjoint` uB1 then return dns else do
+  unless (uA0 `UT.disjoint` uB1) $ do -- short-circuit intersection (O(m) <<< O(N))
     cols <- uses2 (_A.byHead) (_B.byTail) IM.intersection
-    modify Pair.swap -- A <--> B
-    res <- go dns $ IM.elems cols
-    modify Pair.swap -- B <--> A
-    return res
+    modify $ \(JoinState a b d) -> JoinState b a d -- A <--> B
+    mapM_ go cols
+    modify $ \(JoinState b a d) -> JoinState a b d -- B <--> A
 
-  let ns' = flip2 L.foldl' ns (IM.toList dns') $ \im (s,dn) ->
-        flip2 IM.alter s im $ \case
-        Nothing -> Just dn
-        Just n -> nothingIf (==0) $ n + dn
-
+  -- fold new sym count deltas into the counts map
+  dns <- use delta
   bhds <- uses2 (_A.byHead) (_B.byHead) $ IM.unionWithKey err
   btls <- uses2 (_A.byTail) (_B.byTail) $ IM.unionWithKey err
+  let ns' = L.foldl' (flip alter) ns (IM.toList dns)
 
-  return (CIs jt ns' bhds btls, dns')
+  return (CIs jt ns' bhds btls, dns)
 
   where
     JT uA0 uA1 = ciAs^.jointType
@@ -194,68 +190,52 @@ join_ ciAs ciBs = runIdentity $ flip evalStateT (ciAs :!: ciBs) $ do
     jt = JT.join (ciAs^.jointType) (ciBs^.jointType)
     ns = IM.unionWith (+) (ciAs^.symCounts) (ciBs^.symCounts)
 
-    _A :: forall s t a b. Field1 s t a b => Lens s t a b
-    _B :: forall s t a b. Field2 s t a b => Lens s t a b
-    _A = _1
-    _B = _2
+    alter (s,d) = flip IM.alter s $ \case
+      Nothing -> Just d
+      Just n -> nothingIf (== 0) (n + d)
 
-    go :: IntMap Int -> [CI] ->
-          StateT (CIs :!: CIs) Identity (IntMap Int)
-    go dns [] = return dns
-    go dns ((CI tlA@hdB _ lenB tlB stlB):rest) = do
-      _A.byTail %= IM.delete tlA -- delete tlA
-      _B.byHead %= IM.delete hdB -- delete hdB (1/2)
-      _B.byTail %= IM.delete tlB -- delete tlB (2/2)
+    inc = inc_ 1
+    -- dec = inc_ (-1)
+    inc_ :: Int -> Sym -> StateT JoinState Identity ()
+    inc_ d s = (delta %=) $ flip IM.alter s $ \case
+      Nothing -> Just d
+      Just n -> nothingIf (==0) $ n + d
 
-      CI hdA shdA lenA _ _ <- (_A.byTail) `uses` (IM.! tlA)
-      dns' <- ((_A.byHead) %%= deleteLookup tlB >>=) $ \case
+    -- | Given a constructive interval from 'B' whose head collides with
+    -- the tail of an interval of the other set 'A', join together, fix
+    -- count if required and re-insert in 'A' set
+    go :: CI -> StateT JoinState Identity ()
+    go ciB@(CI tlA@hdB _ _ tlB _) = do
+      _A.byTail %= IM.delete tlA -- delete [.. tlA]
+      _B.byHead %= IM.delete hdB -- delete [hdB ..]
+      _B.byTail %= IM.delete tlB -- delete [.. tlB]
 
+      -- can't accept a ciA independent of any previous go calls because
+      -- it could have been prepended to (sandwich case), so we lookup
+      ciA <- (_A.byTail) `uses` (IM.! tlA)
+      when (CI.odd ciA) $ inc (ciA^.tailSymbol)
+
+      let ciAB = CI.unsafeJoin ciA ciB
+      ((_A.byHead) %%= deleteLookup tlB >>=) $ \case
         -- simple collision: [hdA..tlA) <> [hdB..tlB] ==> [hdA..tlB]
         Nothing -> do
-          let lenA' = lenA + lenB - 1
-              ci = CI hdA shdA lenA' tlB stlB
-          _A.byHead %= IM.insert hdA ci -- update hdA
-          _A.byTail %= IM.insert tlB ci -- insert tlB
+          _A.byHead %= IM.insert (ciAB^.headIndex) ciAB -- update hdA
+          _A.byTail %= IM.insert (ciAB^.tailIndex) ciAB -- insert tlB
+          let d = fromEnum (CI.even ciAB) - fromEnum (CI.even ciB)
+          unless (d == 0) $ inc_ d (ciAB^.tailSymbol)
 
-          let oldInc | even lenB = 1
-                     | otherwise = 0
-              newInc | even lenA' = 1
-                     | otherwise = 0
-              delta = newInc - oldInc
-
-          return $ if delta == 0 then dns -- (no change)
-            else flip2 IM.alter stlB dns $ \case
-            Nothing -> Just delta
-            Just stln -> nothingIf (== 0) (stln + delta)
-
-        -- double: [hdA..tlA) <> [hdB..tlB) <> [hdA2..tlA2] ==> [hdA..tlA2]
-        Just (CI _ _ lenA2 tlA2 stlA2) -> do
-          let hdA2 = tlB -- aliases
-              lenA' = lenA + lenB + lenA2 - 2
-              ci = CI hdA shdA lenA' tlA2 stlA2
-          _A.byHead %= IM.insert hdA ci  -- update hdA
-          _A.byHead %= IM.delete hdA2    -- delete hdA2
-          _A.byTail %= IM.insert tlA2 ci -- update tlA2
-
-          let oldIncA2 | even lenA2 = 1
-                       | otherwise = 0
-              newIncA2 | even lenA' = 1
-                       | otherwise = 0
-              delta = newIncA2 - oldIncA2
-
-          return $
-            (if even lenB then id else flip IM.alter stlB $ \case
-                Nothing -> Just 1
-                Just stln -> nothingIf (== 0) (stln + 1)) $
-            (if delta == 0 then id else flip IM.alter stlA2 $ \case
-                Nothing -> Just delta -- assert (delta == 1)
-                Just stln -> nothingIf (== 0) (stln + delta)) dns
-
-      go dns' rest -- continue
+        -- sandwich: [hdA..tlA) <> [hdB..tlB) <> [hdA2..tlA2] ==> [hdA..tlA2]
+        Just ciA2 -> do
+          when (CI.odd ciB) $ inc (ciA2^.tailSymbol)
+          let ciABA = CI.unsafeJoin ciAB ciA2
+          _A.byHead %= IM.delete (ciA2^.headIndex) -- delete hdA2
+          _A.byHead %= IM.insert (ciABA^.headIndex) ciABA -- update hdA
+          _A.byTail %= IM.insert (ciABA^.tailIndex) ciABA -- update tlA2
+          let d = fromEnum (CI.even ciABA) - fromEnum (CI.even ciA2)
+          unless (d == 0) $ inc_ d (ciABA^.tailSymbol)
 
     err :: (Show k, Show v0, Show v1) => k -> v0 -> v1 -> a
     err = error . ("ConstrIntervals.join: collision: " ++) . show .:. (,,)
-
 
 -- | Use the target of two lenses in the current state with a function
 uses2 :: MonadState s m => Lens' s a -> Lens' s b -> (a -> b -> c) -> m c
