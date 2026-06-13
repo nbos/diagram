@@ -102,7 +102,7 @@ data EvolutionState s = EvolutionState
   , _symbolD1s :: !(IntMap Int) -- delta symbol count :: u0 U u1 -> dn
   , _jointD1 :: !Count -- joint count, popCount of constructed
 
-  -- mutations (D2s)
+  -- mutations (D2s) -- TODO: loss books go here
   , _entries :: !(Map Mutation MutEntry) -- mut -> ddns
   , _byLoss :: !(Map Double Mutation) } -- ddi -> mut
 
@@ -152,14 +152,38 @@ addMutOf (s0, SymEntry mem0 ic0s _ _) (s1, SymEntry mem1 ic1s _ _)
 -- MUT ENTRY (COUNTS, SITES) --
 
 data MutEntry = MutEntry
-  { _jointD2  :: !Int -- delta joint count (dnm)
-  , _symbolD2 :: !(IntMap Int) -- delta delta string symbol counts (ddns)
-  , _constrD2 :: !CIs } -- constr. sites
+  { _meD2nm  :: !Int -- delta joint count (d2nm)
+  , _meD2ns :: !(IntMap Int) -- delta delta string symbol counts (d2ns)
+  , _meCIs :: !CIs } -- constr. sites
   deriving (Show,Eq)
 
 makeLenses ''SymEntry
 makeLenses ''MutEntry
 makeLenses ''EvolutionState
+
+-- | Compute the difference in delta-info of a mutation, given all
+-- required params and the difference in params it would result in
+evalMutEntry :: Int -> Int -> U.Vector Count -> JointType -> Int ->
+                IntMap Count -> Mutation -> MutEntry -> Double
+evalMutEntry m bigN ns jt nm dns mut (MutEntry d2nm d2ns _) = loss
+  where
+    loss = d2Loss m bigN ils' nm' vm'
+    nm' = nm + d2nm
+    ils' = IM.elems $ flip2 IM.intersectionWithKey dns d2ns $
+      \s dn ddn -> toSnd (+ddn) ((ns U.! s) + dn) -- (ni',ni'')
+
+    vm' = (vm +) $ case mut of
+      AddLeft _  ->  sz1
+      AddRight _ ->  sz0
+      Add2 _ _   ->  sz0 + sz1
+      DelLeft _  -> -sz1
+      DelRight _ -> -sz0
+      Del2 _ _   -> -sz0 - sz1
+
+    JT u0 u1 = jt
+    sz0 = UT.size u0
+    sz1 = UT.size u1
+    vm = sz0 * sz1
 
 -- LOSS ENTRY (COUNTS) --
 
@@ -264,27 +288,35 @@ initState m bigN str ns jointCIs (jt, members) = do
 
   ---- mutations ----
   mutCIs <- joinByMut uLeft uRight CIs.join $ M.toList jointCIs
-  mutEntries <- flip M.traverseWithKey mutCIs $ \mut cis ->
-    case typeOfMut mut of
-      Add -> let nd2ns = snd $ CIs.join_ memCIs cis -- neg delta delta ns
-                 d2nm = sum nd2ns `div` 2 -- delta delta nm
-                 d2ns = negate <$> nd2ns
-             in return $ MutEntry d2nm d2ns cis
+  cCorrs <- d2CountCorrections str uLeft uRight constrv memCIs
+  let mutEntries = M.mergeWithKey
+                    (Just .:. mkCorrectedMutEntry) -- both CIs + corr
+                    (M.mapWithKey mkMutEntry) -- only CIs
+                    (error . ("CIs missing: " ++) . show) -- only corr
+                    mutCIs cCorrs
 
-      Del -> do
-        d2ns <- flip2 foldM (cis^.symCounts) (CIs.toList cis) $
-          \im (CI hd shd len _ stl) -> do -- CI potentially a subCI
-            hdConstr <- unBit <$> MU.read constrv hd
-            return $ if hdConstr then im -- count is delta
-                     else dec shd $ -- hd will still be constr. by super
-                          if even len then dec stl im -- tl wasn't constr.
-                          else inc stl im -- tl was constr.
+  -- -- DOESN'T HOLD IN GENERAL BECUASE CHAINS CAN GET ARBITRARILY LONG -- --
+  -- mutEntries <- flip M.traverseWithKey mutCIs $ \mut cis ->
+  --   case typeOfMut mut of
+  --     Add -> let nd2ns = snd $ CIs.join_ memCIs cis -- neg delta delta ns
+  --                d2nm = sum nd2ns `div` 2 -- delta delta nm
+  --                d2ns = negate <$> nd2ns
+  --            in return $ MutEntry d2nm d2ns cis
 
-        let d2nm = negate (sum d2ns `div` 2)
-        return $ MutEntry d2nm d2ns cis
+  --     Del -> do
+  --       d2ns <- flip2 foldM (cis^.symCounts) (CIs.toList cis) $
+  --         \im (CI hd shd len _ stl) -> do -- CI potentially a subCI
+  --           hdConstr <- unBit <$> MU.read constrv hd
+  --           return $ if hdConstr then im -- count is delta
+  --                    else dec shd $ -- hd will still be constr. by super
+  --                         if even len then dec stl im -- tl wasn't constr.
+  --                         else inc stl im -- tl was constr.
+
+  --       let d2nm = negate (sum d2ns `div` 2)
+  --       return $ MutEntry d2nm d2ns cis
+  -- --
 
   let mutsByLoss = M.fromList $ (eval &&& fst) <$> M.toList mutEntries
-
   return $
     EvolutionState str ns jt uLeft uRight constrv d1ns nm mutEntries mutsByLoss
 
@@ -296,19 +328,30 @@ initState m bigN str ns jointCIs (jt, members) = do
 
     nm = sum nd1ns `div` 2 -- nm := d1nm because d0nm == 0
     d1ns = negate <$> nd1ns -- delta symbol counts (intro's)
-    eval = uncurry $ evalMutation m bigN ns jt nm d1ns
+    eval = uncurry $ evalMutEntry m bigN ns jt nm d1ns
 
-    inc = inc_ 1
-    dec = inc_ (-1)
-    inc_ d s = flip IM.alter s $ \case
-      Nothing -> Just d
-      Just n -> nothingIf (==0) $ n + d
+    -- inc = inc_ 1
+    -- dec = inc_ (-1)
+    -- inc_ d s = flip IM.alter s $ \case
+    --   Nothing -> Just d
+    --   Just n -> nothingIf (==0) $ n + d
 
     in2s :: [a] -> [(a,a)]
     in2s (a:b:rest) = (a,b):in2s rest
     in2s _ = []
 
 -- WHERE --
+
+mkMutEntry :: Mutation -> CIs -> MutEntry
+mkMutEntry mut cis = mkCorrectedMutEntry mut cis IM.empty
+
+mkCorrectedMutEntry :: Mutation -> CIs -> IntMap Int -> MutEntry
+mkCorrectedMutEntry mut cis cor = case typeOfMut mut of
+  Add -> MutEntry n (negate <$> ns) cis -- from sym counts to joint count
+  Del -> MutEntry (-n) ns cis           -- from joint count to sym count
+  where
+    ns = IM.unionWith (+) (cis^.symCounts) cor
+    n = sum ns `div` 2
 
 -- | Combine values keyed by joints flipped (in/out) by the same
 -- mutation together, given a combining function
@@ -362,118 +405,14 @@ mkSymEntries m allJoints (JT u0 u1) = do
     s0s = UT.toList u0 -- left member symbols
     s1s = UT.toList u1 -- right member symbols
 
--- | Compute the difference in delta-info of a mutation, given all
--- required params and the difference in params it would result in
-evalMutation :: Int -> Int -> U.Vector Count -> JointType -> Int ->
-                IntMap Count -> Mutation -> MutEntry -> Double
-evalMutation m bigN ns jt nm dns mut (MutEntry d2nm d2ns _) = loss
-  where
-    loss = d2Loss m bigN ils' nm' vm'
-    nm' = nm + d2nm
-    ils' = IM.elems $ flip2 IM.intersectionWithKey dns d2ns $
-      \s dn ddn -> toSnd (+ddn) ((ns U.! s) + dn) -- (ni',ni'')
-
-    vm' = (vm +) $ case mut of
-      AddLeft _  ->  sz1
-      AddRight _ ->  sz0
-      Add2 _ _   ->  sz0 + sz1
-      DelLeft _  -> -sz1
-      DelRight _ -> -sz0
-      Del2 _ _   -> -sz0 - sz1
-
-    JT u0 u1 = jt
-    sz0 = UT.size u0
-    sz1 = UT.size u1
-    vm = sz0 * sz1
-
--- | Enumerate the indexes of all constructive joints that would get
--- deleted from a type given only the reference string (read only), the
--- boolean vector marking the construction sites of the type (read only)
--- and a set of construction intervals to be deleted (assumed to be
--- sub-intervals of the construction of the type).
-sitesFromDelIls :: PrimMonad m =>
-  Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m [Index]
-sitesFromDelIls str constr delCIs = fmap concat $
-  forM (CIs.toList delCIs) $ \(CI hd _ len _ _) -> do
-  hdIsConstr <- BV.unBit <$> MU.read constr hd
-  if len < 3 && hdIsConstr
-    then return [hd] -- simple case
-    else fmap everyOther $ S.toList_ $ -- general case
-         (if hdIsConstr then id else S.drop 1) $
-         S.take len $ D.streamKeysFrom str hd
-
--- | Enumerate the indexes of all constructive joints that would get
--- added to a type given only the reference string (read only), the
--- boolean vector marking the construction sites of the type (read only)
--- and a set of construction intervals to be added (assumed to be
--- disjoint from the constructive intervals of the type).
-sitesFromAddIls :: PrimMonad m =>
-  Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m [Index]
-sitesFromAddIls str constr addCIs = fmap concat $
-  forM (CIs.toList addCIs) $ \(CI hd _ len _ _) -> do
-  phdIsConstr <- (D.prev str hd >>=) $ \case
-    Nothing -> return False
-    Just phd -> BV.unBit <$> MU.read constr phd
-  if len < 3 then return [ hd | not phdIsConstr ] -- simple case
-    else fmap everyOther $ S.toList_ $ -- general case
-         (if phdIsConstr then S.drop 1 else id) $
-         S.take len $ D.streamKeysFrom str hd
-
--- | Skip every second value, returning every other, starting with the
--- first.
-everyOther :: [a] -> [a]
-everyOther [] = []
-everyOther [a] = [a]
-everyOther (a:_:rest) = a:everyOther rest
-
-symD2sFromDelIls :: PrimMonad m =>
-  Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m (IntMap Count)
-symD2sFromDelIls str constr (CIs _ ns0 h2ts _) = flip execStateT ns0 $
-  forM (IM.elems h2ts) $ \(CI hd _ len _ stl) -> do
-  hdIsConstr <- BV.unBit <$> MU.read constr hd
-  unless hdIsConstr $ do -- parity rotates
-    modify . decr =<< D.read str hd
-    when (len > 2) $ do
-      let tlIsConstr = odd len -- normally `even`, but hd isn't constr
-      modify $ (if tlIsConstr then decr else incr) stl
-  where
-    -- decrement the count of a symbol by 1, assumes present
-    decr :: Sym -> IntMap Count -> IntMap Count
-    decr = IM.update (nothingIf (==0) . (+(-1)))
-
-    -- increment the count of a symbol by 1, assumes positive
-    incr :: Sym -> IntMap Count -> IntMap Count
-    incr = flip (IM.insertWith (+)) 1
-
-symD2sFromAddIls :: PrimMonad m =>
-  Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m (IntMap Count)
-symD2sFromAddIls str constr (CIs _ ns0 h2ts _) = flip execStateT ns0 $
-  forM (IM.elems h2ts) $ \(CI hd _ len _ stl) -> do
-  phdIsConstr <- (D.prev str hd >>=) $ \case
-    Nothing -> return False
-    Just phd -> BV.unBit <$> MU.read constr phd
-  when phdIsConstr $ do -- parity rotates
-    modify . decr =<< D.read str hd
-    when (len > 2) $ do
-      let tlIsConstr = odd len -- normally `even`, but hd isn't constr
-      modify $ (if tlIsConstr then incr else decr) stl
-  where
-    -- decrement the count of a symbol by 1, assumes present
-    decr :: Sym -> IntMap Count -> IntMap Count
-    decr = IM.update (nothingIf (==0) . (+(-1)))
-
-    -- increment the count of a symbol by 1, assumes positive
-    incr :: Sym -> IntMap Count -> IntMap Count
-    incr = flip (IM.insertWith (+)) 1
-
--- | (WARNING: struggle code+comments) Given the string, a type and its
+-- | (WARNING: struggle code+comments) Given the string, a type, its
 -- constructive signal on the string (bool vector), and the constructive
 -- intervals of a joint type, return the set of corrections on the
--- symCounts of the CIs associated with a mutation (add or del) required
--- to be added in order for it to match the actual change in symbol
--- counts produced by the mutation. Corrections are signed to be *added*
--- to the CIs.symCounts before they are subtracted (add) or added (del)
--- to the joint type's own CIs.symCounts.
+-- symCounts of each CIs associated with a mutation (add or del) (all at
+-- once) required to be added in order for it to match the actual change
+-- in symbol counts produced by the mutation. Corrections are signed to
+-- be *added* to the CIs.symCounts before they are subtracted (add) or
+-- added (del) to the joint type's own CIs.symCounts.
 d2CountCorrections :: forall m. PrimMonad m => Doubly (PrimState m) ->
   MV.MVector (PrimState m) SymEntry -> MV.MVector (PrimState m) SymEntry ->
   BV.MVector (PrimState m) Bit -> CIs -> m (Map Mutation (IntMap Int))
@@ -714,3 +653,89 @@ logFact = iLogFactorial
 -- | Natural logarithm of an integer
 ilog :: Int -> Double
 ilog = log . fromIntegral
+
+--
+
+-- GRAVEYARD --
+
+--
+
+-- | Enumerate the indexes of all constructive joints that would get
+-- deleted from a type given only the reference string (read only), the
+-- boolean vector marking the construction sites of the type (read only)
+-- and a set of construction intervals to be deleted (assumed to be
+-- sub-intervals of the construction of the type).
+sitesFromDelIls :: PrimMonad m =>
+  Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m [Index]
+sitesFromDelIls str constr delCIs = fmap concat $
+  forM (CIs.toList delCIs) $ \(CI hd _ len _ _) -> do
+  hdIsConstr <- BV.unBit <$> MU.read constr hd
+  if len < 3 && hdIsConstr
+    then return [hd] -- simple case
+    else fmap everyOther $ S.toList_ $ -- general case
+         (if hdIsConstr then id else S.drop 1) $
+         S.take len $ D.streamKeysFrom str hd
+
+-- | Enumerate the indexes of all constructive joints that would get
+-- added to a type given only the reference string (read only), the
+-- boolean vector marking the construction sites of the type (read only)
+-- and a set of construction intervals to be added (assumed to be
+-- disjoint from the constructive intervals of the type).
+sitesFromAddIls :: PrimMonad m =>
+  Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m [Index]
+sitesFromAddIls str constr addCIs = fmap concat $
+  forM (CIs.toList addCIs) $ \(CI hd _ len _ _) -> do
+  phdIsConstr <- (D.prev str hd >>=) $ \case
+    Nothing -> return False
+    Just phd -> BV.unBit <$> MU.read constr phd
+  if len < 3 then return [ hd | not phdIsConstr ] -- simple case
+    else fmap everyOther $ S.toList_ $ -- general case
+         (if phdIsConstr then S.drop 1 else id) $
+         S.take len $ D.streamKeysFrom str hd
+
+-- | Skip every second value, returning every other, starting with the
+-- first.
+everyOther :: [a] -> [a]
+everyOther [] = []
+everyOther [a] = [a]
+everyOther (a:_:rest) = a:everyOther rest
+
+symD2sFromDelIls :: PrimMonad m =>
+  Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m (IntMap Count)
+symD2sFromDelIls str constr (CIs _ ns0 h2ts _) = flip execStateT ns0 $
+  forM (IM.elems h2ts) $ \(CI hd _ len _ stl) -> do
+  hdIsConstr <- BV.unBit <$> MU.read constr hd
+  unless hdIsConstr $ do -- parity rotates
+    modify . decr =<< D.read str hd
+    when (len > 2) $ do
+      let tlIsConstr = odd len -- normally `even`, but hd isn't constr
+      modify $ (if tlIsConstr then decr else incr) stl
+  where
+    -- decrement the count of a symbol by 1, assumes present
+    decr :: Sym -> IntMap Count -> IntMap Count
+    decr = IM.update (nothingIf (==0) . (+(-1)))
+
+    -- increment the count of a symbol by 1, assumes positive
+    incr :: Sym -> IntMap Count -> IntMap Count
+    incr = flip (IM.insertWith (+)) 1
+
+symD2sFromAddIls :: PrimMonad m =>
+  Doubly (PrimState m) -> BV.MVector (PrimState m) Bit -> CIs -> m (IntMap Count)
+symD2sFromAddIls str constr (CIs _ ns0 h2ts _) = flip execStateT ns0 $
+  forM (IM.elems h2ts) $ \(CI hd _ len _ stl) -> do
+  phdIsConstr <- (D.prev str hd >>=) $ \case
+    Nothing -> return False
+    Just phd -> BV.unBit <$> MU.read constr phd
+  when phdIsConstr $ do -- parity rotates
+    modify . decr =<< D.read str hd
+    when (len > 2) $ do
+      let tlIsConstr = odd len -- normally `even`, but hd isn't constr
+      modify $ (if tlIsConstr then incr else decr) stl
+  where
+    -- decrement the count of a symbol by 1, assumes present
+    decr :: Sym -> IntMap Count -> IntMap Count
+    decr = IM.update (nothingIf (==0) . (+(-1)))
+
+    -- increment the count of a symbol by 1, assumes positive
+    incr :: Sym -> IntMap Count -> IntMap Count
+    incr = flip (IM.insertWith (+)) 1
