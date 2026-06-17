@@ -1,8 +1,12 @@
-{-# LANGUAGE PatternGuards, BangPatterns, TupleSections, ScopedTypeVariables #-}
+{-# LANGUAGE PatternGuards, BangPatterns, TupleSections #-}
+{-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
 module Diagram.Util where
 
 import Control.Monad
+import Control.Lens hiding (Index,(:>))
+import Control.Monad.State.Strict
 import Control.Exception
+
 import System.IO.Unsafe
 
 import Data.Maybe
@@ -673,3 +677,14 @@ numLoop start end f = when (start <= end) $ go start
   where go !x | x == end  = f x
               | otherwise = f x >> go (x+1)
 {-# INLINE numLoop #-}
+
+-- | Use the target of two lenses in the current state with a function
+uses2 :: MonadState s m => Lens' s a -> Lens' s b -> (a -> b -> c) -> m c
+uses2 a b = uses a >=> uses b
+{-# INLINE uses2 #-}
+
+-- | Use the target of three lenses in the current state with a function
+uses3 :: MonadState s m =>
+  Lens' s a -> Lens' s b -> Lens' s c -> (a -> b -> c -> d) -> m d
+uses3 a b c = uses a >=> uses b >=> uses c
+{-# INLINE uses3 #-}

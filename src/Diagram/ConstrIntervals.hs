@@ -235,17 +235,6 @@ join_ ciAs ciBs = runIdentity $ flip evalStateT (JoinState ciAs ciBs IM.empty) $
     err :: (Show k, Show v0, Show v1) => k -> v0 -> v1 -> a
     err = error . ("ConstrIntervals.join: collision: " ++) . show .:. (,,)
 
--- | Use the target of two lenses in the current state with a function
-uses2 :: MonadState s m => Lens' s a -> Lens' s b -> (a -> b -> c) -> m c
-uses2 a b = uses a >=> uses b
-{-# INLINE uses2 #-}
-
--- | Use the target of three lenses in the current state with a function
-uses3 :: MonadState s m =>
-  Lens' s a -> Lens' s b -> Lens' s c -> (a -> b -> c -> d) -> m d
-uses3 a b c = uses a >=> uses b >=> uses c
-{-# INLINE uses3 #-}
-
 deleteLookup :: Sym -> IntMap a -> (Maybe a, IntMap a)
 deleteLookup = IM.updateLookupWithKey (\_ _ -> Nothing)
 {-# INLINE deleteLookup #-}
