@@ -35,7 +35,7 @@ import Diagram.Information
 
 import Diagram.Joints (Joints)
 import qualified Diagram.UnionType as UT
-import qualified Diagram.JointType as JT
+import Diagram.JointType (JointType(JT))
 import Diagram.String
 import qualified Diagram.Doubly as D
 import Diagram.ConstrInterval( CI(..), -- headIndex,headSymbol,
@@ -79,25 +79,29 @@ data TypeState s = TS
   , _rightType :: !(MV.MVector s SymEntry) }
 
 member :: PrimMonad m => TypeState (PrimState m) -> Sym -> Sym -> m Bool
-member (TS _ uLeft _ uRight) s0 s1 =
-  liftA2 (&&) (_isMember <$> MV.read uLeft s0)
-              (_isMember <$> MV.read uRight s1)
+member (TS _ u0 _ u1) s0 s1 = liftA2 (&&) (_isMember <$> MV.read u0 s0)
+                                          (_isMember <$> MV.read u1 s1)
+
+-- | Give the (possibly empty) set of available mutations that would
+-- switch the membership of the given joint in the type
+mutsOf :: PrimMonad m =>
+          TypeState (PrimState m) -> Sym -> Sym -> m [Mutation]
+mutsOf (TS _ u0 _ u1) s0 s1 = mutsOf_ <$> sequence (s0, MV.read u0 s0)
+                                      <*> sequence (s1, MV.read u1 s1)
 
 -- | Give the (possibly empty) set of available Del mutations that would
 -- take the given joint out of the type (assumes it's in)
 delMutsOf :: PrimMonad m =>
              TypeState (PrimState m) -> Sym -> Sym -> m [Mutation]
-delMutsOf (TS _ uLeft _ uRight) s0 s1 =
-  delMutsOf_ <$> sequence (s0, MV.read uLeft s0)
-             <*> sequence (s1, MV.read uRight s1)
+delMutsOf (TS _ u0 _ u1) s0 s1 = delMutsOf_ <$> sequence (s0, MV.read u0 s0)
+                                            <*> sequence (s1, MV.read u1 s1)
 
 -- | Give the (possibly missing) mutation that would make the given
 -- joint member of the type (assumes it's not)
 addMutOf :: PrimMonad m =>
             TypeState (PrimState m) -> Sym -> Sym -> m (Maybe Mutation)
-addMutOf (TS _ uLeft _ uRight) s0 s1 =
-  addMutOf_ <$> sequence (s0, MV.read uLeft s0)
-            <*> sequence (s1, MV.read uRight s1)
+addMutOf (TS _ u0 _ u1) s0 s1 = addMutOf_ <$> sequence (s0, MV.read u0 s0)
+                                          <*> sequence (s1, MV.read u1 s1)
 
 -- SYM ENTRY (MEMBERSHIP, DEPS) --
 
@@ -116,10 +120,8 @@ emptyIn = SymEntry True IS.empty IS.empty IS.empty
 emptyOut :: SymEntry
 emptyOut = SymEntry False IS.empty IS.empty IS.empty
 
--- | Give the (possibly empty) set of available mutations that would
--- switch the membership of the given joint in the type
-mutsOf :: (Sym, SymEntry) -> (Sym, SymEntry) -> [Mutation]
-mutsOf se0@(_, SymEntry mem0 _ _ _) se1@(_, SymEntry mem1 _ _ _)
+mutsOf_ :: (Sym, SymEntry) -> (Sym, SymEntry) -> [Mutation]
+mutsOf_ se0@(_, SymEntry mem0 _ _ _) se1@(_, SymEntry mem1 _ _ _)
   | mem0, mem1 = delMutsOf_ se0 se1
   | Just mut <- addMutOf_ se0 se1 = [mut]
   | otherwise = []
@@ -144,9 +146,9 @@ makeLenses ''SymEntry
 
 -- | Given the number of symbols, a list of all joints and a joint type,
 -- return the SymEntries of the left and right unions of the type
-initTypeState :: PrimMonad m => Int -> [(Sym,Sym)] -> JT.JointType ->
-                 m (TypeState (PrimState m))
-initTypeState m allJoints (JT.JT u0 u1) = do
+initTypeState :: PrimMonad m =>
+  Int -> [(Sym,Sym)] -> JointType -> m (TypeState (PrimState m))
+initTypeState m allJoints (JT u0 u1) = do
   uLeft  <- MV.replicate m emptyOut -- uLeft
   uRight <- MV.replicate m emptyOut -- uRight
   forM_ s0s $ flip (MV.write uLeft ) emptyIn
@@ -291,10 +293,6 @@ evalLosses m bigN nm (TS sz0 _ sz1 _) (LBs als ars a2s dls drs d2s _) =
                  , swap . first DelRight  <$> IM.toList drs
                  , swap . first (uc Del2) <$>  M.toList d2s ]
 
--------------
--- GETTERS --
--------------
-
 -- | m
 numSymbols :: Monad m => EvolutionT m Int
 numSymbols = (typeState.leftType) `uses` MV.length
@@ -312,8 +310,8 @@ getVariety = uses2 (typeState.leftSize) (typeState.rightSize) (*)
 
 -- | Compute the difference in information/code length incurred by the
 -- introduction of the current joint type (i.e. no further mutation)
-getD1Info :: Monad m => EvolutionT m Double
-getD1Info = do
+getIntroInfo :: Monad m => EvolutionT m Double
+getIntroInfo = do
   m <- numSymbols
   bigN <- stringLen
   nm <- use (stringState.jointCount)
@@ -330,8 +328,8 @@ getD1Info = do
 
 initState :: forall m. PrimMonad m =>
   Int -> Int -> Doubly (PrimState m) -> U.Vector Int -> Joints CIs ->
-  (JT.JointType, Joints CIs) -> m (EvolutionState (PrimState m))
-initState m bigN dly ns jointCIs (jt@(JT.JT u0 u1), memJointCIs) = do
+  (JointType, Joints CIs) -> m (EvolutionState (PrimState m))
+initState m bigN dly ns jointCIs (jt@(JT u0 u1), memJointCIs) = do
   ---- string ----
   constrv <- MU.new bigN
   forM_ (IM.elems $ memCIs^.byHead) $ \(CI hd _ len _ _) -> do
@@ -340,11 +338,12 @@ initState m bigN dly ns jointCIs (jt@(JT.JT u0 u1), memJointCIs) = do
     forM_ (in2s iss) $ BV.flipBit constrv . fst . fst -- ((i0,s0),(i1,s1))
   --
   let str = StringState dly ns constrv dns nm
-  tst@(TS _ uLeft _ uRight) <- initTypeState m allJoints jt
+  tst <- initTypeState m allJoints jt
 
   ---- mutations ----
-  mutCIs <- joinByMut uLeft uRight CIs.join $ M.toList jointCIs
-  cCorrs <- d2CountCorrections str tst memCIs
+  mutCIs <- joinByMut tst CIs.join $ M.toList jointCIs
+  cCorrs <- M.unionsWith (IM.unionWith (+))
+            <$> mapM (d2CountCorr str tst) (CIs.toList memCIs)
   let mutEntries = M.mergeWithKey
                    (Just .:. mkCorrectedMutEntry) -- both CIs + corr
                    (M.mapWithKey mkMutEntry) -- only CIs
@@ -354,9 +353,7 @@ initState m bigN dly ns jointCIs (jt@(JT.JT u0 u1), memJointCIs) = do
       mutsByLoss = M.fromList $
                    (eval &&& fst) <$> M.toList mutEntries
 
-  return $
-    EvolutionState str tst mutEntries mutsByLoss
-
+  return $ EvolutionState str tst mutEntries mutsByLoss
   where
     allJoints = M.keys jointCIs
 
@@ -403,49 +400,54 @@ mkCorrectedMutEntry mut cis cor = case typeOfMut mut of
 
 -- | Combine values keyed by joints flipped (in/out) by the same
 -- mutation together, given a combining function
-joinByMut :: forall m a. PrimMonad m =>
-  MV.MVector (PrimState m) SymEntry -> MV.MVector (PrimState m) SymEntry ->
+joinByMut :: forall m a. PrimMonad m => TypeState (PrimState m) ->
   (a -> a -> a) -> [((Sym,Sym), a)] -> m (Map Mutation a)
-joinByMut u0 u1 f = fmap (M.fromListWith f . concat) . mapM g
+joinByMut tst f = fmap (M.fromListWith f . concat) . mapM g
   where
     g :: ((Sym,Sym), a) -> m [(Mutation, a)]
-    g ((s0,s1), a) = do
-      ffmap (,a) $ mutsOf <$> sequence (s0, MV.read u0 s0)
-                          <*> sequence (s1, MV.read u1 s1)
+    g ((s0,s1), a) = (,a) <<$>> mutsOf tst s0 s1
 
 -- | Given the string, a type, its constructive signal on the string
--- (bool vector), and the constructive intervals of a joint type, return
+-- (bool vector), and a constructive interval of the joint type, return
 -- the set of corrections on the symCounts of each CIs associated with a
 -- mutation (add or del) (all at once) required to be added in order for
 -- it to match the actual change in symbol counts produced by the
 -- mutation. Corrections are signed to be *added* to the CIs.symCounts
 -- before they are subtracted (add) or added (del) to the joint type's
 -- own CIs.symCounts.
-d2CountCorrections :: forall m. PrimMonad m => StringState (PrimState m) ->
-  TypeState (PrimState m) -> CIs -> m (Map Mutation (IntMap Int))
-d2CountCorrections str tst cis = fmap clean $
-  flip execStateT M.empty $ forM_ (IM.elems $ cis^.byHead) $ \ci -> do
-  d2CorrFromDels str tst ci -- decompose, treat all delMuts
-  -- grab the largest chain possible, if first in the chain
-  (lift (prevCI dly tst ci) >>=) $ flip whenJust $ \case
+d2CountCorr :: forall m. PrimMonad m => StringState (PrimState m) ->
+               TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
+d2CountCorr str tst ci = fmap clean $ do
+  -- <DEL> decompose, treat all delMuts
+  dns' <- d2CorrFromDels str tst ci
+  --
+
+  -- <ADD> grab the largest chain possible, if first in the chain
+  flip execStateT dns' $ (lift (prevCI dly tst ci) >>=) $ flip whenJust $ \case
     Nothing -> (lift (nextCIs dly tst ci) >>=) $ flip whenJust $
-               \(addMut, nexts) -> d2CorrFromAdd addMut (ci:|nexts)
+               \(addMut, nexts) -> modify_ addMut $ d2CorrFromAdd (ci:|nexts)
     Just (addMut, prv) -> (lift (nextCIs dly tst ci) >>=) $ \case
-      Nothing -> d2CorrFromAdd addMut (prv:|[ci])
+      Nothing -> modify_ addMut $ d2CorrFromAdd (prv:|[ci])
       Just (addMut', nexts)
-        | addMut == addMut' -> d2CorrFromAdd addMut (prv:|ci:nexts)
-        | otherwise -> d2CorrFromAdd addMut (prv:|[ci])
-                       >> d2CorrFromAdd addMut' (ci:|nexts)
+        | addMut == addMut' -> modify_ addMut $ d2CorrFromAdd (prv:|ci:nexts)
+        | otherwise -> modify_ addMut (d2CorrFromAdd (prv:|[ci]))
+                       >> modify_ addMut' (d2CorrFromAdd (ci:|nexts))
+  --
   where
     clean = M.filter IM.null . fmap (IM.filter (==0))
     dly = str^.doubly
 
+    modify_ :: Mutation -> IntMap Int -> StateT (Map Mutation (IntMap Int)) m ()
+    modify_ mut im = modify $ M.insertWith (IM.unionWith (+)) mut im
+
 -- | Given a non-empty list of overlapping (connecting) intervals
 -- after an add mutation (alternating [in-]add-in-add-etc.), add the
 -- appropriate corrections on delta delta (d2) symbol counts
-d2CorrFromAdd :: Monad m => Mutation -> NonEmpty CI ->
-                 StateT (Map Mutation (IntMap Int)) m ()
-d2CorrFromAdd addMut ils = modify $ M.insertWith (IM.unionWith (+)) addMut im'
+d2CorrFromAdd :: NonEmpty CI -> IntMap Int
+d2CorrFromAdd ils = case compare (even newLen) (CI.even last_) of
+  LT -> IM.insertWith (+) (last_^.tailSymbol) (-1) im
+  EQ -> im
+  GT -> IM.insertWith (+) (last_^.tailSymbol) 1 im
   where
     newLen = sum ((^.ciLength) <$> ils) -- constituents lengths
              - (length ils - 1) -- overlaps
@@ -455,18 +457,15 @@ d2CorrFromAdd addMut ils = modify $ M.insertWith (IM.unionWith (+)) addMut im'
          | otherwise = id
 
     last_ = NE.last ils
-    im' = case compare (even newLen) (CI.even last_) of
-      LT -> IM.insertWith (+) (last_^.tailSymbol) (-1) im
-      EQ -> im
-      GT -> IM.insertWith (+) (last_^.tailSymbol) 1 im
 
 -- | Given a constructive interval of the joint type (in), count all
 -- the differences in symbol counts between the symCounts of the CIs
 -- for all joints removed by the same del-mutation and and the real
 -- difference in symCounts from applying those mutations.
 d2CorrFromDels :: forall m. PrimMonad m => StringState (PrimState m) ->
-  TypeState (PrimState m) -> CI -> StateT (Map Mutation (IntMap Int)) m ()
-d2CorrFromDels str tst ci = mapM_ (uc $ flip go True) -- True == constr
+  TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
+d2CorrFromDels str tst ci = flip execStateT M.empty $
+                            mapM_ (uc $ flip go True) -- True == constr
                             . M.toList . M.fromListWith (++)
                             . reverse . ffmap (:[]) -- reverse to maintain order
                             =<< lift (decomposeIn (str^.doubly) tst ci)
@@ -557,13 +556,13 @@ prevCI str tst (CI tl stl _ _ _) = (D.prev str tl >>=) $ \case
 -- (out-) can't be added by a mutation.
 nextCIs :: forall m. PrimMonad m => Doubly (PrimState m) ->
            TypeState (PrimState m) -> CI -> m (Maybe (Mutation, [CI]))
-nextCIs str tst ci@(CI _ _ _ i00 s00) = (D.next str i00 >>=) $ \case
+nextCIs str tst ci@(CI _ _ _ i0 s0) = (D.next str i0 >>=) $ \case
   Nothing -> return Nothing -- hit end
   Just i1 -> do
     s1 <- D.read str i1
-    (addMutOf tst s00 s1 >>=) $ \case
+    (addMutOf tst s0 s1 >>=) $ \case
       Nothing -> return Nothing -- no add-mutation
-      Just addMut -> Just . (addMut,) <$> grabOut [ci] (CI s00 i00) 2 i1 s1
+      Just addMut -> Just . (addMut,) <$> grabOut [ci] (CI s0 i0) 2 i1 s1
         where
           grabOut :: [CI] -> (Len -> Index -> Sym -> CI) ->
                      Len -> Index -> Sym -> m [CI]
@@ -594,18 +593,6 @@ nextCIs str tst ci@(CI _ _ _ i00 s00) = (D.next str i00 >>=) $ \case
                   _else -> return $ reverse acc' -- end of intervals
             where
               acc' = mkCI len tl stl : acc
-
-d3CorrAdd :: forall m. PrimMonad m => Doubly (PrimState m) ->
-  MV.MVector (PrimState m) SymEntry -> MV.MVector (PrimState m) SymEntry ->
-  BV.MVector (PrimState m) Bit -> CIs -> Mutation -> CIs ->
-  m (Map Mutation (IntMap Int))
-d3CorrAdd str uLeft uRight constrv cis mut dcis = undefined -- TODO
-
-d3CorrDel :: forall m. PrimMonad m => Doubly (PrimState m) ->
-  MV.MVector (PrimState m) SymEntry -> MV.MVector (PrimState m) SymEntry ->
-  BV.MVector (PrimState m) Bit -> CIs -> Mutation -> CIs ->
-  m (Map Mutation (IntMap Int))
-d3CorrDel str uLeft uRight constrv cis mut dcis = undefined -- TODO
 
 ----------
 -- MATH --
