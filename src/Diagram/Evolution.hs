@@ -16,7 +16,6 @@ import qualified Data.List.NonEmpty as NE
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Set (Set)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
 import Data.IntSet (IntSet)
@@ -68,9 +67,9 @@ typeOfMut (DelLeft _)  = Del
 typeOfMut (DelRight _) = Del
 typeOfMut (Del2 _ _)   = Del
 
-----------------
--- JOINT TYPE --
-----------------
+--------------------------------
+-- JOINT TYPE (O(1), mutable) --
+--------------------------------
 
 data TypeState s = TS
   { _leftSize  :: !Int
@@ -185,15 +184,15 @@ initTypeState m allJoints (JT u0 u1) = do
     sz0 = UT.size u0
     sz1 = UT.size u1
 
-------------------------
--- CONSTRUCTION STATE --
-------------------------
+-------------------------------
+-- STRING CONSTRUCTION STATE --
+-------------------------------
 
 data StringState s = StringState
-  { _doubly :: !(Doubly s) -- underlying string :: [N]Sym (readonly)
-  , _symCounts :: !(U.Vector Count) -- symbol counts (readonly) TODO: dyn?
+  { _strDoubly :: !(Doubly s) -- underlying string :: [N]Sym (readonly)
+  , _strSymCounts :: !(U.Vector Count) -- symbol counts (readonly) TODO: dyn?
   , _constructed :: !(BV.MVector s Bit) -- :: [N]Bool, only s0s toggled
-  , _symDeltas :: !(IntMap Int) -- delta symbol count :: u0 U u1 -> dn
+  , _strSymDeltas :: !(IntMap Int) -- delta symbol count :: u0 U u1 -> dn
   , _jointCount :: !Count } -- joint count, popCount of constructed
 
 ---------------------
@@ -218,65 +217,83 @@ type EvolutionT m = StateT (EvolutionState (PrimState m)) m
 data EvolutionState s = EvolutionState
   { _stringState :: !(StringState s)
   , _typeState :: !(TypeState s)
-  , _entries :: !(Map Mutation MutEntry) -- mut -> ddns
-  , _byLoss :: !(Map Double Mutation) } -- ddi -> mut
+  , _mutIndex :: !MutIndex }
 
 -- MUT ENTRY (COUNTS, SITES) --
 
 data MutEntry = MutEntry
-  { _meD2nm  :: !Int -- delta joint count (d2nm)
-  , _meD2ns :: !(IntMap Int) -- delta delta string symbol counts (d2ns)
-  , _meCIs :: !CIs } -- constr. sites
+  { _eMutation :: !Mutation
+  , _eDnsLoss :: !Double
+  , _eDns :: !(IntMap Int)
+  , _eDnm :: !Int
+  , _eCIs :: !CIs }
   deriving (Show,Eq)
 
+data MutIndex = MIx
+  -- mutType -----> dnm -------> dnsLoss -> mut ---> entry
+  { _ixAddLeft  :: !(IntMap (Map Double (Map Mutation MutEntry)))
+  , _ixAddRight :: !(IntMap (Map Double (Map Mutation MutEntry)))
+  , _ixAdd2     :: !(IntMap (Map Double (Map Mutation MutEntry)))
+  , _ixDelLeft  :: !(IntMap (Map Double (Map Mutation MutEntry)))
+  , _ixDelRight :: !(IntMap (Map Double (Map Mutation MutEntry)))
+  , _ixDel2     :: !(IntMap (Map Double (Map Mutation MutEntry))) }
+
 makeLenses ''MutEntry
+makeLenses ''MutIndex
 makeLenses ''TypeState
 makeLenses ''StringState
 makeLenses ''EvolutionState
 
--- LOSS ENTRY (COUNTS) --
+mkMutIndex :: [MutEntry] -> MutIndex
+mkMutIndex mes =
+  runIdentity $ flip execStateT mix0 $ forM_ mes $
+  \e -> ( case e^.eMutation of AddLeft _  -> ixAddLeft
+                               AddRight _ -> ixAddRight
+                               Add2 _ _   -> ixAdd2
+                               DelLeft _  -> ixDelLeft
+                               DelRight _ -> ixDelRight
+                               Del2 _ _   -> ixDel2 ) %= insert e
+  where
+    mix0 = MIx IM.empty IM.empty IM.empty IM.empty IM.empty IM.empty
+    insert e = IM.insertWith (M.unionWith (M.unionWith err')) (e^.eDnm) $
+                 M.singleton (e^.eDnsLoss) (M.singleton (e^.eMutation) e)
+    err' = err . ("mkMutIndex: collision: " ++) . show .: (,)
 
-data LossBooks s = LBs
-  { _addLeft  :: !(IntMap        LossEntry)
-  , _addRight :: !(IntMap        LossEntry)
-  , _add2     :: !(Map (Sym,Sym) LossEntry)
-  , _delLeft  :: !(IntMap        LossEntry)
-  , _delRight :: !(IntMap        LossEntry)
-  , _del2     :: !(Map (Sym,Sym) LossEntry)
-  , _affected :: !(MV.MVector s (Set Mutation)) }
-  -- -- IF WE EVER WANT TO SCAN IN REVERSE ORDER OF D2NM, WE CAN BY:
-  -- { _addLeft  :: !(IntMap  (Sym      :!: LossEntry))
-  -- , _addRight :: !(IntMap  (Sym      :!: LossEntry))
-  -- , _add2     :: !(IntMap ((Sym,Sym) :!: LossEntry))
-  -- , _delLeft  :: !(IntMap  (Sym      :!: LossEntry))
-  -- , _delRight :: !(IntMap  (Sym      :!: LossEntry))
-  -- , _del2     :: !(IntMap ((Sym,Sym) :!: LossEntry))
-  -- , _affected :: !(MV.MVector s (Map Mutation Double)) }
-  -- --
-
-data LossEntry = LossEntry
-  { _symbolD2IntervalsLoss :: !Double -- ils loss
-  , _symbolD2Intervals :: !(IntMap (Count, Count)) -- ils :: s -> (before, after)
-  , _jointCountDelta :: !Int } -- dnm
-
-entryLoss :: Int -> Int -> Int -> Int -> LossEntry -> Double
-entryLoss m bigN nm vm' (LossEntry sLossB _ dnm) = nLoss + sLoss + rLoss
+-- | Compute the part of the loss function (delta delta (d2)
+-- information, minus the terms independent of mutation) that is
+-- dependent on the difference in joint counts incurred by the mutation
+dnmLossFn :: Int -> Int -> Int -> Int -> Int -> Double
+dnmLossFn m bigN nm vm' dnm = nLoss + sLossA + rLoss
   where
     nm' = nm + dnm
     nLoss = logFact (m + bigN - nm')
-    sLoss = sLossA + sLossB
-    sLossA = logFact nm'
+    sLossA = -logFact nm'
     rLoss = fromIntegral nm' * ilog vm'
+
+-- | Compute the part of the loss function (delta delta information,
+-- minus the terms independent of mutation) that is dependent on the
+-- difference in symbol counts (before, after) incurred by the mutation
+dnsLossFn :: [(Count,Count)] -> Double
+dnsLossFn = sum . fmap (uncurry (-) . both logFact)
+
+-- | Update the dnsLoss with new symbol counts differences (before,
+-- after). NOTE: this accumulates float error.
+ddnsLossFn :: Double -> [(Count,Count)] -> Double
+ddnsLossFn loss ils = loss + sum (uncurry (-) . both logFact <$> ils)
+
+entryLoss :: Int -> Int -> Int -> Int -> MutEntry -> Double
+entryLoss m bigN nm vm' (MutEntry _ dnsLoss _ dnm _) = dnsLoss + dnmLoss
+  where dnmLoss = dnmLossFn m bigN nm vm' dnm
 
 -- | Enumerate all available mutations with their loss. Unsorted.
 evalLosses :: Int -> Int -> Int -> TypeState s ->
-              LossBooks s -> [(Double, Mutation)]
-evalLosses m bigN nm (TS sz0 _ sz1 _) (LBs als ars a2s dls drs d2s _) =
-  concat $ zipWith (fmap . first) lossFns mutEntries
+              MutIndex -> [(Double, MutEntry)]
+evalLosses m bigN nm (TS sz0 _ sz1 _) (MIx als ars a2s dls drs d2s) =
+  concat $ zipWith (fmap . toFst) lossFns mutEntries
   where
     vm = sz0 * sz1
 
-    lossFns :: [LossEntry -> Double]
+    lossFns :: [MutEntry -> Double]
     lossFns = entryLoss m bigN nm <$> vm's
     vm's = [ vm + sz1 -- addLeft
            , vm + sz0 -- addRight
@@ -285,13 +302,13 @@ evalLosses m bigN nm (TS sz0 _ sz1 _) (LBs als ars a2s dls drs d2s _) =
            , vm - sz0 -- delRight
            , vm - sz0 - sz1 ] :: [Int] -- del2
 
-    mutEntries :: [[(LossEntry, Mutation)]]
-    mutEntries = [ swap . first AddLeft   <$> IM.toList als
-                 , swap . first AddRight  <$> IM.toList ars
-                 , swap . first (uc Add2) <$>  M.toList a2s
-                 , swap . first DelLeft   <$> IM.toList dls
-                 , swap . first DelRight  <$> IM.toList drs
-                 , swap . first (uc Del2) <$>  M.toList d2s ]
+    mutEntries :: [[MutEntry]]
+    mutEntries = [ concatMap (concatMap M.elems . M.elems) $ IM.elems als
+                 , concatMap (concatMap M.elems . M.elems) $ IM.elems ars
+                 , concatMap (concatMap M.elems . M.elems) $ IM.elems a2s
+                 , concatMap (concatMap M.elems . M.elems) $ IM.elems dls
+                 , concatMap (concatMap M.elems . M.elems) $ IM.elems drs
+                 , concatMap (concatMap M.elems . M.elems) $ IM.elems d2s ]
 
 -- | m
 numSymbols :: Monad m => EvolutionT m Int
@@ -300,10 +317,6 @@ numSymbols = (typeState.leftType) `uses` MV.length
 -- | N, bigN
 stringLen :: Monad m => EvolutionT m Int
 stringLen = (stringState.constructed) `uses` MU.length
-
--- | Retrieve the mutation with the minimal loss.
-getMin :: Monad m => EvolutionT m (Double, Mutation)
-getMin = uses byLoss M.findMin
 
 getVariety :: Monad m => EvolutionT m Int
 getVariety = uses2 (typeState.leftSize) (typeState.rightSize) (*)
@@ -316,8 +329,8 @@ getIntroInfo = do
   bigN <- stringLen
   nm <- use (stringState.jointCount)
 
-  ns <- use (stringState.symCounts)
-  ils <- uses (stringState.symDeltas) $
+  ns <- use (stringState.strSymCounts)
+  ils <- uses (stringState.strSymDeltas) $
          IM.elems . IM.mapWithKey (\s dn -> toSnd (+dn) (ns U.! s))
 
   d1Info m bigN nm ils <$> getVariety
@@ -329,7 +342,7 @@ getIntroInfo = do
 initState :: forall m. PrimMonad m =>
   Int -> Int -> Doubly (PrimState m) -> U.Vector Int -> Joints CIs ->
   (JointType, Joints CIs) -> m (EvolutionState (PrimState m))
-initState m bigN dly ns jointCIs (jt@(JT u0 u1), memJointCIs) = do
+initState m bigN dly ns jointCIs (jt, memJointCIs) = do
   ---- string ----
   constrv <- MU.new bigN
   forM_ (IM.elems $ memCIs^.byHead) $ \(CI hd _ len _ _) -> do
@@ -341,45 +354,26 @@ initState m bigN dly ns jointCIs (jt@(JT u0 u1), memJointCIs) = do
   tst <- initTypeState m allJoints jt
 
   ---- mutations ----
-  mutCIs <- joinByMut tst CIs.join $ M.toList jointCIs
-  cCorrs <- M.unionsWith (IM.unionWith (+))
-            <$> mapM (d2CountCorr str tst) (CIs.toList memCIs)
-  let mutEntries = M.mergeWithKey
-                   (Just .:. mkCorrectedMutEntry) -- both CIs + corr
-                   (M.mapWithKey mkMutEntry) -- only CIs
-                   (error . ("CIs missing: " ++) . show) -- only corr
-                   mutCIs cCorrs
+  cisByMut <- joinByMut tst CIs.join $ M.toList jointCIs
+  corrsByMut <- M.unionsWith (IM.unionWith (+))
+                <$> mapM (d2CountCorr str tst) (CIs.toList memCIs)
 
-      mutsByLoss = M.fromList $
-                   (eval &&& fst) <$> M.toList mutEntries
+  return $ EvolutionState str tst $ mkMutIndex $ M.elems $
+    M.mergeWithKey (Just .:. mkCorrMutEntry nOf) -- both CIs + corr
+    (M.mapWithKey $ mkMutEntry nOf) -- only CIs
+    (error . ("CIs missing: " ++) . show) -- only corr
+    cisByMut corrsByMut
 
-  return $ EvolutionState str tst mutEntries mutsByLoss
   where
     allJoints = M.keys jointCIs
+    nOf s = maybe n (+n) $ IM.lookup s dns
+      where n = ns U.! s
 
     memCIs = foldr1 CIs.join memJointCIs
-    nd1ns = memCIs^.CIs.symCounts -- negative delta symbol counts
+    ndns = memCIs^.CIs.symCounts -- negative delta symbol counts
 
-    nm = sum nd1ns `div` 2 -- nm := d1nm because d0nm == 0
-    dns = negate <$> nd1ns -- delta symbol counts (intro's)
-
-    eval (mut, MutEntry d2nm d2ns _) = d2Loss m bigN ils' nm' vm'
-      where
-        nm' = nm + d2nm
-        ils' = IM.elems $ flip2 IM.intersectionWithKey dns d2ns $
-          \s dn ddn -> toSnd (+ddn) ((ns U.! s) + dn) -- (ni',ni'')
-
-        vm' = (vm +) $ case mut of
-          AddLeft _  ->  sz1
-          AddRight _ ->  sz0
-          Add2 _ _   ->  sz0 + sz1
-          DelLeft _  -> -sz1
-          DelRight _ -> -sz0
-          Del2 _ _   -> -sz0 - sz1
-
-    sz0 = UT.size u0
-    sz1 = UT.size u1
-    vm = sz0 * sz1
+    nm = sum ndns `div` 2 -- nm := d1nm because d0nm == 0
+    dns = negate <$> ndns -- delta symbol counts (intro's)
 
     in2s :: [a] -> [(a,a)]
     in2s (a:b:rest) = (a,b):in2s rest
@@ -387,16 +381,18 @@ initState m bigN dly ns jointCIs (jt@(JT u0 u1), memJointCIs) = do
 
 -- WHERE --
 
-mkMutEntry :: Mutation -> CIs -> MutEntry
-mkMutEntry mut cis = mkCorrectedMutEntry mut cis IM.empty
+mkMutEntry :: (Sym -> Count) -> Mutation -> CIs -> MutEntry
+mkMutEntry nOf mut cis = mkCorrMutEntry nOf mut cis IM.empty
 
-mkCorrectedMutEntry :: Mutation -> CIs -> IntMap Int -> MutEntry
-mkCorrectedMutEntry mut cis cor = case typeOfMut mut of
-  Add -> MutEntry n (negate <$> ns) cis -- from sym counts to joint count
-  Del -> MutEntry (-n) ns cis           -- from joint count to sym count
+mkCorrMutEntry :: (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> MutEntry
+mkCorrMutEntry nOf mut cis cor = MutEntry mut (dnsLossFn ils) dns dnm cis
   where
-    ns = IM.unionWith (+) (cis^.CIs.symCounts) cor
-    n = sum ns `div` 2
+    ils = (<$> IM.toList dns) $ \(s,dn) -> toSnd (+dn) $ nOf s
+    dnm = -(sum dns `div` 2)
+    ns = cis^.CIs.symCounts
+    dns | Add <- typeOfMut mut = (negate <$> ns) `union` cor
+        | otherwise = ns `union` cor
+    union = IM.mergeWithKey (const $ nothingIf (==0) .: (+)) id id
 
 -- | Combine values keyed by joints flipped (in/out) by the same
 -- mutation together, given a combining function
@@ -435,13 +431,13 @@ d2CountCorr str tst ci = fmap clean $ do
   --
   where
     clean = M.filter IM.null . fmap (IM.filter (==0))
-    dly = str^.doubly
+    dly = str^.strDoubly
 
     modify_ :: Mutation -> IntMap Int -> StateT (Map Mutation (IntMap Int)) m ()
     modify_ mut im = modify $ M.insertWith (IM.unionWith (+)) mut im
 
--- | Given a non-empty list of overlapping (connecting) intervals
--- after an add mutation (alternating [in-]add-in-add-etc.), add the
+-- | Given a non-empty list of overlapping (connecting) intervals after
+-- an add mutation (alternating [in-]add-in-add-etc.), return the
 -- appropriate corrections on delta delta (d2) symbol counts
 d2CorrFromAdd :: NonEmpty CI -> IntMap Int
 d2CorrFromAdd ils = case compare (even newLen) (CI.even last_) of
@@ -468,7 +464,7 @@ d2CorrFromDels str tst ci = flip execStateT M.empty $
                             mapM_ (uc $ flip go True) -- True == constr
                             . M.toList . M.fromListWith (++)
                             . reverse . ffmap (:[]) -- reverse to maintain order
-                            =<< lift (decomposeIn (str^.doubly) tst ci)
+                            =<< lift (decomposeIn (str^.strDoubly) tst ci)
   where
     go :: Mutation -> Bool -> [CI] -> StateT (Map Mutation (IntMap Int)) m ()
     go delMut = go_ where
