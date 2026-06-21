@@ -72,6 +72,10 @@ executable diagram
                       Diagram.JointType
                       Diagram.UnionType
                       Diagram.Evolution
+                      Diagram.Evolution.Math
+                      Diagram.Evolution.Mutation
+                      Diagram.Evolution.TypeState
+                      Diagram.Evolution.StringState
                       Diagram.Refinement
                       Diagram.Information
                       Diagram.ConstrInterval
