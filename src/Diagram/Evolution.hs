@@ -78,9 +78,9 @@ evalEntry :: Int -> Int -> Int -> Int -> Entry -> Double
 evalEntry m bigN nm vm' (E _ dnsLoss _ dnm _) = dnsLoss + dnmLoss
   where dnmLoss = Math.dnmLoss m bigN nm vm' dnm
 
---------------------
--- MUTATION BOOKS --
---------------------
+-----------
+-- BOOKS --
+-----------
 
 data Books = Books
   -- mutType ------> dnm ------> dnsLoss --> mut ---> entry
@@ -112,6 +112,10 @@ mkBooks es = runIdentity $ flip execStateT emptyBooks $
 err :: String -> a
 err = error . ("Evolution." ++)
 
+----------------------
+-- EVOLUTION STATE  --
+----------------------
+
 type EvolutionT m = StateT (EvolutionState (PrimState m)) m
 -- | Evolution state of a JointType in a given string
 data EvolutionState s = EvolutionState
@@ -120,32 +124,7 @@ data EvolutionState s = EvolutionState
   , _mutBooks :: !Books }
 makeLenses ''EvolutionState
 
--- | Enumerate all available mutations with their loss. Unsorted.
-evalAll :: Monad m => EvolutionT m [(Double, Entry)]
-evalAll = evalAll_ <$> numSymbols -- m
-                   <*> stringLen -- N
-                   <*> use (stringState.STR.jointCount) -- nm
-                   <*> use typeState -- TypeState
-                   <*> use mutBooks -- Books
-
-evalAll_ :: Int -> Int -> Int -> TypeState s -> Books -> [(Double, Entry)]
-evalAll_ m bigN nm (TS sz0 _ sz1 _) (Books als ars a2s dls drs d2s) =
-  concat $ zipWith (fmap . toFst) lossFns entries
-  where
-    vm = sz0 * sz1
-    lossFns :: [Entry -> Double]
-    lossFns = evalEntry m bigN nm <$> vm's
-    vm's = [ vm + sz1 -- addLeft
-           , vm + sz0 -- addRight
-           , vm + sz0 + sz1 -- add2
-           , vm - sz1 -- delLeft
-           , vm - sz0 -- delRight
-           , vm - sz0 - sz1 ] :: [Int] -- del2
-
-    entries :: [[Entry]]
-    entries = flatten <$> [ als, ars, a2s, dls, drs, d2s ]
-    flatten = concatMap (concatMap M.elems . M.elems)
-              . IM.elems
+-- GETTERS --
 
 -- | m
 numSymbols :: Monad m => EvolutionT m Int
@@ -181,6 +160,35 @@ getIntroInfo = Math.dInfo <$> numSymbols -- m
                           <*> variety -- vm
   where d2ils = (<$> symCounts) $
           \ns -> IM.elems . IM.mapWithKey (\s dn -> toSnd (+dn) (ns U.! s))
+
+-- EVAL --
+
+-- | Enumerate all available mutations with their loss. Unsorted.
+evalAll :: Monad m => EvolutionT m [(Double, Entry)]
+evalAll = evalAll_ <$> numSymbols -- m
+                   <*> stringLen -- N
+                   <*> use (stringState.STR.jointCount) -- nm
+                   <*> use typeState -- TypeState
+                   <*> use mutBooks -- Books
+
+evalAll_ :: Int -> Int -> Int -> TypeState s -> Books -> [(Double, Entry)]
+evalAll_ m bigN nm (TS sz0 _ sz1 _) (Books als ars a2s dls drs d2s) =
+  concat $ zipWith (fmap . toFst) lossFns entries
+  where
+    vm = sz0 * sz1
+    lossFns :: [Entry -> Double]
+    lossFns = evalEntry m bigN nm <$> vm's
+    vm's = [ vm + sz1 -- addLeft
+           , vm + sz0 -- addRight
+           , vm + sz0 + sz1 -- add2
+           , vm - sz1 -- delLeft
+           , vm - sz0 -- delRight
+           , vm - sz0 - sz1 ] :: [Int] -- del2
+
+    entries :: [[Entry]]
+    entries = flatten <$> [ als, ars, a2s, dls, drs, d2s ]
+    flatten = concatMap (concatMap M.elems . M.elems)
+              . IM.elems
 
 ----------
 -- INIT --

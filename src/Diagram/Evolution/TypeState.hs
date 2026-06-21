@@ -5,6 +5,7 @@
 module Diagram.Evolution.TypeState (module Diagram.Evolution.TypeState) where
 
 import Control.Monad
+import Control.Monad.Extra
 import Control.Lens hiding (both,last1,Index,(:>))
 import Control.Monad.State.Strict
 
@@ -85,6 +86,30 @@ numSymbols = leftType `uses` MV.length
 variety :: Monad m => TypeT m Int
 variety = uses2 leftSize rightSize (*)
 
+-- READ/WRITE
+
+readLeft :: PrimMonad m => Sym -> TypeT m SymEntry
+readLeft s = use leftType >>= lift . flip MV.read s
+
+readRight :: PrimMonad m => Sym -> TypeT m SymEntry
+readRight s = use rightType >>= lift . flip MV.read s
+
+writeLeft :: PrimMonad m => Sym -> SymEntry -> TypeT m ()
+writeLeft s e = use leftType >>= lift . flip2 MV.write s e
+
+writeRight :: PrimMonad m => Sym -> SymEntry -> TypeT m ()
+writeRight s e = use rightType >>= lift . flip2 MV.write s e
+
+modifyLeft :: PrimMonad m => (SymEntry -> SymEntry) ->
+              Sym -> TypeT m ()
+modifyLeft f s = use leftType >>= lift . flip2 MV.modify f s
+
+modifyRight :: PrimMonad m => (SymEntry -> SymEntry) ->
+               Sym -> TypeT m ()
+modifyRight f s = use rightType >>= lift . flip2 MV.modify f s
+
+-- PREDICATES
+
 member :: PrimMonad m => TypeState (PrimState m) -> Sym -> Sym -> m Bool
 member (TS _ u0 _ u1) s0 s1 = liftA2 (&&) (_isMember <$> MV.read u0 s0)
                                           (_isMember <$> MV.read u1 s1)
@@ -105,9 +130,14 @@ delMutsOf (TS _ u0 _ u1) s0 s1 = delMutsOf_ <$> sequence (s0, MV.read u0 s0)
 
 -- | Give the (possibly missing) mutation that would make the given
 -- joint member of the type (assumes it's not)
-addMutOf :: PrimMonad m => TypeState (PrimState m) -> Sym -> Sym -> m (Maybe Mutation)
+addMutOf :: PrimMonad m =>
+            TypeState (PrimState m) -> Sym -> Sym -> m (Maybe Mutation)
 addMutOf (TS _ u0 _ u1) s0 s1 = addMutOf_ <$> sequence (s0, MV.read u0 s0)
                                           <*> sequence (s1, MV.read u1 s1)
+
+----------
+-- INIT --
+----------
 
 -- | Given the number of symbols, a list of all joints and a joint type,
 -- return the SymEntries of the left and right unions of the type
@@ -149,6 +179,105 @@ init m allJoints (JT u0 u1) = do
     s1s = UT.toList u1 -- right member symbols
     sz0 = UT.size u0
     sz1 = UT.size u1
+
+------------
+-- UPDATE --
+------------
+
+data SymEntry_ = SymEntry_
+  { __isMember :: !Bool -- ^ True iff self is member of the union type
+  , __coSymsIn :: !IntSet -- ^ Symbols that have a joint with
+                         -- self and member of the co-union
+  , __dependents :: !IntSet -- ^ CoSymsIn that have self as only coSymsIn
+  , __coSymsOut :: !IntSet } -- ^ Symbols that have a joint with self and
+                            -- *not* member of the co-union
+  deriving (Show,Eq,Ord)
+
+
+pushMut :: PrimMonad m => Mutation -> TypeT m ()
+pushMut = \case AddLeft s0 -> addLeft s0
+                AddRight s1 -> addRight s1
+                Add2 s0 s1 -> addLeft s0 >> addRight s1
+                DelLeft s0 -> delLeft s0
+                DelRight s1 -> delRight s1
+                Del2 s0 s1 -> delLeft s0 >> delRight s1
+  where
+    addLeft s0 = do
+      leftSize += 1
+      e0@(SymEntry mem coIn deps coOut) <- readLeft s0
+      when mem $ err' $ "addLeft: symbol already member: " ++ show s0
+      unless (IS.null deps) $
+        err' $ "addLeft: out-sym shouldn't have deps: " ++ show (s0,deps)
+      forM_ (IS.toList coIn ++ IS.toList coOut) $
+        modifyRight $ \e1 -> e1 & coSymsIn  %~ IS.insert s0
+                                & coSymsOut %~ IS.delete s0
+      writeLeft s0 $ e0 & isMember .~ True
+
+    addRight s1 = do
+      rightSize += 1
+      e1@(SymEntry mem coIn deps coOut) <- readRight s1
+      when mem $ err' $ "addRight: symbol already member: " ++ show s1
+      unless (IS.null deps) $
+        err' $ "addRight: out-sym shouldn't have deps: " ++ show (s1,deps)
+      forM_ (IS.toList coIn ++ IS.toList coOut) $
+        modifyLeft $ \e0 -> e0 & coSymsIn  %~ IS.insert s1
+                               & coSymsOut %~ IS.delete s1
+      writeRight s1 $ e1 & isMember .~ True
+
+    delLeft s0 = do
+      leftSize -= 1
+      e0@(SymEntry mem coIn deps coOut) <- readLeft s0
+      unless mem $ err' $ "delLeft: symbol not member: " ++ show s0
+      unless (IS.null deps) $
+        err' $ "delLeft: can't del sym with deps: " ++ show (s0,deps)
+
+      forM_ (IS.toList coIn) $ \s1 -> do
+        e1 <- readRight s1
+        let e1' = e1 & coSymsIn  %~ IS.delete s0
+                     & coSymsOut %~ IS.insert s0
+        whenJust (trySingleton $ e1'^.coSymsIn) $ modifyLeft $
+          dependents %~ IS.insert s1 -- mark s1 as dependent to _
+        writeRight s1 e1'
+
+      forM_ (IS.toList coOut) $
+        modifyRight $ \e1 -> e1 & coSymsIn  %~ IS.delete s0
+                                & coSymsOut %~ IS.insert s0
+
+      writeLeft s0 $ e0 & isMember .~ False
+
+    delRight s1 = do
+      rightSize -= 1
+      e1@(SymEntry mem coIn deps coOut) <- readRight s1
+      unless mem $ err' $ "delRight: symbol not member: " ++ show s1
+      unless (IS.null deps) $
+        err' $ "delRight: can't del sym with deps: " ++ show (s1,deps)
+
+      forM_ (IS.toList coIn) $ \s0 -> do
+        e0 <- readLeft s0
+        let e0' = e0 & coSymsIn  %~ IS.delete s1
+                     & coSymsOut %~ IS.insert s1
+        whenJust (trySingleton $ e0'^.coSymsIn) $ modifyRight $
+          dependents %~ IS.insert s0 -- mark s0 as dependent to _
+        writeLeft s0 e0'
+
+      forM_ (IS.toList coOut) $
+        modifyLeft $ \e0 -> e0 & coSymsIn  %~ IS.delete s1
+                               & coSymsOut %~ IS.insert s1
+
+      writeLeft s1 $ e1 & isMember .~ False
+
+    err' = err . ("pushMut: " ++)
+
+    trySingleton :: IntSet -> Maybe Sym
+    trySingleton is | [s] <- IS.toList is = Just s
+                    | otherwise = Nothing
+
+err :: String -> a
+err = error . ("TypeState." ++)
+
+--------------------------
+-- STRING/CI OPERATIONS --
+--------------------------
 
 -- | Break a constructive interval of the joint type (in) into an
 -- ordered (by tail) list of its segments by mutation.
