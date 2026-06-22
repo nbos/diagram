@@ -302,13 +302,13 @@ decomposeIn str tst ci@(CI hd shd len tl _)
 -- | Return the out-interval (and the add-mutation that would switch its
 -- membership) immediately preceding the given in-interval but only if
 -- the out-interval is not itself preceded by another
--- in-interval. Returns `Nothing` if the preceding interval is
+-- in-interval. Returns `Nothing` if the preceding interval is so
 -- sandwitched, `Just Nothing` if there is either no preceding joint
--- (begining of the string) or if it not add-able, and `Just Just`
--- otherwise.
-prevCI :: forall m. PrimMonad m => Doubly (PrimState m) ->
+-- (begining of the string) or if it not add-able, and `Just Just` if
+-- there is such a mutation-interval pair.
+prevMutCI :: forall m. PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m (Maybe (Maybe (Mutation, CI)))
-prevCI str tst (CI tl stl _ _ _) = (D.prev str tl >>=) $ \case
+prevMutCI str tst (CI tl stl _ _ _) = (D.prev str tl >>=) $ \case
   Nothing -> return $ Just Nothing -- no prev symbol/interval
   Just ptl -> do
     sptl <- D.read str ptl
@@ -328,14 +328,16 @@ prevCI str tst (CI tl stl _ _ _) = (D.prev str tl >>=) $ \case
             where
               ci = CI hd shd len tl stl
 
--- | Return the sequence of out- in- out- in-, etc. intervals
--- immediately following the given CI, each following the last, as long
--- as the out intervals are of the same add-mutation. Returns Nothing if
--- there are no joints after the given interval or if the next joint
--- (out-) can't be added by a mutation.
-nextCIs :: forall m. PrimMonad m => Doubly (PrimState m) ->
-           TypeState (PrimState m) -> CI -> m (Maybe (Mutation, [CI]))
-nextCIs str tst ci@(CI _ _ _ i0 s0) = (D.next str i0 >>=) $ \case
+-- | Given the string, joint type and a constructive interval of the
+-- joint type (a.k.a. in-interval), return the longest immediately
+-- following sequence of alternating out-, int-, out-, etc. intervals
+-- where all the out-intervals would get their membership flipped
+-- (i.e. included) by the same add-mutation, which is also
+-- returned. Return Nothing if end of string or if the following joint
+-- does not have an add-mutation.
+nextMutCIs :: forall m. PrimMonad m => Doubly (PrimState m) ->
+              TypeState (PrimState m) -> CI -> m (Maybe (Mutation, [CI]))
+nextMutCIs str tst ci@(CI _ _ _ i0 s0) = (D.next str i0 >>=) $ \case
   Nothing -> return Nothing -- hit end
   Just i1 -> do
     s1 <- D.read str i1

@@ -17,22 +17,19 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
+import qualified Data.IntSet as IS
 
-import qualified Data.Bit as BV
-import qualified Data.Vector.Unboxed.Mutable as MU
 import qualified Data.Vector.Unboxed as U
 
-import qualified Streaming.Prelude as S
 
 import Diagram.Primitive
 
 import Diagram.Joints (Joints)
 import Diagram.JointType (JointType)
 import Diagram.String
-import qualified Diagram.Doubly as D
 import Diagram.ConstrInterval(CI(..), ciLength, tailSymbol, tailIndex)
 import qualified Diagram.ConstrInterval as CI
-import Diagram.ConstrIntervals (CIs(..), byHead)
+import Diagram.ConstrIntervals (CIs(..))
 import qualified Diagram.ConstrIntervals as CIs
 
 import qualified Diagram.Evolution.Math as Math
@@ -132,7 +129,7 @@ numSymbols = zoom typeState TS.numSymbols
 
 -- | N, bigN
 stringLen :: Monad m => EvolutionT m Int
-stringLen = zoom stringState STR.stringLen
+stringLen = use $ stringState.STR.stringLen
 
 -- | vm = sz0 * sz1
 variety :: Monad m => EvolutionT m Int
@@ -198,20 +195,13 @@ init :: forall m. PrimMonad m =>
   Int -> Int -> Doubly (PrimState m) -> U.Vector Int -> Joints CIs ->
   (JointType, Joints CIs) -> m (EvolutionState (PrimState m))
 init m bigN dly ns jointCIs (jt, memJointCIs) = do
-  ---- string ---- (move to StringState module?)
-  constrv <- MU.new bigN
-  forM_ (IM.elems $ memCIs^.byHead) $ \(CI hd _ len _ _) -> do
-    let constrlen = (len `div` 2) * 2
-    iss <- S.toList_ $ S.take constrlen $ D.streamWithKeyFrom dly hd
-    forM_ (in2s iss) $ BV.flipBit constrv . fst . fst -- ((i0,s0),(i1,s1))
-  --
-  let str = STR dly ns constrv dns nm
+  let str = STR bigN dly ns dns nm
   tst <- TS.init m allJoints jt
 
   ---- mutations ----
   cisByMut <- joinByMut tst CIs.join $ M.toList jointCIs
   corrsByMut <- M.unionsWith (IM.unionWith (+))
-                <$> mapM (corrections str tst) (CIs.toList memCIs)
+                <$> mapM (corrections dly tst) (CIs.toList memCIs)
 
   return $ EvolutionState str tst $ mkBooks $ M.elems $
     M.mergeWithKey (Just .:. mkEntryWith nOf) -- both CIs + corr
@@ -229,10 +219,6 @@ init m bigN dly ns jointCIs (jt, memJointCIs) = do
 
     nm = sum ndns `div` 2 -- nm := d1nm because d0nm == 0
     dns = negate <$> ndns -- delta symbol counts (intro's)
-
-    in2s :: [a] -> [(a,a)]
-    in2s (a:b:rest) = (a,b):in2s rest
-    in2s _ = []
 
 -- WHERE --
 
@@ -253,11 +239,11 @@ joinByMut tst f = fmap (M.fromListWith f . concat) . mapM g
 -- mutation. Corrections are signed to be *added* to the CIs.symCounts
 -- before they are subtracted (add) or added (del) to the joint type's
 -- own CIs.symCounts.
-corrections :: forall m. PrimMonad m => StringState (PrimState m) ->
+corrections :: forall m. PrimMonad m => Doubly (PrimState m) ->
                TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
-corrections str tst ci = fmap clean $ do
+corrections dly tst ci = fmap clean $ do
   -- [DEL]: decompose, treat all delMuts
-  dns' <- delCorrections str tst ci
+  dns' <- delCorrections dly tst ci
 
   -- [ADD]: grab the largest chain possible, if CI is first in the chain
   flip execStateT dns' $ (prevCI ci >>=) $ flip whenJust $ \case
@@ -272,9 +258,8 @@ corrections str tst ci = fmap clean $ do
   where
     clean = M.filter IM.null . fmap (IM.filter (==0))
 
-    dly = STR._doubly str
-    prevCI = lift . TS.prevCI dly tst
-    nextCIs = lift . TS.nextCIs dly tst
+    prevCI = lift . TS.prevMutCI dly tst
+    nextCIs = lift . TS.nextMutCIs dly tst
 
     insert :: Mutation -> IntMap Int -> StateT (Map Mutation (IntMap Int)) m ()
     insert mut im = modify $ M.insertWith (IM.unionWith (+)) mut im
@@ -301,29 +286,37 @@ addCorrections ils = case compare (even newLen) (CI.even last_) of
 -- the differences in symbol counts between the symCounts of the CIs
 -- for all joints removed by the same del-mutation and and the real
 -- difference in symCounts from applying those mutations.
-delCorrections :: forall m. PrimMonad m => StringState (PrimState m) ->
+delCorrections :: forall m. PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
-delCorrections str tst ci = flip execStateT M.empty $
-                            mapM_ (uc $ flip go True) -- True == constr
-                            . M.toList . M.fromListWith (++)
-                            . reverse . ffmap (:[]) -- reverse to maintain order
-                            =<< lift (TS.decomposeIn (STR._doubly str) tst ci)
+delCorrections dly tst ci = do
+
+  constr <- flip IS.member . IS.fromList . everyOther . fmap fst
+            <$> CI.extension dly ci
+
+  let go :: Mutation -> Bool -> [CI] -> StateT (Map Mutation (IntMap Int)) m ()
+      go delMut = go_ where
+        go_ _ [] = return ()
+        go_ phase (CI hd shd len tl stl : rest) = do
+          unless (tl == (ci^.tailIndex)) $ dec stl -- tl
+          let outOfPhase = phase /= constr hd
+          -- out of phase with super-CI means prev hd will be constr
+          -- means hd will still be constr. so hd will not be docked
+          when outOfPhase $ dec shd -- hd
+          let phase' = phase /= odd len -- xor
+          go_ phase' rest
+
+        dec :: Sym -> StateT (Map Mutation (IntMap Int)) m ()
+        dec s = modify $ M.insertWith (const $ IM.insertWith (+) s (-1))
+                delMut (IM.singleton s (-1))
+
+  flip execStateT M.empty $
+    mapM_ (uc $ flip go True) -- True == constr
+    . M.toList . M.fromListWith (++)
+    . reverse . ffmap (:[]) -- reverse to maintain order
+    =<< lift (TS.decomposeIn dly tst ci)
+
   where
-    go :: Mutation -> Bool -> [CI] -> StateT (Map Mutation (IntMap Int)) m ()
-    go delMut = go_ where
-      go_ _ [] = return ()
-      go_ phase (CI hd shd len tl stl : rest) = do
-        unless (tl == (ci^.tailIndex)) $ dec stl -- tl
-        outOfPhase <- (phase /=) <$> lift (constr hd)
-        -- out of phase with super-CI means prev hd will be constr
-        -- means hd will still be constr. so hd will not be docked
-        when outOfPhase $ dec shd -- hd
-        let phase' = phase /= odd len -- xor
-        go_ phase' rest
-
-      dec :: Sym -> StateT (Map Mutation (IntMap Int)) m ()
-      dec s = modify $ M.insertWith (const $ IM.insertWith (+) s (-1))
-              delMut (IM.singleton s (-1))
-
-    constr :: Index -> m Bool
-    constr = fmap BV.unBit . MU.read (STR._constructed str)
+    everyOther :: [a] -> [a]
+    everyOther [] = []
+    everyOther [a] = [a]
+    everyOther (a:_:rest) = a : everyOther rest
