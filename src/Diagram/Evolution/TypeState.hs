@@ -1,7 +1,10 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
 {-# LANGUAGE TypeApplications, TypeOperators #-}
-{-# LANGUAGE TupleSections, LambdaCase, BangPatterns #-}
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TupleSections #-}
+
 module Diagram.Evolution.TypeState (module Diagram.Evolution.TypeState) where
 
 import Control.Monad
@@ -17,6 +20,7 @@ import qualified Data.Vector.Mutable as MV
 import Diagram.Primitive
 import qualified Diagram.UnionType as UT
 import Diagram.JointType (JointType(JT))
+import qualified Diagram.JointType as JT
 import Diagram.String
 import qualified Diagram.Doubly as D
 import Diagram.ConstrInterval(CI(..))
@@ -323,6 +327,74 @@ prevMutCI str tst (CI tl stl _ _ _) = (D.prev str tl >>=) $ \case
               _else -> return $ Just $ Just ci -- end of interval
           where
             ci = CI hd shd len tl stl
+
+-- | For a string, a (joint-)type state, a joint type, and a continuous
+-- interval of joints member of the given joint type, but not of the one
+-- represented in the state, return the CI strictly greater than the one
+-- given---if it exists---which is member of the union of the state's
+-- and the given joint type, but only if this super-CI doesn't contain
+-- another CI member of the given joint type on the left of the given
+-- CI. This way a mapMaybe over a set of CIs will return a set of
+-- super-CIs.
+superCI :: forall m. PrimMonad m => Doubly (PrimState m) ->
+           TypeState (PrimState m) -> JointType -> CI -> m (Maybe CI)
+superCI dly tst jt (CI hd0 shd0 len0 tl0 stl0) = do
+
+  bwd <- (D.prev dly hd0 >>=) $ \case
+    Nothing -> return Nothing
+    Just (phd, sphd) -> (member tst sphd shd0 >>=) $ \case
+      False -> return Nothing
+      True -> Just <$> goBwd hd0 shd0 phd sphd 2 -- tl first
+
+  fwd <- (D.next dly tl0 >>=) $ \case
+    Nothing -> return Nothing
+    Just (ntl, sntl) -> (member tst stl0 sntl >>=) $ \case
+      False -> return Nothing
+      True -> Just <$> goFwd tl0 stl0 2 ntl sntl
+
+  return $ case (bwd,fwd) of
+    (Nothing, Nothing) -> Nothing
+    (Just (CI hd shd lenBwd _ _), Nothing) ->
+      let len = lenBwd + len0 - 1
+      in Just $ CI hd shd len tl0 stl0
+
+    (Nothing, Just (CI _ _ lenFwd tl stl)) ->
+      let len = len0 + lenFwd - 1
+      in Just $ CI hd0 shd0 len tl stl
+
+    (Just (CI hd shd lenBwd _ _), Just (CI _ _ lenFwd tl stl)) ->
+      let len = lenBwd + len0 + lenFwd - 2
+      in Just $ CI hd shd len tl stl
+
+  where
+    goBwd tl stl = go
+      where
+        go hd shd !len = (D.prev dly hd >>=) $ \case
+          Nothing -> return ci -- eos
+          Just (phd, sphd) -> (member tst sphd shd >>=) $ \case
+            False -> return ci -- end
+            True -> go phd sphd (len+1)
+          where ci = CI hd shd len tl stl
+
+    goFwd hd shd = goST
+      where
+        goST !len tl stl = (D.next dly tl >>=) $ \case
+          Nothing -> return ci -- eos
+          Just (ntl, sntl) -> (member tst stl sntl >>=) $ \case
+            True -> goST (len+1) ntl sntl
+            False | JT.member (stl,sntl) jt -> goJT (len+1) ntl sntl
+                  | otherwise -> return ci -- end
+          where ci = CI hd shd len tl stl
+
+        goJT !len tl stl = (D.next dly tl >>=) $ \case
+          Nothing -> return ci -- eos
+          Just (ntl, sntl)
+            | JT.member (stl,sntl) jt -> goJT (len+1) ntl sntl
+            | otherwise -> (member tst stl sntl >>=) $ \case
+                True -> goST (len+1) ntl sntl
+                False -> return ci -- end
+          where ci = CI hd shd len tl stl
+
 
 -- | Given the string, joint type and a constructive interval of the
 -- joint type (a.k.a. in-interval), return the longest immediately
