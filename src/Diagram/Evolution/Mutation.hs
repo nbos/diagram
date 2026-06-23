@@ -12,10 +12,10 @@ data Mutation = AddLeft  !Sym
 
 data MutType = Add | Del
 
-typeOf :: Mutation -> MutType
-typeOf (AddLeft _)  = Add
-typeOf (AddRight _) = Add
-typeOf (Add2 _ _)   = Add
-typeOf (DelLeft _)  = Del
-typeOf (DelRight _) = Del
-typeOf (Del2 _ _)   = Del
+typeOfMut :: Mutation -> MutType
+typeOfMut (AddLeft _)  = Add
+typeOfMut (AddRight _) = Add
+typeOfMut (Add2 _ _)   = Add
+typeOfMut (DelLeft _)  = Del
+typeOfMut (DelRight _) = Del
+typeOfMut (Del2 _ _)   = Del

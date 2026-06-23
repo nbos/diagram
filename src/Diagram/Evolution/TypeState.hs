@@ -22,7 +22,7 @@ import qualified Diagram.Doubly as D
 import Diagram.ConstrInterval(CI(..))
 import qualified Diagram.ConstrInterval as CI
 
-import Diagram.Evolution.Mutation
+import Diagram.Evolution.Mutation (Mutation(..))
 
 import Diagram.Util
 
@@ -264,7 +264,7 @@ pushMut = \case AddLeft s0 -> addLeft s0
         modifyLeft $ \e0 -> e0 & coSymsIn  %~ IS.delete s1
                                & coSymsOut %~ IS.insert s1
 
-      writeLeft s1 $ e1 & isMember .~ False
+      writeRight s1 $ e1 & isMember .~ False
 
     err' = err . ("pushMut: " ++)
 

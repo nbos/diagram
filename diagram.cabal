@@ -75,7 +75,6 @@ executable diagram
                       Diagram.Evolution.Math
                       Diagram.Evolution.Mutation
                       Diagram.Evolution.TypeState
-                      Diagram.Evolution.StringState
                       Diagram.Refinement
                       Diagram.Information
                       Diagram.ConstrInterval

@@ -33,14 +33,10 @@ import Diagram.ConstrIntervals (CIs(..))
 import qualified Diagram.ConstrIntervals as CIs
 
 import qualified Diagram.Evolution.Math as Math
-import Diagram.Evolution.Mutation (Mutation(..), MutType(..))
-import qualified Diagram.Evolution.Mutation as Mut
+import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
 
 import Diagram.Evolution.TypeState (TypeState(TS))
 import qualified Diagram.Evolution.TypeState as TS
-
-import Diagram.Evolution.StringState (StringState(STR))
-import qualified Diagram.Evolution.StringState as STR
 
 import Diagram.Util
 
@@ -49,7 +45,7 @@ import Diagram.Util
 --------------------
 
 data Entry = E
-  { _eMutation :: !Mutation
+  { _eMut :: !Mutation
   , _eDnsLoss :: !Double
   , _eDns :: !(IntMap Int)
   , _eDnm :: !Int
@@ -67,7 +63,7 @@ mkEntryWith nOf mut cis cor = E mut (Math.dnsLoss ils) dns dnm cis
     ils = (<$> IM.toList dns) $ \(s,dn) -> toSnd (+dn) $ nOf s
     dnm = -(sum dns `div` 2)
     ns = cis^.CIs.symCounts
-    dns | Add <- Mut.typeOf mut = (negate <$> ns) `union` cor
+    dns | Add <- typeOfMut mut = (negate <$> ns) `union` cor
         | otherwise = ns `union` cor
     union = IM.mergeWithKey (const $ nothingIf (==0) .: (+)) id id
 
@@ -95,15 +91,15 @@ emptyBooks = Books IM.empty IM.empty IM.empty IM.empty IM.empty IM.empty
 mkBooks :: [Entry] -> Books
 mkBooks es = runIdentity $ flip execStateT emptyBooks $
   forM_ es $ \e ->
-  ( case e^.eMutation of AddLeft _  -> ixAddLeft
-                         AddRight _ -> ixAddRight
-                         Add2 _ _   -> ixAdd2
-                         DelLeft _  -> ixDelLeft
-                         DelRight _ -> ixDelRight
-                         Del2 _ _   -> ixDel2 ) %= insert e
+  ( case e^.eMut of AddLeft _  -> ixAddLeft
+                    AddRight _ -> ixAddRight
+                    Add2 _ _   -> ixAdd2
+                    DelLeft _  -> ixDelLeft
+                    DelRight _ -> ixDelRight
+                    Del2 _ _   -> ixDel2 ) %= insert e
   where
     insert e = IM.insertWith (M.unionWith (M.unionWith err')) (e^.eDnm) $
-               M.singleton (e^.eDnsLoss) (M.singleton (e^.eMutation) e)
+               M.singleton (e^.eDnsLoss) (M.singleton (e^.eMut) e)
     err' = err . ("mkBooks: collision: " ++) . show .: (,)
 
 err :: String -> a
@@ -116,8 +112,17 @@ err = error . ("Evolution." ++)
 type EvolutionT m = StateT (EvolutionState (PrimState m)) m
 -- | Evolution state of a JointType in a given string
 data EvolutionState s = EvolutionState
-  { _stringState :: !(StringState s)
+  -- String state (readonly)
+  { _stringLen :: !Int -- N, bigN
+  , _doubly :: !(Doubly s) -- dly :: underlying string :: [N]Sym
+  , _symCounts :: !(U.Vector Count) -- ns :: symbol counts (TODO: dyn?)
+
+  -- Type intro state
   , _typeState :: !(TypeState s)
+  , _symDeltas :: !(IntMap Int) -- dns :: delta symbol count :: u0 U u1 -> dn
+  , _jointCount :: !Count -- nm :: joint count, popCount of constructed
+
+  -- Books
   , _mutBooks :: !Books }
 makeLenses ''EvolutionState
 
@@ -127,35 +132,19 @@ makeLenses ''EvolutionState
 numSymbols :: Monad m => EvolutionT m Int
 numSymbols = zoom typeState TS.numSymbols
 
--- | N, bigN
-stringLen :: Monad m => EvolutionT m Int
-stringLen = use $ stringState.STR.stringLen
-
 -- | vm = sz0 * sz1
 variety :: Monad m => EvolutionT m Int
 variety = zoom typeState TS.variety
-
--- | nm
-jointCount :: Monad m => EvolutionT m Int
-jointCount = use $ stringState.STR.jointCount
-
--- | ns
-symCounts :: Monad m => EvolutionT m (U.Vector Count)
-symCounts = use $ stringState.STR.symCounts
-
--- | dns
-symDeltas :: Monad m => EvolutionT m (IntMap Int)
-symDeltas = use $ stringState.STR.symDeltas
 
 -- | Compute the difference in information/code length incurred by the
 -- introduction of the current joint type (i.e. no further mutation)
 getIntroInfo :: Monad m => EvolutionT m Double
 getIntroInfo = Math.dInfo <$> numSymbols -- m
-                          <*> stringLen -- N
-                          <*> jointCount -- nm
-                          <*> (d2ils <*> symDeltas) -- ils
+                          <*> use stringLen -- N
+                          <*> use jointCount -- nm
+                          <*> (d2ils <*> use symDeltas) -- ils
                           <*> variety -- vm
-  where d2ils = (<$> symCounts) $
+  where d2ils = (<$> use symCounts) $
           \ns -> IM.elems . IM.mapWithKey (\s dn -> toSnd (+dn) (ns U.! s))
 
 -- EVAL --
@@ -163,8 +152,8 @@ getIntroInfo = Math.dInfo <$> numSymbols -- m
 -- | Enumerate all available mutations with their loss. Unsorted.
 evalAll :: Monad m => EvolutionT m [(Double, Entry)]
 evalAll = evalAll_ <$> numSymbols -- m
-                   <*> stringLen -- N
-                   <*> use (stringState.STR.jointCount) -- nm
+                   <*> use stringLen -- N
+                   <*> use jointCount -- nm
                    <*> use typeState -- TypeState
                    <*> use mutBooks -- Books
 
@@ -195,15 +184,13 @@ init :: forall m. PrimMonad m =>
   Int -> Int -> Doubly (PrimState m) -> U.Vector Int -> Joints CIs ->
   (JointType, Joints CIs) -> m (EvolutionState (PrimState m))
 init m bigN dly ns jointCIs (jt, memJointCIs) = do
-  let str = STR bigN dly ns dns nm
   tst <- TS.init m allJoints jt
 
-  ---- mutations ----
   cisByMut <- joinByMut tst CIs.join $ M.toList jointCIs
   corrsByMut <- M.unionsWith (IM.unionWith (+))
                 <$> mapM (corrections dly tst) (CIs.toList memCIs)
 
-  return $ EvolutionState str tst $ mkBooks $ M.elems $
+  return $ EvolutionState bigN dly ns tst dns nm $ mkBooks $ M.elems $
     M.mergeWithKey (Just .:. mkEntryWith nOf) -- both CIs + corr
     (M.mapWithKey $ mkEntry nOf) -- only CIs
     (error . ("CIs missing: " ++) . show) -- only corr
