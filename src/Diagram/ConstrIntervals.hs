@@ -210,6 +210,7 @@ join_ ciAs ciBs = runIdentity $ flip evalStateT (JoinState ciAs ciBs IM.empty) $
 
       -- can't accept a ciA independent of any previous go calls because
       -- it could have been prepended to (sandwich case), so we lookup
+      -- (NOTE: doesn't that only happen on the second pass though?)
       ciA <- (_A.byTail) `uses` (IM.! tlA)
       when (CI.odd ciA) $ inc (ciA^.tailSymbol)
 

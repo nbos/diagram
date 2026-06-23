@@ -310,23 +310,19 @@ prevMutCI :: forall m. PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m (Maybe (Maybe (Mutation, CI)))
 prevMutCI str tst (CI tl stl _ _ _) = (D.prev str tl >>=) $ \case
   Nothing -> return $ Just Nothing -- no prev symbol/interval
-  Just ptl -> do
-    sptl <- D.read str ptl
-    (addMutOf tst sptl stl >>=) $ \case
-      Nothing -> return $ Just Nothing -- no mut
-      Just mut -> (mut,) <<<$>>> go 2 ptl sptl
-        where
-          go !len hd shd = (D.prev str hd >>=) $ \case
-            Nothing -> return $ Just $ Just ci -- hit start, end
-            Just phd -> do
-              sphd <- D.read str phd
-              (member tst sphd shd >>=) $ \case
-                True -> return Nothing -- not first of a chain (cancel)
-                False -> (addMutOf tst sphd shd >>=) $ \case
-                  Just mut' | mut' == mut -> go (len+1) phd sphd
-                  _else -> return $ Just $ Just ci -- end of interval
-            where
-              ci = CI hd shd len tl stl
+  Just (ptl,sptl) -> (addMutOf tst sptl stl >>=) $ \case
+    Nothing -> return $ Just Nothing -- no mut
+    Just mut -> (mut,) <<<$>>> go 2 ptl sptl
+      where
+        go !len hd shd = (D.prev str hd >>=) $ \case
+          Nothing -> return $ Just $ Just ci -- hit start, end
+          Just (phd,sphd) -> (member tst sphd shd >>=) $ \case
+            True -> return Nothing -- not first of a chain (cancel)
+            False -> (addMutOf tst sphd shd >>=) $ \case
+              Just mut' | mut' == mut -> go (len+1) phd sphd
+              _else -> return $ Just $ Just ci -- end of interval
+          where
+            ci = CI hd shd len tl stl
 
 -- | Given the string, joint type and a constructive interval of the
 -- joint type (a.k.a. in-interval), return the longest immediately
@@ -339,38 +335,32 @@ nextMutCIs :: forall m. PrimMonad m => Doubly (PrimState m) ->
               TypeState (PrimState m) -> CI -> m (Maybe (Mutation, [CI]))
 nextMutCIs str tst ci@(CI _ _ _ i0 s0) = (D.next str i0 >>=) $ \case
   Nothing -> return Nothing -- hit end
-  Just i1 -> do
-    s1 <- D.read str i1
-    (addMutOf tst s0 s1 >>=) $ \case
-      Nothing -> return Nothing -- no add-mutation
-      Just addMut -> Just . (addMut,) <$> grabOut [ci] (CI s0 i0) 2 i1 s1
-        where
-          grabOut :: [CI] -> (Len -> Index -> Sym -> CI) ->
-                     Len -> Index -> Sym -> m [CI]
-          grabOut acc mkCI !len tl stl = (D.next str tl >>=) $ \case
-            Nothing -> return $ reverse acc' -- hit end of string
-            Just ntl -> do
-              sntl <- D.read str ntl
-              (member tst stl sntl >>=) $ \case
-                True -> grabIn acc' (CI tl stl) 2 ntl sntl -- switch
-                False -> (addMutOf tst stl sntl >>=) $ \case
-                  Just addMut' | addMut' == addMut ->
-                    grabOut acc mkCI (len+1) ntl sntl -- keep going
-                  _else -> return $ reverse acc' -- end of intervals
-            where
-              acc' = mkCI len tl stl : acc
+  Just (i1,s1) -> (addMutOf tst s0 s1 >>=) $ \case
+    Nothing -> return Nothing -- no add-mutation
+    Just addMut -> Just . (addMut,) <$> grabOut [ci] (CI s0 i0) 2 i1 s1
+      where
+        grabOut :: [CI] -> (Len -> Index -> Sym -> CI) ->
+                   Len -> Index -> Sym -> m [CI]
+        grabOut acc mkCI !len tl stl = (D.next str tl >>=) $ \case
+          Nothing -> return $ reverse acc' -- hit end of string
+          Just (ntl,sntl) -> (member tst stl sntl >>=) $ \case
+            True -> grabIn acc' (CI tl stl) 2 ntl sntl -- switch
+            False -> (addMutOf tst stl sntl >>=) $ \case
+              Just addMut' | addMut' == addMut ->
+                grabOut acc mkCI (len+1) ntl sntl -- keep going
+              _else -> return $ reverse acc' -- end of intervals
+          where
+            acc' = mkCI len tl stl : acc
 
-          grabIn :: [CI] -> (Len -> Index -> Sym -> CI) ->
-                    Len -> Index -> Sym -> m [CI]
-          grabIn acc mkCI !len tl stl = (D.next str tl >>=) $ \case
-            Nothing -> return $ reverse acc' -- hit end of string
-            Just ntl -> do
-              sntl <- D.read str ntl
-              (member tst stl sntl >>=) $ \case
-                True -> grabIn acc mkCI (len+1) ntl sntl -- keep going
-                False -> (addMutOf tst stl sntl >>=) $ \case
-                  Just addMut' | addMut' == addMut ->
-                    grabOut acc' (CI tl stl) 2 ntl sntl -- switch
-                  _else -> return $ reverse acc' -- end of intervals
-            where
-              acc' = mkCI len tl stl : acc
+        grabIn :: [CI] -> (Len -> Index -> Sym -> CI) ->
+                  Len -> Index -> Sym -> m [CI]
+        grabIn acc mkCI !len tl stl = (D.next str tl >>=) $ \case
+          Nothing -> return $ reverse acc' -- hit end of string
+          Just (ntl,sntl) -> (member tst stl sntl >>=) $ \case
+            True -> grabIn acc mkCI (len+1) ntl sntl -- keep going
+            False -> (addMutOf tst stl sntl >>=) $ \case
+              Just addMut' | addMut' == addMut ->
+                grabOut acc' (CI tl stl) 2 ntl sntl -- switch
+              _else -> return $ reverse acc' -- end of intervals
+          where
+            acc' = mkCI len tl stl : acc

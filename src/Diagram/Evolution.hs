@@ -21,7 +21,6 @@ import qualified Data.IntSet as IS
 
 import qualified Data.Vector.Unboxed as U
 
-
 import Diagram.Primitive
 
 import Diagram.Joints (Joints)
@@ -112,7 +111,7 @@ err = error . ("Evolution." ++)
 type EvolutionT m = StateT (EvolutionState (PrimState m)) m
 -- | Evolution state of a JointType in a given string
 data EvolutionState s = EvolutionState
-  -- String state (readonly)
+  -- String state (readonly, only changes accross intros)
   { _stringLen :: !Int -- N, bigN
   , _doubly :: !(Doubly s) -- dly :: underlying string :: [N]Sym
   , _symCounts :: !(U.Vector Count) -- ns :: symbol counts (TODO: dyn?)

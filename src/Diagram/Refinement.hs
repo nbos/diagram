@@ -293,10 +293,10 @@ deltaByMut_ (JT u0 u1) ss iLast = go
 
 
     prev :: MonadTrans t => Index -> t m Index
-    prev = lift . D.unsafePrev ss
+    prev = lift . D.unsafePrevKey ss
 
     next :: MonadTrans t => Index -> t m Index
-    next = lift . D.unsafeNext ss
+    next = lift . D.unsafeNextKey ss
 
     read :: MonadTrans t => Index -> t m Sym
     read = lift . D.read ss

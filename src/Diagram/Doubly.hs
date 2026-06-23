@@ -192,12 +192,18 @@ fromStream n str = do
 toList :: (PrimMonad m, MVector v a) => Doubly v (PrimState m) a -> m [a]
 toList = S.toList_ . stream
 
+-- | Return previous index-value pair if the given index is not the
+-- head. Assumes the index is valid/defined and panics otherwise.
+prev :: (PrimMonad m, MVector v a) =>
+  Doubly v (PrimState m) a -> Index -> m (Maybe (Index,a))
+prev l i = prevKey l i >>= traverse (sequence . toSnd (read l))
+
 -- | Return previous index if the given index is not the head. Assumes
 -- the index is valid/defined and panics otherwise.
-prev :: (PrimMonad m, MVector v a) =>
+prevKey :: (PrimMonad m, MVector v a) =>
   Doubly v (PrimState m) a -> Index -> m (Maybe Index)
-prev (Doubly Nothing _ _ _ _) _ = emptyErr "prev"
-prev (Doubly (Just i0) _ _ prevs _) i
+prevKey (Doubly Nothing _ _ _ _) _ = emptyErr "prev"
+prevKey (Doubly (Just i0) _ _ prevs _) i
   | i == i0 = return Nothing -- head
   | otherwise = (MV.readMaybe prevs i >>=) $ \case
       Nothing -> oobErr "prev" (i, MV.length prevs)
@@ -207,16 +213,22 @@ prev (Doubly (Just i0) _ _ prevs _) i
 -- | Return the index of the element preceeding the element at a given
 -- index in the list. Does not check if the value is defined in the
 -- list. Returns the last index when given the head index, i.e. cycles.
-unsafePrev :: (PrimMonad m, MVector v a) =>
+unsafePrevKey :: (PrimMonad m, MVector v a) =>
   Doubly v (PrimState m) a -> Index -> m Index
-unsafePrev (Doubly _ _ _ prevs _) = MV.read prevs
+unsafePrevKey (Doubly _ _ _ prevs _) = MV.read prevs
 
--- | Return next index if the given index is not the head. Assumes the
--- index is valid/defined and panics otherwise.
+-- | Return next index-value pair if the given index is not the
+-- head. Assumes the index is valid/defined and panics otherwise.
 next :: (PrimMonad m, MVector v a) =>
+  Doubly v (PrimState m) a -> Index -> m (Maybe (Index,a))
+next l i = nextKey l i >>= traverse (sequence . toSnd (read l))
+
+-- | Return next index if the given index is not the last. Assumes the
+-- index is valid/defined and panics otherwise.
+nextKey :: (PrimMonad m, MVector v a) =>
   Doubly v (PrimState m) a -> Index -> m (Maybe Index)
-next (Doubly Nothing _ _ _ _) _ = emptyErr "next"
-next (Doubly (Just i0) _ _ nexts _) i =
+nextKey (Doubly Nothing _ _ _ _) _ = emptyErr "next"
+nextKey (Doubly (Just i0) _ _ nexts _) i =
   (MV.readMaybe nexts i >>=) $ \case
   Nothing -> oobErr "next" (i, MV.length nexts)
   Just nxt | nxt < 0   -> undefErr "next" i
@@ -226,9 +238,9 @@ next (Doubly (Just i0) _ _ nexts _) i =
 -- | Return the index of the element following the element at a given
 -- index in the list. Does not check if the value is defined in the
 -- list. Returns the last index when given the head index, i.e. cycles.
-unsafeNext :: (PrimMonad m, MVector v a) =>
+unsafeNextKey :: (PrimMonad m, MVector v a) =>
   Doubly v (PrimState m) a -> Index -> m Index
-unsafeNext (Doubly _ _ _ _ nexts) = MV.read nexts
+unsafeNextKey (Doubly _ _ _ _ nexts) = MV.read nexts
 
 -- | Modify an element at a given index. Throws an error if index is
 -- undefined
@@ -288,7 +300,7 @@ streamKeysOfJoint (Doubly (Just i0) _ elems _ nexts) (a0,a1) = go i0
 subst2 :: (PrimMonad m, MVector v a) =>
   a -> Doubly v (PrimState m) a -> Index -> m (Doubly v (PrimState m) a)
 subst2 s01 l i = modify l (const s01) i
-                 >> unsafeNext l i >>= delete l
+                 >> unsafeNextKey l i >>= delete l
 
 -- | Append an element at the begining of the list. Grows the structure
 -- in case there are no free spaces.
@@ -371,7 +383,7 @@ tryUnsnoc :: (PrimMonad m, MVector v a) =>
   Doubly v (PrimState m) a -> m (Maybe (Doubly v (PrimState m) a, a))
 tryUnsnoc (Doubly Nothing _ _ _ _) = return Nothing
 tryUnsnoc l@(Doubly (Just i0) _ _ _ _) = do
-  i <- unsafePrev l i0
+  i <- unsafePrevKey l i0
   a <- read l i
   l' <- delete l i
   return $ Just (l',a)

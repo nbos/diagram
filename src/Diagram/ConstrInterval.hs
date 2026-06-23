@@ -57,4 +57,4 @@ extension str (CI hd shd len _ _)
   | len < 3 = error $ "CI.extension: invalid length: " ++ show len
   | otherwise = fmap ((hd,shd):) $
                 S.toList_ . S.take (len-1) . D.streamWithKeyFrom str
-                =<< D.unsafeNext str hd
+                =<< D.unsafeNextKey str hd
