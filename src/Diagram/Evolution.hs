@@ -9,6 +9,7 @@ import Control.Monad.Extra
 import Control.Lens hiding (both,last1,Index,(:>),index)
 import Control.Monad.State.Strict
 
+import Data.Maybe
 import qualified Data.List as L
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NE
@@ -20,6 +21,7 @@ import qualified Data.IntMap.Strict as IM
 import qualified Data.IntSet as IS
 
 import qualified Data.Vector.Unboxed as U
+import qualified Data.Vector.Mutable as MV
 
 import Diagram.Primitive
 
@@ -31,12 +33,14 @@ import qualified Diagram.ConstrInterval as CI
 import Diagram.ConstrIntervals (CIs(..))
 import qualified Diagram.ConstrIntervals as CIs
 
+import Diagram.Evolution.Math (logFact)
 import qualified Diagram.Evolution.Math as Math
-import Diagram.Evolution.Mutation (Mutation(..))
+import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
 
 import Diagram.Evolution.TypeState (TypeState(TS))
 import qualified Diagram.Evolution.TypeState as TS
-import Diagram.Evolution.Books (Entry, Books(Books))
+import Diagram.Evolution.Books ( Entry(..), eDdns, eDnsLoss,
+                                 Books(Books), byAffected, byMut )
 import qualified Diagram.Evolution.Books as Entry
 import qualified Diagram.Evolution.Books as Books
 
@@ -113,6 +117,93 @@ evalAll_ m bigN nm (TS sz0 _ sz1 _) (Books als ars a2s dls drs d2s _ _) =
     flatten = concatMap (concatMap M.elems . M.elems)
               . IM.elems
 
+------------
+-- UPDATE --
+------------
+
+pushMut :: PrimMonad m => Entry -> EvolutionT m ()
+pushMut (E mut _ ddns dnm cis) = do
+  -- COMPUTE DIFFERENCE IN CORRECTIONS
+  (oldCorrs, newCorrs) <- case typeOfMut mut of
+    Add -> do old <- uses2 doubly typeState corrections
+                     >>= forM cisL
+              -- ADD SYMBOL(S) TO TYPE
+              zoom typeState $ TS.pushMut mut
+              new <- do dly <- use doubly
+                        tst <- use typeState
+                        mapM (TS.superCI dly tst cisJT) cisL
+                          >>= mapM (maybe (return M.empty)
+                                          (corrections dly tst))
+              return (old,new)
+
+    Del -> do old <- do dly <- use doubly
+                        tst <- use typeState
+                        mapM (TS.superCI dly tst cisJT) cisL
+                          >>= mapM (maybe (return M.empty)
+                                          (corrections dly tst))
+              -- DELETE SYMBOL(S) FROM TYPE
+              zoom typeState $ TS.pushMut mut
+              new <- uses2 doubly typeState corrections
+                     >>= forM cisL
+              return (old,new)
+
+  let corDelta = unions $ zipWith (clean .: union) newCorrs $
+                 negate <<<$>>> oldCorrs
+
+  ns <- use symCounts
+  dns <- use symDeltas
+
+  -- UPDATING ENTRIES FROM DELTA DELTA COUNT CHANGES
+  (mutBooks.byMut %=) $ flip2 (flip2 M.differenceWith) corDelta $
+    \e@(E _ eloss eddns ednm _) cor ->
+      let dloss = sum $ flip2 IM.intersectionWithKey eddns cor $
+            \s eddn d -> let n = ns U.! s
+                             dn = fromMaybe 0 $ IM.lookup s dns
+                             n' = n + dn
+                             old_n'' = n' + eddn
+                             new_n'' = old_n'' + d
+                         in logFact old_n'' - logFact new_n''
+      in Just $ e{ _eDnsLoss = eloss + dloss
+                 , _eDdns = IM.unionWith (+) eddns cor
+                 , _eDnm = ednm + sum cor }
+
+  -- UPDATING LOSSES FROM DELTA COUNT CHANGES
+  oldEntries <- use (mutBooks.byMut) -- before we modify
+  readAffected <- (mutBooks.byAffected) `uses` MV.read
+  dnsAffected <- fmap M.unions $ forM (IM.toList ddns) $ \(s,ddn) -> do
+    let n = ns U.! s -- count prior to intro (no change)
+        old_dn = dns IM.! s -- old delta of intro (FIXME: lookup?)
+        old_n' = n + old_dn -- old count after intro
+        new_n' = old_n' + ddn -- new count after intro
+
+    affected <- readAffected s
+    (mutBooks.byMut %=) $ flip2 (flip2 M.differenceWith) affected $
+      \e _ ->
+        let eddn = (e^.eDdns) IM.! s -- entry's mut's delta (no change)
+            old_n'' = old_n' + eddn -- old count after intro after mut
+            oldContrib = logFact old_n' - logFact old_n''
+            new_n'' = new_n' + eddn -- new count after intro after mut
+            newContrib = logFact new_n' - logFact new_n''
+        in Just $ e & eDnsLoss %~ (+newContrib) . (+(-oldContrib))
+    return affected
+
+  -- RE-INDEXING (TODO: join corAffected to dnsAffected)
+  let affected = void corDelta `M.union` dnsAffected
+  affectedNew <- (mutBooks.byMut) `uses` (`M.intersection` affected)
+  let affectedOld = oldEntries `M.intersection` affected
+  zoom mutBooks $ sequence_ $
+    M.intersectionWith Books.update affectedOld affectedNew
+
+  symDeltas %= IM.unionWith (+) ddns -- delta ns
+  jointCount += dnm -- delta nm
+
+  where
+    clean = M.filter (not . IM.null) . fmap (IM.filter (/= 0))
+    cisJT = cis^.CIs.jointType
+    cisL = CIs.toList cis
+    union = M.unionWith (IM.unionWith (+))
+    unions = M.unionsWith (IM.unionWith (+))
+
 ----------
 -- INIT --
 ----------
@@ -166,10 +257,10 @@ corrections :: forall m. PrimMonad m => Doubly (PrimState m) ->
                TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
 corrections dly tst ci = fmap clean $ do
   -- [DEL]: decompose, treat all delMuts
-  dns' <- delCorrections dly tst ci
+  dns <- delCorrections dly tst ci
 
   -- [ADD]: grab the largest chain possible, if CI is first in the chain
-  flip execStateT dns' $ (prevCI ci >>=) $ flip whenJust $ \case
+  flip execStateT dns $ (prevCI ci >>=) $ flip whenJust $ \case
     Nothing -> (nextCIs ci >>=) $ flip whenJust $
                \(addMut, nexts) -> insert addMut $ addCorrections (ci:|nexts)
     Just (addMut, prv) -> (nextCIs ci >>=) $ \case

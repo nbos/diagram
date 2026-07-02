@@ -36,7 +36,7 @@ import Diagram.Util
 data Entry = E
   { _eMut :: !Mutation
   , _eDnsLoss :: !Double
-  , _eDns :: !(IntMap Int)
+  , _eDdns :: !(IntMap Int)
   , _eDnm :: !Int
   , _eCIs :: !CIs }
   deriving (Show,Eq)
@@ -47,15 +47,15 @@ fromParams n'Of mut cis = fromParamsWith n'Of mut cis IM.empty
 
 -- | Construct a mutation entry with a count correction
 fromParamsWith :: (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> Entry
-fromParamsWith n'Of mut cis cor = E mut loss dns dnm cis
+fromParamsWith n'Of mut cis cor = E mut loss ddns dnm cis
   where
     loss = sum $ uncurry (-) . both logFact <$> ils
-    ils = (<$> IM.toList dns) $ \(s,dn) -> let n' = n'Of s
-                                               n'' = n' + dn
+    ils = (<$> IM.toList ddns) $ \(s,dn) -> let n' = n'Of s
+                                                n'' = n' + dn
                                            in seq n'' (n', n'')
-    dnm = -(sum dns `div` 2)
+    dnm = -(sum ddns `div` 2)
     ns = cis^.CIs.symCounts
-    dns = (if typeOfMut mut == Add then negate <$> ns else ns)
+    ddns = (if typeOfMut mut == Add then negate <$> ns else ns)
           `union` cor
     union = IM.mergeWithKey (const $ nothingIf (==0) .: (+)) id id
 
@@ -77,7 +77,7 @@ data Books s = Books
   , _ixDelRight :: !(IntMap (Map Double (Map Mutation Entry)))
   , _ixDel2     :: !(IntMap (Map Double (Map Mutation Entry)))
   , _byMut      :: !(Map Mutation Entry) -- by mutation
-  , _byAffected :: !(MV.MVector s (Map Mutation ())) } -- by each sym in dns
+  , _byAffected :: !(MV.MVector s (Map Mutation ())) } -- by each sym in ddns
 makeLenses ''Books
 
 empty :: PrimMonad m => Int -> m (Books (PrimState m))
@@ -121,19 +121,19 @@ deIndex e@(E mut loss _ dnm _) = ( case e^.eMut of
 
 -- | Insert an entry in the books
 insert :: PrimMonad m => Entry -> BooksT m ()
-insert e@(E mut _ dns _ _) = do
+insert e@(E mut _ ddns _ _) = do
   mv <- use byAffected
   modify $ index e
   byMut %= M.insert mut e
-  forM_ (IM.keys dns) $ MV.modify mv $ M.insert mut ()
+  forM_ (IM.keys ddns) $ MV.modify mv $ M.insert mut ()
 
 -- | Delete an entry from the books
 delete :: PrimMonad m => Entry -> BooksT m ()
-delete e@(E mut _ dns _ _) = do
+delete e@(E mut _ ddns _ _) = do
   mv <- use byAffected
   modify $ deIndex e
   byMut %= M.delete mut
-  forM_ (IM.keys dns) $ MV.modify mv $ M.delete mut
+  forM_ (IM.keys ddns) $ MV.modify mv $ M.delete mut
 
 -- | Delete the first entry and insert the second
 update :: PrimMonad m => Entry -> Entry -> BooksT m ()
