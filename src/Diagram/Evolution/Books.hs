@@ -67,6 +67,7 @@ eval m bigN nm vm' (E _ dnsLoss _ dnm _) = dnsLoss + dnmLoss
 -- BOOKS --
 -----------
 
+type BooksT m = StateT (Books (PrimState m)) m
 data Books s = Books
   -- mutType ------> dnm ------> dnsLoss --> mut ---> entry
   { _ixAddLeft  :: !(IntMap (Map Double (Map Mutation Entry)))
@@ -84,26 +85,59 @@ empty m = Books IM.empty IM.empty IM.empty IM.empty IM.empty IM.empty
                      M.empty <$> MV.replicate m M.empty
 
 fromList :: PrimMonad m => Int -> [Entry] -> m (Books (PrimState m))
-fromList m es = (empty m >>=) $ execStateT $ do
-  mv <- use byAffected
-  forM_ es $ \e -> do
-    let mut = e^.eMut
-    ( case mut of AddLeft _  -> ixAddLeft
-                  AddRight _ -> ixAddRight
-                  Add2 _ _   -> ixAdd2
-                  DelLeft _  -> ixDelLeft
-                  DelRight _ -> ixDelRight
-                  Del2 _ _   -> ixDel2 ) %= index e
+fromList m es = empty m >>= execStateT (mapM_ insert es)
 
-    byMut %= M.insertWith err' mut e
-    forM_ (IM.keys $ e^.eDns) $ MV.modify mv $ M.insertWith err' mut ()
-
+-- | Index the given entry in the given books by type, dnm, dnsLoss and
+-- mut. Does nothing to byMut or byAffected.
+index :: Entry -> Books s -> Books s
+index e@(E mut loss _ dnm _) = ( case e^.eMut of
+                 AddLeft _  -> ixAddLeft
+                 AddRight _ -> ixAddRight
+                 Add2 _ _   -> ixAdd2
+                 DelLeft _  -> ixDelLeft
+                 DelRight _ -> ixDelRight
+                 Del2 _ _   -> ixDel2 ) %~ go
   where
-    index e = IM.insertWith (M.unionWith (M.unionWith err')) (e^.eDnm) $
-               M.singleton (e^.eDnsLoss) (M.singleton (e^.eMut) e)
+    singleton0 = M.singleton mut e
+    singleton1 = M.singleton loss singleton0
+    go = IM.insertWith
+         (\_ -> M.insertWith (\_ -> M.insert mut e) loss singleton0)
+         dnm singleton1
 
-    err' :: (Show a, Show b) => a -> b -> c
-    err' = err . ("mkBooks: collision: " ++) . show .: (,)
+-- | De-index the given entry in the given books by type, dnm, dnsLoss
+-- and mut. Does nothing to byMut or byAffected.
+deIndex :: Entry -> Books s -> Books s
+deIndex e@(E mut loss _ dnm _) = ( case e^.eMut of
+                 AddLeft _  -> ixAddLeft
+                 AddRight _ -> ixAddRight
+                 Add2 _ _   -> ixAdd2
+                 DelLeft _  -> ixDelLeft
+                 DelRight _ -> ixDelRight
+                 Del2 _ _   -> ixDel2 ) %~ go
+  where
+    go = flip IM.update dnm $
+         (nothingIf M.null .) $ flip M.update loss $
+         nothingIf M.null . M.delete mut
+
+-- | Insert an entry in the books
+insert :: PrimMonad m => Entry -> BooksT m ()
+insert e@(E mut _ dns _ _) = do
+  mv <- use byAffected
+  modify $ index e
+  byMut %= M.insert mut e
+  forM_ (IM.keys dns) $ MV.modify mv $ M.insert mut ()
+
+-- | Delete an entry from the books
+delete :: PrimMonad m => Entry -> BooksT m ()
+delete e@(E mut _ dns _ _) = do
+  mv <- use byAffected
+  modify $ deIndex e
+  byMut %= M.delete mut
+  forM_ (IM.keys dns) $ MV.modify mv $ M.delete mut
+
+-- | Delete the first entry and insert the second
+update :: PrimMonad m => Entry -> Entry -> BooksT m ()
+update old new = delete old >> insert new
 
 err :: String -> a
 err = error . ("Books." ++)
