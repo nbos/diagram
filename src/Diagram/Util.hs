@@ -33,11 +33,6 @@ instance Ord (Squash a) where
 -- Misc --
 ----------
 
--- | Uncurry
-uc :: (a -> b -> c) -> (a, b) -> c
-uc = uncurry
-{-# INLINE uc #-}
-
 -- | https://stackoverflow.com/questions/62680939/
 -- abusing-unsafeperformio-to-catch-partial-functions
 catchE :: Exception e => a -> Either e a
@@ -208,7 +203,7 @@ infixl 4 <<<$
 (>.>) :: (a -> b) -> (b -> c) -> a -> c
 (>.>) f g = g . f
 {-# INLINE (>.>) #-}
-infixr 1 >.>
+infixr 2 >.>
 
 -----------
 -- Lists --
@@ -506,13 +501,10 @@ curry3 :: ((a, b, c) -> d) -> a -> b -> c -> d
 curry3 = (.:. (,,))
 {-# INLINE curry3 #-}
 
-curry' :: (a -> (b,c) -> d) -> a -> b -> c -> d
-curry' = (.) (.: (,))
-{-# INLINE curry' #-}
-
-uncurry' :: (a -> b -> c -> d) -> a -> (b,c) -> d
-uncurry' = uncurry .: ($)
-{-# INLINE uncurry' #-}
+-- | Uncurry
+uc :: (a -> b -> c) -> (a, b) -> c
+uc = uncurry
+{-# INLINE uc #-}
 
 -- Compose w/ two arguments
 (.:) :: (b -> c) -> (a1 -> a2 -> b) -> a1 -> a2 -> c

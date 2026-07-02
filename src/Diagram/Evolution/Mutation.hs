@@ -11,6 +11,7 @@ data Mutation = AddLeft  !Sym
   deriving(Show,Eq,Ord)
 
 data MutType = Add | Del
+  deriving(Show,Eq,Ord)
 
 typeOfMut :: Mutation -> MutType
 typeOfMut (AddLeft _)  = Add

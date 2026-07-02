@@ -6,7 +6,7 @@ module Diagram.Evolution (module Diagram.Evolution) where
 
 import Control.Monad
 import Control.Monad.Extra
-import Control.Lens hiding (both,last1,Index,(:>))
+import Control.Lens hiding (both,last1,Index,(:>),index)
 import Control.Monad.State.Strict
 
 import qualified Data.List as L
@@ -32,77 +32,15 @@ import Diagram.ConstrIntervals (CIs(..))
 import qualified Diagram.ConstrIntervals as CIs
 
 import qualified Diagram.Evolution.Math as Math
-import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
+import Diagram.Evolution.Mutation (Mutation(..))
 
 import Diagram.Evolution.TypeState (TypeState(TS))
 import qualified Diagram.Evolution.TypeState as TS
+import Diagram.Evolution.Books (Entry, Books(Books))
+import qualified Diagram.Evolution.Books as Entry
+import qualified Diagram.Evolution.Books as Books
 
 import Diagram.Util
-
---------------------
--- MUTATION ENTRY --
---------------------
-
-data Entry = E
-  { _eMut :: !Mutation
-  , _eDnsLoss :: !Double
-  , _eDns :: !(IntMap Int)
-  , _eDnm :: !Int
-  , _eCIs :: !CIs }
-  deriving (Show,Eq)
-makeLenses ''Entry
-
-mkEntry :: (Sym -> Count) -> Mutation -> CIs -> Entry
-mkEntry nOf mut cis = mkEntryWith nOf mut cis IM.empty
-
--- | Construct a mutation entry with a count correction
-mkEntryWith :: (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> Entry
-mkEntryWith nOf mut cis cor = E mut (Math.dnsLoss ils) dns dnm cis
-  where
-    ils = (<$> IM.toList dns) $ \(s,dn) -> toSnd (+dn) $ nOf s
-    dnm = -(sum dns `div` 2)
-    ns = cis^.CIs.symCounts
-    dns | Add <- typeOfMut mut = (negate <$> ns) `union` cor
-        | otherwise = ns `union` cor
-    union = IM.mergeWithKey (const $ nothingIf (==0) .: (+)) id id
-
-evalEntry :: Int -> Int -> Int -> Int -> Entry -> Double
-evalEntry m bigN nm vm' (E _ dnsLoss _ dnm _) = dnsLoss + dnmLoss
-  where dnmLoss = Math.dnmLoss m bigN nm vm' dnm
-
------------
--- BOOKS --
------------
-
-data Books = Books
-  -- mutType ------> dnm ------> dnsLoss --> mut ---> entry
-  { _ixAddLeft  :: !(IntMap (Map Double (Map Mutation Entry)))
-  , _ixAddRight :: !(IntMap (Map Double (Map Mutation Entry)))
-  , _ixAdd2     :: !(IntMap (Map Double (Map Mutation Entry)))
-  , _ixDelLeft  :: !(IntMap (Map Double (Map Mutation Entry)))
-  , _ixDelRight :: !(IntMap (Map Double (Map Mutation Entry)))
-  , _ixDel2     :: !(IntMap (Map Double (Map Mutation Entry))) }
-makeLenses ''Books
-
-emptyBooks :: Books
-emptyBooks = Books IM.empty IM.empty IM.empty IM.empty IM.empty IM.empty
-
-mkBooks :: [Entry] -> Books
-mkBooks es = runIdentity $ flip execStateT emptyBooks $
-  forM_ es $ \e ->
-  ( case e^.eMut of AddLeft _  -> ixAddLeft
-                    AddRight _ -> ixAddRight
-                    Add2 _ _   -> ixAdd2
-                    DelLeft _  -> ixDelLeft
-                    DelRight _ -> ixDelRight
-                    Del2 _ _   -> ixDel2 ) %= insert e
-  where
-    insert e = IM.insertWith (M.unionWith (M.unionWith err')) (e^.eDnm) $
-               M.singleton (e^.eDnsLoss) (M.singleton (e^.eMut) e)
-    err' = err . ("mkBooks: collision: " ++) . show .: (,)
-
-err :: String -> a
-err = error . ("Evolution." ++)
 
 ----------------------
 -- EVOLUTION STATE  --
@@ -122,7 +60,7 @@ data EvolutionState s = EvolutionState
   , _jointCount :: !Count -- nm :: joint count, popCount of constructed
 
   -- Books
-  , _mutBooks :: !Books }
+  , _mutBooks :: !(Books s) }
 makeLenses ''EvolutionState
 
 -- GETTERS --
@@ -156,13 +94,13 @@ evalAll = evalAll_ <$> numSymbols -- m
                    <*> use typeState -- TypeState
                    <*> use mutBooks -- Books
 
-evalAll_ :: Int -> Int -> Int -> TypeState s -> Books -> [(Double, Entry)]
-evalAll_ m bigN nm (TS sz0 _ sz1 _) (Books als ars a2s dls drs d2s) =
+evalAll_ :: Int -> Int -> Int -> TypeState s -> Books s -> [(Double, Entry)]
+evalAll_ m bigN nm (TS sz0 _ sz1 _) (Books als ars a2s dls drs d2s _ _) =
   concat $ zipWith (fmap . toFst) lossFns entries
   where
     vm = sz0 * sz1
     lossFns :: [Entry -> Double]
-    lossFns = evalEntry m bigN nm <$> vm's
+    lossFns = Entry.eval m bigN nm <$> vm's
     vm's = [ vm + sz1 -- addLeft
            , vm + sz0 -- addRight
            , vm + sz0 + sz1 -- add2
@@ -189,15 +127,15 @@ init m bigN dly ns jointCIs (jt, memJointCIs) = do
   corrsByMut <- M.unionsWith (IM.unionWith (+))
                 <$> mapM (corrections dly tst) (CIs.toList memCIs)
 
-  return $ EvolutionState bigN dly ns tst dns nm $ mkBooks $ M.elems $
-    M.mergeWithKey (Just .:. mkEntryWith nOf) -- both CIs + corr
-    (M.mapWithKey $ mkEntry nOf) -- only CIs
+  fmap (EvolutionState bigN dly ns tst dns nm) $ Books.fromList m $ M.elems $
+    M.mergeWithKey (Just .:. Entry.fromParamsWith n'Of) -- both CIs + corr
+    (M.mapWithKey $ Entry.fromParams n'Of) -- only CIs
     (error . ("CIs missing: " ++) . show) -- only corr
     cisByMut corrsByMut
 
   where
     allJoints = M.keys jointCIs
-    nOf s = maybe n (+n) $ IM.lookup s dns
+    n'Of s = maybe n (+n) $ IM.lookup s dns
       where n = ns U.! s
 
     memCIs = foldr1 CIs.join memJointCIs
@@ -217,14 +155,13 @@ joinByMut tst f = fmap (M.fromListWith f . concat) . mapM g
     g :: ((Sym,Sym), a) -> m [(Mutation, a)]
     g ((s0,s1), a) = (,a) <<$>> TS.mutsOf tst s0 s1
 
--- | Given the string, a type, its constructive signal on the string
--- (bool vector), and a constructive interval of the joint type, return
--- the set of corrections on the symCounts of each CIs associated with a
--- mutation (add or del) (all at once) required to be added in order for
--- it to match the actual change in symbol counts produced by the
--- mutation. Corrections are signed to be *added* to the CIs.symCounts
--- before they are subtracted (add) or added (del) to the joint type's
--- own CIs.symCounts.
+-- | Given the string, a type, and a constructive interval of the joint
+-- type, return the set of corrections on the symCounts of each CIs
+-- associated with a mutation (add or del) (all at once) required to be
+-- added in order for it to match the actual change in symbol counts
+-- produced by the mutation. Corrections are signed to be *added* to the
+-- CIs.symCounts before they are subtracted (add) or added (del) to the
+-- joint type's own CIs.symCounts.
 corrections :: forall m. PrimMonad m => Doubly (PrimState m) ->
                TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
 corrections dly tst ci = fmap clean $ do
@@ -306,3 +243,6 @@ delCorrections dly tst ci = do
     everyOther [] = []
     everyOther [a] = [a]
     everyOther (a:_:rest) = a : everyOther rest
+
+err :: String -> a
+err = error . ("Evolution." ++)
