@@ -21,7 +21,6 @@ import qualified Diagram.Dynamic as Dyn
 import Diagram.String
 import Diagram.JointType (JointType)
 import qualified Diagram.JointType as JT
-import Diagram.Refinement (ModelParams(..))
 
 import Diagram.Util
 
@@ -34,11 +33,6 @@ data Model s = Model {
 
 numSymbols :: Model m -> Int
 numSymbols = (256+) . Dyn.length . types
-
-params :: PrimMonad m => Model (PrimState m) -> m ModelParams
-params mdl@(Model _ bigN ns _) =
-  Params m bigN <$> Dyn.freeze ns
-  where m = numSymbols mdl
 
 ------------------
 -- CONSTRUCTION --

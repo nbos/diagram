@@ -70,13 +70,13 @@ executable diagram
                       Diagram.Primitive
                       Diagram.Streaming
                       Diagram.JointType
+                      Diagram.JointType.Random
                       Diagram.UnionType
                       Diagram.Evolution
                       Diagram.Evolution.Math
                       Diagram.Evolution.Books
                       Diagram.Evolution.Mutation
                       Diagram.Evolution.TypeState
-                      Diagram.Refinement
                       Diagram.Information
                       Diagram.ConstrInterval
                       Diagram.ConstrIntervals

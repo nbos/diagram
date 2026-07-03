@@ -138,11 +138,11 @@ ddInformation (E mut _ ddns dnm _) = do
       ils = (<$> IM.toList dns') $ \(s,dn) -> let n = ns U.! s
                                               in (n, n + dn)
       vm' = case mut of
-        AddLeft _  -> vm + sz1 -- addLef
-        AddRight _ -> vm + sz0 -- addRig
+        AddLeft _  -> vm + sz1
+        AddRight _ -> vm + sz0
         Add2 _ _   -> vm + sz0 + sz1 + 1
-        DelLeft _  -> vm - sz1 -- delLef
-        DelRight _ -> vm - sz0 -- delRig
+        DelLeft _  -> vm - sz1
+        DelRight _ -> vm - sz0
         Del2 _ _   -> vm - sz0 - sz1 - 1
 
   return $ Math.ddInfo m bigN ils (nm, nm+dnm) (vm, vm')
@@ -154,6 +154,10 @@ step = do
   if ddInfo > 0 then return False else
     pushMut e >> return True
 
+-- | Hill climb to a local minimum, given parameters m (number of
+-- symbols), N (string length), the string, symbol counts, constructive
+-- intervals of all joints in the string and a joint type with its CIs
+-- indexed by joint.
 hillClimb :: forall m. PrimMonad m =>
   Int -> Int -> Doubly (PrimState m) -> U.Vector Int -> Joints CIs ->
   (JointType, Joints CIs) -> m JointType

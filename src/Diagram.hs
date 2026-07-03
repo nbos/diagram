@@ -1,4 +1,4 @@
-{-# LANGUAGE TypeApplications, LambdaCase #-}
+{-# LANGUAGE TypeApplications #-}
 module Diagram (module Diagram) where
 
 import System.IO
@@ -29,15 +29,14 @@ import Options.Applicative
 import System.Random (StdGen)
 import qualified System.Random as R
 
-import Control.Lens hiding (both,last1,argument)
 import Control.Monad.Trans.Random.Lazy (RandT,evalRand,evalRandT)
-import Control.Monad.State.Strict
-    (MonadIO(liftIO), MonadTrans(lift), evalStateT)
+import Control.Monad.State.Strict (MonadTrans(lift))
 import Control.Monad.Random.Class (MonadRandom(getRandom))
 
 import Data.Word (Word64)
 import Data.Maybe
 import qualified Data.Strict.Tuple as Strict
+import qualified Data.Vector.Unboxed as U
 
 import qualified Streaming.Prelude as S
 import qualified Streaming.ByteString as Q
@@ -46,10 +45,10 @@ import Diagram.Streaming ()
 import qualified Diagram.Doubly as D
 import qualified Diagram.Joints as Jts
 import qualified Diagram.JointType as JT
-import qualified Diagram.Refinement as Ref
-import Diagram.Refinement (refinement)
 import qualified Diagram.Model as Mdl
 import Diagram.Progress (withPB)
+
+import qualified Diagram.JointType.Random as Ref
 
 data Options = Options
   { optFilename :: !FilePath
@@ -88,27 +87,24 @@ main = do
   h <- openFile (optFilename opts) ReadMode
   sz <- fromInteger @Int <$> hFileSize h
 
-  (ss,(mdl,())) <- D.fromStream sz $
-                   S.map fromEnum $
-                   Mdl.emptyFromAtoms $
-                   S.copy $
-                   withPB sz "Counting symbols" $
-                   Q.unpack $ Q.fromHandle h
+  (dly,(mdl,())) <- D.fromStream @_ @U.MVector sz $
+                    S.map fromEnum $
+                    Mdl.emptyFromAtoms $
+                    S.copy $
+                    withPB sz "Counting symbols" $
+                    Q.unpack $ Q.fromHandle h
 
   (jtniss,()) <- Jts.fromStream $
                  withPB sz "Counting joints" $
-                 D.streamWithKey ss
+                 D.streamWithKey dly
 
-  -- form types
+  -- forM types
   let jtns = Strict.fst <$> jtniss
       jt = JT.fromJoints jtns
   putStr "Top type: " >> print jt
 
   let jtns2 = Jts.doubleIndex 256 jtns -- IntMap (IntMap a)
       jtns2S = Jts.sized jtns2 -- Map Sym (Map Sym a)
-
-  -- freeze params
-  params <- Mdl.params mdl
 
   let go :: RandT StdGen IO ()
       go = do
@@ -126,20 +122,6 @@ main = do
         lift $ putStrLn ""
         --
 
-        lift $ putStrLn "Beginning hill climb."
-        let rjts2 = Jts.doubleIndex 256 rjtns
-            rst0 = Ref.initState params ss rjts2 rjt
-
-            go' = (Ref.stepHillClimb >>=) $ \case
-              Just t -> return t
-              Nothing -> use refinement
-                         >>= liftIO . print
-                         >> go'
-
-        rjt' <- evalStateT go' rst0
-        lift $ putStr "Final ref: " >> print rjt'
-
-        lift $ putStrLn ""
         go -- loop
 
   -- run loop -------
