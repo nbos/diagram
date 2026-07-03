@@ -38,8 +38,9 @@ instance Show JointType where
   show jt = "fromLists " ++ show u0 ++ " " ++ show u1
     where (u0,u1) = toLists jt
 
-size :: JointType -> (Int, Int)
-size (JT u0 u1) = (UT.size u0, UT.size u1)
+-- | Dimensionality
+dims :: JointType -> (Int, Int)
+dims (JT u0 u1) = (UT.size u0, UT.size u1)
 
 singleton :: Sym -> Sym -> JointType
 singleton s0 s1 = JT u0 u1
@@ -87,6 +88,16 @@ insertBothMissing :: Sym -> Sym -> JointType -> JointType
 insertBothMissing s0 s1 (JT u0 u1) = JT u0' u1'
   where u0' = UT.insertMissing s0 u0
         u1' = UT.insertMissing s1 u1
+
+-- | Unsafe left deletion. Breaks invariant if the symbol is not already
+-- present in left union.
+deleteLeftMember :: Sym -> JointType -> JointType
+deleteLeftMember s = left %~ UT.deleteMember s
+
+-- | Unsafe right deletion. Breaks invariant if the symbol is not already
+-- present in right union.
+deleteRightMember :: Sym -> JointType -> JointType
+deleteRightMember s = right %~ UT.deleteMember s
 
 -------------
 -- LATTICE --

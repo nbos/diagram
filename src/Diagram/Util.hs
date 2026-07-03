@@ -530,6 +530,12 @@ infixr 8 .::
 infixr 8 .::.
 {-# INLINE (.::.) #-}
 
+-- six
+(.:::) :: (b -> c) -> (a1 -> a2 -> a3 -> a4 -> a5 -> a6 -> b) -> a1 -> a2 -> a3 -> a4 -> a5 -> a6 -> c
+(.:::) = (.).(.::.)
+infixr 8 .:::
+{-# INLINE (.:::) #-}
+
 -- Flip w/ two arguments
 flip2 :: (a -> b1 -> b2 -> c) -> b1 -> b2 -> a -> c
 flip2 = flip .: flip
@@ -649,10 +655,52 @@ bind3 f ma mb mc = do
 (>==>) :: Monad m => (t1 -> t2 -> m a) -> (a -> m b) -> t1 -> t2 -> m b
 f >==> g = \x y -> f x y >>= g
 {-# INLINE (>==>) #-}
+infixr 1 >==>
+
+(>===>) :: Monad m => (t1 -> t2 -> t3 -> m a) -> (a -> m b) -> t1 -> t2 -> t3 -> m b
+f >===> g = \x y z -> f x y z >>= g
+{-# INLINE (>===>) #-}
+infixr 1 >===>
+
+(>====>) :: Monad m => (t1 -> t2 -> t3 -> t4 -> m a) -> (a -> m b) -> t1 -> t2 -> t3 -> t4 -> m b
+f >====> g = \x y z w -> f x y z w >>= g
+{-# INLINE (>====>) #-}
+infixr 1 >====>
+
+(>=====>) :: Monad m => (t1 -> t2 -> t3 -> t4 -> t5 -> m a) -> (a -> m b) -> t1 -> t2 -> t3 -> t4 -> t5 -> m b
+f >=====> g = \x y z w v -> f x y z w v >>= g
+{-# INLINE (>=====>) #-}
+infixr 1 >=====>
+
+(>======>) :: Monad m => (t1 -> t2 -> t3 -> t4 -> t5 -> t6 -> m a) -> (a -> m b) -> t1 -> t2 -> t3 -> t4 -> t5 -> t6 -> m b
+f >======> g = \x y z w v u -> f x y z w v u >>= g
+{-# INLINE (>======>) #-}
+infixr 1 >======>
 
 (<==<) :: Monad m => (a -> m b) -> (t1 -> t2 -> m a) -> t1 -> t2 -> m b
 g <==< f = \x y -> f x y >>= g
 {-# INLINE (<==<) #-}
+infixr 1 <==<
+
+(<===<) :: Monad m => (a -> m b) -> (t1 -> t2 -> t3 -> m a) -> t1 -> t2 -> t3 -> m b
+g <===< f = \x y z -> f x y z >>= g
+{-# INLINE (<===<) #-}
+infixr 1 <===<
+
+(<====<) :: Monad m => (a -> m b) -> (t1 -> t2 -> t3 -> t4 -> m a) -> t1 -> t2 -> t3 -> t4 -> m b
+g <====< f = \x y z w -> f x y z w >>= g
+{-# INLINE (<====<) #-}
+infixr 1 <====<
+
+(<=====<) :: Monad m => (a -> m b) -> (t1 -> t2 -> t3 -> t4 -> t5 -> m a) -> t1 -> t2 -> t3 -> t4 -> t5 -> m b
+g <=====< f = \x y z w v -> f x y z w v >>= g
+{-# INLINE (<=====<) #-}
+infixr 1 <=====<
+
+(<=======<) :: Monad m => (a -> m b) -> (t1 -> t2 -> t3 -> t4 -> t5 -> t6 -> m a) -> t1 -> t2 -> t3 -> t4 -> t5 -> t6 -> m b
+g <=======< f = \x y z w v u -> f x y z w v u >>= g
+{-# INLINE (<=======<) #-}
+infixr 1 <=======<
 
 returning :: Monad m => (a -> m b) -> a -> m a
 returning f a = f a >> return a

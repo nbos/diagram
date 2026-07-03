@@ -76,68 +76,71 @@ addMutOf_ (s0, SymEntry mem0 ic0s _ _) (s1, SymEntry mem1 ic1s _ _)
 
 type TypeT m = StateT (TypeState (PrimState m)) m
 data TypeState s = TS
-  { _leftSize  :: !Int
-  , _leftType  :: !(MV.MVector s SymEntry)
-  , _rightSize :: !Int
-  , _rightType :: !(MV.MVector s SymEntry) }
+  { _jointType :: !JointType
+  , _leftSyms  :: !(MV.MVector s SymEntry)
+  , _rightSyms :: !(MV.MVector s SymEntry) }
 makeLenses ''TypeState
 
 -- | m
 numSymbols :: Monad m => TypeT m Int
-numSymbols = leftType `uses` MV.length
+numSymbols = leftSyms `uses` MV.length
+
+-- | (sz0, sz1)
+dims :: Monad m => TypeT m (Int, Int)
+dims = jointType `uses` JT.dims
 
 -- | vm = sz0 * sz1
 variety :: Monad m => TypeT m Int
-variety = uses2 leftSize rightSize (*)
+variety = jointType `uses` JT.variety
 
 -- READ/WRITE
 
 readLeft :: PrimMonad m => Sym -> TypeT m SymEntry
-readLeft s = use leftType >>= lift . flip MV.read s
+readLeft s = use leftSyms >>= lift . flip MV.read s
 
 readRight :: PrimMonad m => Sym -> TypeT m SymEntry
-readRight s = use rightType >>= lift . flip MV.read s
+readRight s = use rightSyms >>= lift . flip MV.read s
 
 writeLeft :: PrimMonad m => Sym -> SymEntry -> TypeT m ()
-writeLeft s e = use leftType >>= lift . flip2 MV.write s e
+writeLeft s e = use leftSyms >>= lift . flip2 MV.write s e
 
 writeRight :: PrimMonad m => Sym -> SymEntry -> TypeT m ()
-writeRight s e = use rightType >>= lift . flip2 MV.write s e
+writeRight s e = use rightSyms >>= lift . flip2 MV.write s e
 
 modifyLeft :: PrimMonad m => (SymEntry -> SymEntry) ->
               Sym -> TypeT m ()
-modifyLeft f s = use leftType >>= lift . flip2 MV.modify f s
+modifyLeft f s = use leftSyms >>= lift . flip2 MV.modify f s
 
 modifyRight :: PrimMonad m => (SymEntry -> SymEntry) ->
                Sym -> TypeT m ()
-modifyRight f s = use rightType >>= lift . flip2 MV.modify f s
+modifyRight f s = use rightSyms >>= lift . flip2 MV.modify f s
 
 -- PREDICATES
 
 member :: PrimMonad m => TypeState (PrimState m) -> Sym -> Sym -> m Bool
-member (TS _ u0 _ u1) s0 s1 = liftA2 (&&) (_isMember <$> MV.read u0 s0)
+member (TS _ u0 u1) s0 s1 = liftA2 (&&) (_isMember <$> MV.read u0 s0)
                                           (_isMember <$> MV.read u1 s1)
 
 -- | Give the (possibly empty) set of available mutations that would
 -- switch the membership of the given joint in the type
 mutsOf :: PrimMonad m =>
           TypeState (PrimState m) -> Sym -> Sym -> m [Mutation]
-mutsOf (TS _ u0 _ u1) s0 s1 = mutsOf_ <$> sequence (s0, MV.read u0 s0)
-                                      <*> sequence (s1, MV.read u1 s1)
+mutsOf (TS _ u0 u1) s0 s1 = mutsOf_ <$> sequence (s0, MV.read u0 s0)
+                                    <*> sequence (s1, MV.read u1 s1)
 
 -- | Give the (possibly empty) set of available Del mutations that would
 -- take the given joint out of the type (assumes it's in)
 delMutsOf :: PrimMonad m =>
              TypeState (PrimState m) -> Sym -> Sym -> m [Mutation]
-delMutsOf (TS _ u0 _ u1) s0 s1 = delMutsOf_ <$> sequence (s0, MV.read u0 s0)
-                                            <*> sequence (s1, MV.read u1 s1)
+delMutsOf (TS _ u0 u1) s0 s1 = delMutsOf_ <$> sequence (s0, MV.read u0 s0)
+                                          <*> sequence (s1, MV.read u1 s1)
 
 -- | Give the (possibly missing) mutation that would make the given
 -- joint member of the type (assumes it's not)
 addMutOf :: PrimMonad m =>
             TypeState (PrimState m) -> Sym -> Sym -> m (Maybe Mutation)
-addMutOf (TS _ u0 _ u1) s0 s1 = addMutOf_ <$> sequence (s0, MV.read u0 s0)
-                                          <*> sequence (s1, MV.read u1 s1)
+addMutOf (TS _ u0 u1) s0 s1 = addMutOf_ <$> sequence (s0, MV.read u0 s0)
+                                        <*> sequence (s1, MV.read u1 s1)
 
 ----------
 -- INIT --
@@ -147,7 +150,7 @@ addMutOf (TS _ u0 _ u1) s0 s1 = addMutOf_ <$> sequence (s0, MV.read u0 s0)
 -- return the SymEntries of the left and right unions of the type
 init :: PrimMonad m => Int -> [(Sym,Sym)] -> JointType ->
         m (TypeState (PrimState m))
-init m allJoints (JT u0 u1) = do
+init m allJoints jt@(JT u0 u1) = do
   uLeft  <- MV.replicate m emptyOut -- uLeft
   uRight <- MV.replicate m emptyOut -- uRight
   forM_ s0s $ flip (MV.write uLeft ) emptyIn
@@ -177,26 +180,14 @@ init m allJoints (JT u0 u1) = do
       [s0] -> MV.modify uLeft (dependents %~ IS.insert s1) s0
       _else -> return ()
 
-  return $ TS sz0 uLeft sz1 uRight
+  return $ TS jt uLeft uRight
   where
     s0s = UT.toList u0 -- left member symbols
     s1s = UT.toList u1 -- right member symbols
-    sz0 = UT.size u0
-    sz1 = UT.size u1
 
 ------------
 -- UPDATE --
 ------------
-
-data SymEntry_ = SymEntry_
-  { __isMember :: !Bool -- ^ True iff self is member of the union type
-  , __coSymsIn :: !IntSet -- ^ Symbols that have a joint with
-                         -- self and member of the co-union
-  , __dependents :: !IntSet -- ^ CoSymsIn that have self as only coSymsIn
-  , __coSymsOut :: !IntSet } -- ^ Symbols that have a joint with self and
-                            -- *not* member of the co-union
-  deriving (Show,Eq,Ord)
-
 
 pushMut :: PrimMonad m => Mutation -> TypeT m ()
 pushMut = \case AddLeft s0 -> addLeft s0
@@ -207,7 +198,7 @@ pushMut = \case AddLeft s0 -> addLeft s0
                 Del2 s0 s1 -> delLeft s0 >> delRight s1
   where
     addLeft s0 = do
-      leftSize += 1
+      jointType %= JT.insertLeftMissing s0
       e0@(SymEntry mem coIn deps coOut) <- readLeft s0
       when mem $ err' $ "addLeft: symbol already member: " ++ show s0
       unless (IS.null deps) $
@@ -218,7 +209,7 @@ pushMut = \case AddLeft s0 -> addLeft s0
       writeLeft s0 $ e0 & isMember .~ True
 
     addRight s1 = do
-      rightSize += 1
+      jointType %= JT.insertRightMissing s1
       e1@(SymEntry mem coIn deps coOut) <- readRight s1
       when mem $ err' $ "addRight: symbol already member: " ++ show s1
       unless (IS.null deps) $
@@ -229,7 +220,7 @@ pushMut = \case AddLeft s0 -> addLeft s0
       writeRight s1 $ e1 & isMember .~ True
 
     delLeft s0 = do
-      leftSize -= 1
+      jointType %= JT.deleteLeftMember s0
       e0@(SymEntry mem coIn deps coOut) <- readLeft s0
       unless mem $ err' $ "delLeft: symbol not member: " ++ show s0
       unless (IS.null deps) $
@@ -250,7 +241,7 @@ pushMut = \case AddLeft s0 -> addLeft s0
       writeLeft s0 $ e0 & isMember .~ False
 
     delRight s1 = do
-      rightSize -= 1
+      jointType %= JT.deleteRightMember s1
       e1@(SymEntry mem coIn deps coOut) <- readRight s1
       unless mem $ err' $ "delRight: symbol not member: " ++ show s1
       unless (IS.null deps) $

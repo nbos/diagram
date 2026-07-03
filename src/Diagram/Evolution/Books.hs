@@ -26,7 +26,6 @@ import Diagram.Evolution.Math (logFact)
 import qualified Diagram.Evolution.Math as Math
 import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
 
-
 import Diagram.Util
 
 --------------------
@@ -56,7 +55,7 @@ fromParamsWith n'Of mut cis cor = E mut loss ddns dnm cis
     dnm = -(sum ddns `div` 2)
     ns = cis^.CIs.symCounts
     ddns = (if typeOfMut mut == Add then negate <$> ns else ns)
-          `union` cor
+           `union` cor
     union = IM.mergeWithKey (const $ nothingIf (==0) .: (+)) id id
 
 eval :: Int -> Int -> Int -> Int -> Entry -> Double

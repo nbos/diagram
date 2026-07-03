@@ -255,90 +255,6 @@ streamRuns_ (JT u0 u1) = go0
               | s1 `UT.member` u0 -> return ([], go1 i1 s1 iss')
               | otherwise -> return ([], go0 iss'')
 
-deltaByMut :: forall m r. PrimMonad m => JointType -> Doubly (PrimState m) ->
-              Stream (Of (NonEmpty IxdJoint)) m r ->
-              Stream (Of (SomeMutation, IntMap Int)) m r
-deltaByMut jt ss ijts = (lift (D.lastKey ss) >>=) $ \case
-  Nothing -> lift $ S.effects ijts -- ijts should be empty so drain
-  Just iLast -> deltaByMut_ jt ss iLast ijts
-
-deltaByMut_ :: forall m r. PrimMonad m => JointType -> Doubly (PrimState m) -> Index ->
-               Stream (Of (NonEmpty IxdJoint)) m r ->
-               Stream (Of (SomeMutation, IntMap Int)) m r
-deltaByMut_ (JT u0 u1) ss iLast = go
-  where
-    go :: Stream (Of (NonEmpty IxdJoint)) m r ->
-          Stream (Of (SomeMutation, IntMap Int)) m r
-    go ijts = (lift (S.next ijts) >>=) $ \case
-      Left r -> return r -- end
-      Right (IJ i0 s0 i1 s1 :| rest, ijts') -> do
-        im1 <- prev i0
-        if im1 == iLast then go ijts' -- skip
-          else do
-          sm1 <- read im1
-          let inLeft = sm1 `UT.member` u0
-              inRight = s0 `UT.member` u1
-
-              mut | inLeft = Mut (AddRight s0) -- assert (not inRight)
-                  | inRight = Mut (AddLeft sm1) -- assert (not inLeft)
-                  | otherwise = Mut (Add2 sm1 s0)
-
-              u0' | inLeft = u0
-                  | otherwise = UT.insertMissing sm1 u0
-
-              u1' | inRight = u1
-                  | otherwise = UT.insertMissing s0 u1
-
-          undefined
-
-
-    prev :: MonadTrans t => Index -> t m Index
-    prev = lift . D.unsafePrevKey ss
-
-    next :: MonadTrans t => Index -> t m Index
-    next = lift . D.unsafeNextKey ss
-
-    read :: MonadTrans t => Index -> t m Sym
-    read = lift . D.read ss
-
--- brokenSites :: forall m r. PrimMonad m => Doubly (PrimState m) ->
---                Stream (Of (Index, NonEmpty (Sym,Sym))) m r -> m (Of (Joints Sites) r)
--- brokenSites = S.fold (flip insert) M.empty id .: brokenSites_
---   where insert (s0s1,i) = M.insertWith (const $ (+1) `bimap` IS.insert i)
---                           s0s1 (1 :!: IS.singleton i)
-
--- -- | Given a reference string and a stream of construction runs, enumerate the
--- brokenSites_ :: forall m r. PrimMonad m => Doubly (PrimState m) ->
---                 Stream (Of (Index, NonEmpty (Sym,Sym))) m r ->
---                 Stream (Of ((Sym,Sym), Index)) m r
--- brokenSites_ ss irs0 = (lift (D.lastKey ss) >>=) $ \case
---   Nothing -> error "Refinement.brokenSites: empty string"
---   Just iLast -> go iLast irs0
---   where
---     next :: MonadTrans t => Index -> t m Index
---     next = lift . D.nextKey ss
-
---     go iLast = goStr where
---       goStr :: Stream (Of (Index, NonEmpty (Sym,Sym))) m r ->
---                Stream (Of ((Sym,Sym), Index)) m r
---       goStr irs = (lift (S.next irs) >>=) $ \case
---         Left r -> return r
---         Right ((i0,(_,s1):|rest), irs') ->
---           lift (D.nextKey ss i0) -- \i1 ->
---           >>= flip2 goRun s1 rest
---           >> goStr irs'
-
---       goRun :: Int -> Sym -> [(Sym,Sym)] -> Stream (Of ((Sym,Sym), Int)) m ()
---       goRun i1 s1 ((s2,s3):rest) =
---         S.yield ((s1,s2),i1)
---         >> (next i1 >>= next) -- \i3 ->
---         >>= flip2 goRun s3 rest
-
---       goRun i1 s1 []
---         | i1 == iLast = return () -- end of string, nothing broken
---         | otherwise = do s2 <- lift . D.read ss =<< next i1
---                          S.yield ((s1,s2),i1)
-
 -- -------------- --
 -- -- MUTATION -- --
 -- -------------- --
@@ -1027,8 +943,8 @@ printInfo :: MonadIO m => (JointType, Map (Sym,Sym) a) ->
              (JointType, Map (Sym,Sym) b) -> m ()
 printInfo (jt,jts) (rjt,rjts) = liftIO $ putStrLn $
   "generated refinement type with size "
-  ++ show (JT.size rjt)
-  ++ " from "  ++ show (JT.size jt)
+  ++ show (JT.dims rjt)
+  ++ " from "  ++ show (JT.dims jt)
   ++ " covering " ++ show (Jts.size rjts)
   ++ " joints out of " ++ show (Jts.size jts)
   ++ " ("  ++ show

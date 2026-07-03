@@ -4,12 +4,15 @@
 {-# LANGUAGE TupleSections, LambdaCase, BangPatterns #-}
 module Diagram.Evolution (module Diagram.Evolution) where
 
+import Prelude hiding (init)
+
 import Control.Monad
 import Control.Monad.Extra
 import Control.Lens hiding (both,last1,Index,(:>),index)
 import Control.Monad.State.Strict
 
 import Data.Maybe
+import Data.Function
 import qualified Data.List as L
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NE
@@ -27,6 +30,7 @@ import Diagram.Primitive
 
 import Diagram.Joints (Joints)
 import Diagram.JointType (JointType)
+import qualified Diagram.JointType as JT
 import Diagram.String
 import Diagram.ConstrInterval(CI(..), ciLength, tailSymbol, tailIndex)
 import qualified Diagram.ConstrInterval as CI
@@ -37,7 +41,7 @@ import Diagram.Evolution.Math (logFact)
 import qualified Diagram.Evolution.Math as Math
 import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
 
-import Diagram.Evolution.TypeState (TypeState(TS))
+import Diagram.Evolution.TypeState (TypeState)
 import qualified Diagram.Evolution.TypeState as TS
 import Diagram.Evolution.Books ( Entry(..), eDdns, eDnsLoss,
                                  Books(Books), byAffected, byMut )
@@ -99,31 +103,72 @@ evalAll = evalAll_ <$> numSymbols -- m
                    <*> use mutBooks -- Books
 
 evalAll_ :: Int -> Int -> Int -> TypeState s -> Books s -> [(Double, Entry)]
-evalAll_ m bigN nm (TS sz0 _ sz1 _) (Books als ars a2s dls drs d2s _ _) =
+evalAll_ m bigN nm tst (Books als ars a2s dls drs d2s _ _) =
   concat $ zipWith (fmap . toFst) lossFns entries
   where
+    (sz0,sz1) = JT.dims $ tst^.TS.jointType
     vm = sz0 * sz1
     lossFns :: [Entry -> Double]
     lossFns = Entry.eval m bigN nm <$> vm's
     vm's = [ vm + sz1 -- addLeft
            , vm + sz0 -- addRight
-           , vm + sz0 + sz1 -- add2
+           , vm + sz0 + sz1 + 1 -- add2
            , vm - sz1 -- delLeft
            , vm - sz0 -- delRight
-           , vm - sz0 - sz1 ] :: [Int] -- del2
+           , vm - sz0 - sz1 - 1 ] :: [Int] -- del2
 
     entries :: [[Entry]]
     entries = flatten <$> [ als, ars, a2s, dls, drs, d2s ]
     flatten = concatMap (concatMap M.elems . M.elems)
               . IM.elems
 
+-- EXEC --
+
+ddInformation :: PrimMonad m => Entry -> EvolutionT m Double
+ddInformation (E mut _ ddns dnm _) = do
+  m <- numSymbols
+  bigN <- use stringLen
+  ns <- use symCounts
+  dns <- use symDeltas
+  nm <- use jointCount
+  vm <- variety
+  (sz0, sz1) <- (typeState.TS.jointType) `uses` JT.dims
+
+  let dns' = IM.unionWith (+) dns ddns
+      ils = (<$> IM.toList dns') $ \(s,dn) -> let n = ns U.! s
+                                              in (n, n + dn)
+      vm' = case mut of
+        AddLeft _  -> vm + sz1 -- addLef
+        AddRight _ -> vm + sz0 -- addRig
+        Add2 _ _   -> vm + sz0 + sz1 + 1
+        DelLeft _  -> vm - sz1 -- delLef
+        DelRight _ -> vm - sz0 -- delRig
+        Del2 _ _   -> vm - sz0 - sz1 - 1
+
+  return $ Math.ddInfo m bigN ils (nm, nm+dnm) (vm, vm')
+
+step :: PrimMonad m => EvolutionT m Bool
+step = do
+  e <- snd . L.minimumBy (compare `on` fst) <$> evalAll
+  ddInfo <- ddInformation e
+  if ddInfo > 0 then return False else
+    pushMut e >> return True
+
+hillClimb :: forall m. PrimMonad m =>
+  Int -> Int -> Doubly (PrimState m) -> U.Vector Int -> Joints CIs ->
+  (JointType, Joints CIs) -> m JointType
+hillClimb = init >======>
+            execStateT (whileM step)
+            >.> fmap (^.typeState.TS.jointType)
+
 ------------
 -- UPDATE --
 ------------
 
+-- | Apply a mutation, update books
 pushMut :: PrimMonad m => Entry -> EvolutionT m ()
 pushMut (E mut _ ddns dnm cis) = do
-  -- COMPUTE DIFFERENCE IN CORRECTIONS
+  -- ENUMERATE BEFORE/AFTER CORRECTIONS
   (oldCorrs, newCorrs) <- case typeOfMut mut of
     Add -> do old <- uses2 doubly typeState corrections
                      >>= forM cisL
