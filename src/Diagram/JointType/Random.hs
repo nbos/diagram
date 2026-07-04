@@ -11,7 +11,6 @@ import Control.Monad.State.Strict ( StateT
                                   , MonadState(get)
                                   , evalStateT )
 import Control.Monad.Random (MonadRandom(getRandomR, getRandom))
-import Control.Monad.IO.Class (MonadIO(..))
 
 import Data.Maybe
 import Data.Tuple.Extra
@@ -24,10 +23,8 @@ import Diagram.Primitive
 
 import Diagram.String
 import Diagram.Joints (Joints,Joints2S(J2S))
-import qualified Diagram.Joints as Jts
 import qualified Diagram.UnionType as UT
 import Diagram.JointType (JointType(..))
-import qualified Diagram.JointType as JT
 
 import Diagram.Util
 
@@ -198,73 +195,3 @@ genRandomWith r (J2S byFst0 bySnd0) =
         if Just s0 `notElem` deleted0 then goElimFst True s0 -- rec
           else do fstUnion %= IS.insert s0
                   refJoints %= M.insert (s0,s1) a01 -- null staged0
-
---------------
--- IO STATS --
---------------
-
-printInfo :: MonadIO m => (JointType, Map (Sym,Sym) a) ->
-             (JointType, Map (Sym,Sym) b) -> m ()
-printInfo (jt,jts) (rjt,rjts) = liftIO $ putStrLn $
-  "generated refinement type with size "
-  ++ show (JT.dims rjt)
-  ++ " from "  ++ show (JT.dims jt)
-  ++ " covering " ++ show (Jts.size rjts)
-  ++ " joints out of " ++ show (Jts.size jts)
-  ++ " ("  ++ show
-  (round @_ @Int $ 100.0 * fromIntegral (Jts.size rjts)
-    / fromIntegral @_ @Double (Jts.size jts))
-  ++ "%)"
-
-printLUB :: MonadIO m => JointType -> Map (Sym,Sym) a -> m ()
-printLUB jt jts = liftIO $ do
-  putStr "refinement is "
-  if jt == JT.fromJoints jts
-    then putStrLn $ inGreen "LUB" ++ " of its joints"
-    else do putStrLn $ inRed "not LUB" ++ " of its joints"
-            putStrLn $ "rtjt: " ++ show (jt, void jts)
-            error "LUB error"
-
-printSubtyping :: MonadIO m => (JointType, Map (Sym,Sym) a) ->
-                  (JointType, Map (Sym,Sym) b) -> m ()
-printSubtyping (jt,jts) (rjt,rjts) = liftIO $ do
-  let jts' = jts M.\\ rjts
-  putStr "refinement is "
-  if rjt `JT.leq` jt
-    then putStrLn $ inGreen "subtype" ++ " of its parent"
-    else do putStrLn $ inRed "not subtype" ++ " of its parent"
-            putStrLn $ "tjt: " ++ show (jt, void jts)
-              ++ "\ntjt': " ++ show (jt, void jts')
-              ++ "\nrtjt: " ++ show (rjt, void rjts)
-            error "subtype error"
-
-printConservation :: MonadIO m => (JointType, Map (Sym,Sym) a) ->
-                     (JointType, Map (Sym,Sym) a) -> m ()
-printConservation (jt,jts) (rjt,rjts) = liftIO $ do
-  let jts' = jts M.\\ rjts
-  putStr "split " -- TODO: check disjointness too?
-  if void jts == (void rjts `M.union` void jts')
-    then putStrLn $ inGreen "preserves" ++ " all joints"
-    else do putStrLn $ inRed "does not preserve" ++ " all joints"
-            putStrLn $ "tjt: " ++ show (jt, void jts)
-              ++ "\ntjt': " ++ show (jt, void jts')
-              ++ "\nrtjt: " ++ show (rjt, void rjts)
-            error "joints split error"
-
-printMembership :: MonadIO m => Map (Sym,Sym) a -> (JointType, Map (Sym,Sym) a) -> m ()
-printMembership jts (rjt,rjts) = liftIO $ do
-  let rjtsVerif = M.filterWithKey (\k _ -> k `JT.member` rjt) jts
-  putStr "returned joints "
-  if M.keys rjts == M.keys rjtsVerif
-    then putStrLn $ inGreen "match" ++ " joints covered by the refinement"
-    else do putStrLn $ inRed "don't match" ++ " joints covered by the refinement"
-            putStrLn $ "rtjt: " ++ show (M.keys rjts)
-              ++ "\nrjts: " ++ show (M.keys rjts)
-              ++ "\nrjtsVerif: " ++ show (M.keys rjtsVerif)
-            error "joints coverage error"
-
-inRed :: String -> String
-inRed s = "\ESC[31mError:" ++ s ++ "\ESC[0m"
-
-inGreen :: String -> String
-inGreen s = "\ESC[32m" ++ s ++ "\ESC[0m"

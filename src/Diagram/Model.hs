@@ -51,7 +51,7 @@ emptyFromAtoms ss = do
 -- | Histogram of the 256 bytes in a stream
 countAtoms :: PrimMonad m => Stream (Of Word8) m r -> m (U.Vector Int, r)
 countAtoms ss = do
-  mks <- U.unsafeThaw $ U.replicate 256 0
+  mks <- MV.replicate 256 0
   r <- S.effects $ S.mapM (MV.modify mks (+1) . fromEnum) ss
   ks <- U.freeze mks
   return (ks, r)
