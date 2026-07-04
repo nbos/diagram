@@ -45,7 +45,8 @@ import qualified Streaming.ByteString as Q
 import Diagram.Streaming ()
 import Diagram.String
 
-import Diagram.JointType (JointType)
+import qualified Diagram.UnionType as UT
+import Diagram.JointType (JointType(JT))
 import qualified Diagram.JointType as JT
 import qualified Diagram.JointType.Random as JT
 
@@ -104,8 +105,13 @@ main = do
     withPB bigN "Initializing string" $
     Q.unpack $ Q.fromHandle h
 
-  let top = JT.fromJoints allCIs
-  putStr "Top type: " >> print top
+  putStr "\nString: " >> D.toList dly >>= print
+  putStrLn ""
+
+  let top@(JT tu0 tu1) = JT.fromJoints allCIs
+  putStr "Top type: " >> print (UT.toList tu0)
+  putStr "          " >> print (UT.toList tu1)
+  putStrLn ""
 
   let allCIs2s = Jts.sized $ Jts.doubleIndex 256 allCIs
       m = 256 :: Int
@@ -116,11 +122,14 @@ main = do
       where -- MAIN LOOP --
       go :: RandT StdGen IO ()
       go = do
-        (jt, cis) <- JT.genRandom allCIs2s
+        (jt@(JT u0 u1), cis) <- JT.genRandom allCIs2s
 
         -- report stats, verify properties/integrity
         printInfo (top, allCIs) (jt, cis)
-        lift $ putStr "Generated type: " >> print jt
+        lift $ putStr "Generated type: " >> print (UT.toAscList u0)
+        lift $ putStr "                " >> print (UT.toAscList u1)
+        lift $ putStrLn ""
+
         printLUB jt cis
         printSubtyping (top, allCIs) (jt, cis)
         printConservation (top, allCIs) (jt, cis)
@@ -128,8 +137,9 @@ main = do
         lift $ putStrLn ""
         --
 
-        jt' <- Evo.hillClimb m bigN dly ns allCIs (jt,cis)
-        lift $ putStr "Minimal type: " >> print jt'
+        (JT u0' u1') <- Evo.hillClimb m bigN dly ns allCIs (jt,cis)
+        lift $ putStr "Minimal type: " >> print (UT.toAscList u0')
+        lift $ putStr "              " >> print (UT.toAscList u1')
 
         go -- repeat
 

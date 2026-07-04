@@ -268,7 +268,8 @@ init m bigN dly ns jointCIs (jt, memJointCIs) = do
   corrsByMut <- fromMaybe M.empty . foldTree union
                 <$> mapM (corrections dly tst) (CIs.toList memCIs)
 
-  fmap (EvolutionState bigN dly ns tst dns nm) $ Books.fromList m $ M.elems $
+  (EvolutionState bigN dly ns tst dns nm <$>) $
+    Books.fromList m $ M.elems $
     M.mergeWithKey (Just .:. Entry.fromParamsWith n'Of) -- both CIs + corr
     (M.mapWithKey $ Entry.fromParams n'Of) -- only CIs
     (error . ("CIs missing: " ++) . show) -- only corr

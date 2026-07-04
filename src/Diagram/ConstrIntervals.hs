@@ -158,11 +158,11 @@ join_ ciAs ciBs = runIdentity $ flip evalStateT (JoinState ciAs ciBs IM.empty) $
 
   -- fold new sym count deltas into the counts map
   dns <- use delta
-  bhds <- uses2 (_A.byHead) (_B.byHead) $ IM.unionWithKey err
-  btls <- uses2 (_A.byTail) (_B.byTail) $ IM.unionWithKey err
+  bhd <- uses2 (_A.byHead) (_B.byHead) $ IM.unionWithKey err
+  btl <- uses2 (_A.byTail) (_B.byTail) $ IM.unionWithKey err
   let ns' = L.foldl' (flip $ uc alter) ns (IM.toList dns)
 
-  return (CIs jt ns' bhds btls, dns)
+  return (CIs jt ns' bhd btl, dns)
 
   where
     JT uA0 uA1 = ciAs^.jointType
@@ -174,8 +174,8 @@ join_ ciAs ciBs = runIdentity $ flip evalStateT (JoinState ciAs ciBs IM.empty) $
       Nothing -> Just d
       Just n -> nothingIf (== 0) (n + d)
 
-    inc = inc_ 1
-    -- dec = inc_ (-1)
+    -- inc = inc_ 1
+    dec = inc_ (-1)
     inc_ :: Int -> Sym -> StateT JoinState Identity ()
     inc_ d s = delta %= alter s d
 
@@ -194,7 +194,7 @@ join_ ciAs ciBs = runIdentity $ flip evalStateT (JoinState ciAs ciBs IM.empty) $
       _B.byHead %= IM.delete hdB -- delete [hdB ..]
       _B.byTail %= IM.delete tlB -- delete [.. tlB]
 
-      when (odd lenA) $ inc stlA
+      when (even lenA) $ dec stlA
       let ciAB@(CI _ _ lenAB _ _) = CI.unsafeJoin ciA ciB
 
       ((_A.byHead) %%= deleteLookup tlB >>=) $ \case
@@ -207,7 +207,7 @@ join_ ciAs ciBs = runIdentity $ flip evalStateT (JoinState ciAs ciBs IM.empty) $
 
         -- sandwich: [hdA..tlA) <> [hdB..tlB) <> [hdA2..tlA2] ==> [hdA..tlA2]
         Just ciA2@(CI hdA2 _ lenA2 tlA2 stlA2) -> do
-          when (odd lenB) $ inc stlB
+          when (even lenB) $ dec stlB
           let ciABA@(CI _ _ lenABA _ _) = CI.unsafeJoin ciAB ciA2
           _A.byHead %= IM.delete hdA2 -- delete hdA2
           _A.byHead %= IM.insert hdA ciABA -- update hdA
