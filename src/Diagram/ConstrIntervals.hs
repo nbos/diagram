@@ -44,6 +44,13 @@ data CIs = CIs
 
 makeLenses ''CIs
 
+toList :: CIs -> [CI]
+toList = IM.elems . _byHead
+
+-- | Count the number of constructions
+jointCount :: CIs -> Int
+jointCount = (`div` 2) . sum . _symCounts
+
 ------------------
 -- CONSTRUCTION --
 ------------------
@@ -105,33 +112,6 @@ fromStream_0 is0@(i0,s0) ss !m = (S.next ss >>=) $ \case
   where
     err :: (Show k, Show v0, Show v1) => k -> v0 -> v1 -> a
     err = error . ("ConstrIntervals.fromStream: collision: " ++) . show .:. (,,)
-
-----------------
--- CONVERSION --
-----------------
-
-toList :: CIs -> [CI]
-toList = IM.elems . _byHead
-
--- | Intervals are great for join-ing but differences (subtracting
--- sites) and tracking delta delta deleta (d3) counts requires a more
--- explicit representation. Sites contain all constructive indexes (s0's
--- specifically) of a set of joints.
-type Sites = IntSet
-
--- | (TODO: DELETE (OLD LOGIC)) Given the reference string (read only),
--- convert the constr. intervals to the explicit set of constructive
--- indexes.
-toSites :: PrimMonad m => Doubly (PrimState m) -> CIs -> m Sites
-toSites str cis = fmap (IS.fromList . concat) $
-  forM (toList cis) $ \(CI hd _ len _ _) ->
-    if len < 4 then return [hd]
-    else fmap everyOther $ S.toList_ $
-         S.take len $ D.streamKeysFrom str hd
-  where
-    everyOther [] = []
-    everyOther [a] = [a]
-    everyOther (a:_:rest) = a:everyOther rest
 
 -----------------
 -- COMPOSITION --
@@ -239,3 +219,27 @@ join_ ciAs ciBs = runIdentity $ flip evalStateT (JoinState ciAs ciBs IM.empty) $
 deleteLookup :: Sym -> IntMap a -> (Maybe a, IntMap a)
 deleteLookup = IM.updateLookupWithKey (\_ _ -> Nothing)
 {-# INLINE deleteLookup #-}
+
+----------------
+-- CONVERSION --
+----------------
+
+-- | Intervals are great for join-ing but differences (subtracting
+-- sites) and tracking delta delta deleta (d3) counts requires a more
+-- explicit representation. Sites contain all constructive indexes (s0's
+-- specifically) of a set of joints.
+type Sites = IntSet
+
+-- | (TODO: DELETE (OLD LOGIC)) Given the reference string (read only),
+-- convert the constr. intervals to the explicit set of constructive
+-- indexes.
+toSites :: PrimMonad m => Doubly (PrimState m) -> CIs -> m Sites
+toSites str cis = fmap (IS.fromList . concat) $
+  forM (toList cis) $ \(CI hd _ len _ _) ->
+    if len < 4 then return [hd]
+    else fmap everyOther $ S.toList_ $
+         S.take len $ D.streamKeysFrom str hd
+  where
+    everyOther [] = []
+    everyOther [a] = [a]
+    everyOther (a:_:rest) = a:everyOther rest

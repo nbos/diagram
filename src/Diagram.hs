@@ -34,21 +34,17 @@ import Control.Monad.State.Strict (MonadTrans(lift))
 import Control.Monad.Random.Class (MonadRandom(getRandom))
 
 import Data.Word (Word64)
-import Data.Maybe
-import qualified Data.Strict.Tuple as Strict
-import qualified Data.Vector.Unboxed as U
 
 import qualified Streaming.Prelude as S
 import qualified Streaming.ByteString as Q
 import Diagram.Streaming ()
 
-import qualified Diagram.Doubly as D
 import qualified Diagram.Joints as Jts
 import qualified Diagram.JointType as JT
-import qualified Diagram.Model as Mdl
+import qualified Diagram.ConstrIntervals as CIs
 import Diagram.Progress (withPB)
 
-import qualified Diagram.JointType.Random as Ref
+import qualified Diagram.JointType.Random as Gen
 
 data Options = Options
   { optFilename :: !FilePath
@@ -75,55 +71,45 @@ main = do
       <> progDesc "Chunking with joints and unions"
       <> header "diagram" )
 
-  -- can't inspect seed at init or deconstruct to seed, so we gen a
-  -- random StdGen seed with a StdGen
-  seedStdGen <- R.initStdGen
-  let seed = fromMaybe (evalRand getRandom seedStdGen)
-             (optSeed opts)
-      stdGen = R.mkStdGen64 seed
+  -- Random won't let you inspect seed at init or deconstruct to seed,
+  -- so we manually gen a StdGen seed based on a random StdGen
+  seed <- case optSeed opts of
+    Just sd -> return sd
+    Nothing -> evalRand getRandom <$> R.initStdGen
+  let stdGen = R.mkStdGen64 seed
   putStr "Using seed: " >> print seed
 
   -- read file
   h <- openFile (optFilename opts) ReadMode
   sz <- fromInteger @Int <$> hFileSize h
 
-  (dly,(mdl,())) <- D.fromStream @_ @U.MVector sz $
-                    S.map fromEnum $
-                    Mdl.emptyFromAtoms $
-                    S.copy $
-                    withPB sz "Counting symbols" $
-                    Q.unpack $ Q.fromHandle h
+  (allJointCIs, ()) <- CIs.fromStream $
+                       S.zip (S.enumFrom 0) $
+                       S.map fromEnum $
+                       withPB sz "Initializing string" $
+                       Q.unpack $ Q.fromHandle h
 
-  (jtniss,()) <- Jts.fromStream $
-                 withPB sz "Counting joints" $
-                 D.streamWithKey dly
+  let allJointCounts = CIs.jointCount <$> allJointCIs
+      top = JT.fromJoints allJointCounts
+      joints2S = Jts.sized $ Jts.doubleIndex 256 allJointCounts
 
-  -- forM types
-  let jtns = Strict.fst <$> jtniss
-      jt = JT.fromJoints jtns
-  putStr "Top type: " >> print jt
+  putStr "Top type: " >> print top
+  case () of
+    _ -> evalRandT go stdGen -- run
 
-  let jtns2 = Jts.doubleIndex 256 jtns -- IntMap (IntMap a)
-      jtns2S = Jts.sized jtns2 -- Map Sym (Map Sym a)
-
-  let go :: RandT StdGen IO ()
+      where -- MAIN LOOP --
+      go :: RandT StdGen IO ()
       go = do
-
-        (rjt,rjtns) <- Ref.genRandom jtns2S
+        (jt,jtns) <- Gen.genRandom joints2S
 
         -- report stats, verify properties/integrity
-        Ref.printInfo (jt,jtns) (rjt,rjtns)
-        lift $ print rjt
-
-        Ref.printLUB rjt rjtns
-        Ref.printSubtyping (jt,jtns) (rjt,rjtns)
-        Ref.printConservation (jt,jtns) (rjt,rjtns)
-        Ref.printMembership jtns (rjt,rjtns)
+        Gen.printInfo (top, allJointCounts) (jt, jtns)
+        lift $ print jt
+        Gen.printLUB jt jtns
+        Gen.printSubtyping (top, allJointCounts) (jt, jtns)
+        Gen.printConservation (top, allJointCounts) (jt, jtns)
+        Gen.printMembership allJointCounts (jt, jtns)
         lift $ putStrLn ""
         --
 
-        go -- loop
-
-  -- run loop -------
-  evalRandT go stdGen
-  -------------------
+        go -- repeat

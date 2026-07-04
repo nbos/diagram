@@ -1,10 +1,7 @@
-{-# LANGUAGE ScopedTypeVariables, RankNTypes, TypeOperators #-}
-{-# LANGUAGE BangPatterns, LambdaCase #-}
+{-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
 module Diagram.Joints (module Diagram.Joints, Sym) where
 
 import Control.Monad
-import Control.Lens hiding (Index)
-import Control.Monad.Primitive (PrimMonad(PrimState))
 import Control.Monad.ST (runST)
 
 import Data.Function (on)
@@ -15,73 +12,16 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
-import Data.IntSet (IntSet)
-import qualified Data.IntSet as IS
-import qualified Data.Set as Set
-import Data.Strict.Tuple (Pair((:!:)),(:!:))
 
 import qualified Data.Vector.Mutable as MV
 
-import Streaming hiding (first,second)
-import qualified Streaming.Prelude as S
-
 import Diagram.String
-import qualified Diagram.Doubly as D
 
 -- | Count and location of each candidate/joint symbol in the string
 type Joints a = Map (Sym,Sym) a
 
 size :: Joints a -> Int
 size = M.size
-
-type Sites = Int :!: IntSet
-
-noSites :: Sites
-noSites = 0 :!: IS.empty
-
-------------------
--- CONSTRUCTION --
-------------------
-
-fromList :: [Sym] -> Joints Sites
-fromList = fst . runIdentity . fromStream . S.each . zip [0..]
-
--- | Construction using the indices of the doubly-linked list
-fromDoubly :: PrimMonad m =>
-              Doubly (PrimState m) -> m (Joints Sites)
-fromDoubly = fmap fst . fromStream . D.streamWithKey
-
-fromStream :: Monad m => Stream (Of (Index,Sym)) m r -> m (Joints Sites, r)
-fromStream iss0 = (S.next iss0 >>=) $ \case
-  Left r -> return (M.empty, r)
-  Right (i0s0,iss0') -> fromStream1 i0s0 M.empty iss0'
-
-fromStream1 :: Monad m => (Index, Sym) -> Joints Sites ->
-               Stream (Of (Index, Sym)) m r -> m (Joints Sites, r)
-fromStream1 (i0,s0) m iss = (S.next iss >>=) $ \case
-  Left r -> return (m,r) -- end
-  Right (i1s1@(_,s1),ss') -> fromStream2 s0 i1s1 m' ss'
-    where m' = addCons (s0,s1) i0 m -- inc constructive
-
--- | Joints from a stream that follows two symbols, given the index of
--- the last symbol.
-fromStream2 :: Monad m => Sym -> (Index, Sym) -> Joints Sites ->
-               Stream (Of (Index, Sym)) m r -> m (Joints Sites, r)
-fromStream2 sm1 (i0,s0) !m iss = (S.next iss >>=) $ \case
-  Left r -> return (m,r) -- end
-  Right (i1s1@(_,s1),ss') -> cont i1s1 m' ss'
-    where (m',cont)
-            | sm1 == s0 && s0 == s1 = (m, fromStream1)
-            | otherwise             = ( addCons (s0,s1) i0 m
-                                      , fromStream2 s0 )
-
-addCons :: (Sym,Sym) -> Index -> Joints Sites -> Joints Sites
-addCons (s0,s1) i0 = at (s0,s1) . non noSites -- . constructive
-                     %~ ((+1) `bimap` IS.insert i0)
-
--- addNoncons :: (Sym,Sym) -> Index -> Joints Sites -> Joints Sites
--- addNoncons (s0,s1) i0 = at (s0,s1) . non noSites . nonconstructive
---                         %~ ((+1) `bimap` IS.insert i0)
 
 -----------------
 -- RE-INDEXING --
@@ -149,20 +89,3 @@ im2m :: IntMap (IntMap a) -> Map Int (Map Int a)
 im2m = M.fromDistinctAscList
        . fmap (second $ M.fromDistinctAscList . IM.toAscList)
        . IM.toAscList
-
------------
--- DEBUG --
------------
-
--- | Re-compute the joint counts + locations to check the validity of a
--- given joints map. Throws an error if they differ.
-validate :: PrimMonad m => Joints Sites -> Doubly (PrimState m) -> a -> m a
-validate cdts ss a = do
-  cdtsRef <- fromDoubly ss
-  when (cdts /= cdtsRef) $
-    let cdtsSet = Set.fromList $ M.toList cdts
-        refSet = Set.fromList $ M.toList cdtsRef
-    in error $ "Joints.validate:\n"
-       ++ "should include: " ++ show (refSet Set.\\ cdtsSet) ++ "\n"
-       ++ "not:            " ++ show (cdtsSet Set.\\ refSet)
-  return a
