@@ -140,7 +140,7 @@ main = do
 printInfo :: MonadIO m => (JointType, Map (Sym,Sym) a) ->
              (JointType, Map (Sym,Sym) b) -> m ()
 printInfo (jt,jts) (rjt,rjts) = liftIO $ putStrLn $
-  "generated refinement type with size "
+  "generated type with size "
   ++ show (JT.dims rjt)
   ++ " from "  ++ show (JT.dims jt)
   ++ " covering " ++ show (Jts.size rjts)
@@ -152,7 +152,7 @@ printInfo (jt,jts) (rjt,rjts) = liftIO $ putStrLn $
 
 printLUB :: MonadIO m => JointType -> Map (Sym,Sym) a -> m ()
 printLUB jt jts = liftIO $ do
-  putStr "refinement is "
+  putStr "type is "
   if jt == JT.fromJoints jts
     then putStrLn $ inGreen "LUB" ++ " of its joints"
     else do putStrLn $ inRed "not LUB" ++ " of its joints"
@@ -163,7 +163,7 @@ printSubtyping :: MonadIO m => (JointType, Map (Sym,Sym) a) ->
                   (JointType, Map (Sym,Sym) b) -> m ()
 printSubtyping (jt,jts) (rjt,rjts) = liftIO $ do
   let jts' = jts M.\\ rjts
-  putStr "refinement is "
+  putStr "type is "
   if rjt `JT.leq` jt
     then putStrLn $ inGreen "subtype" ++ " of its parent"
     else do putStrLn $ inRed "not subtype" ++ " of its parent"
@@ -190,8 +190,8 @@ printMembership jts (rjt,rjts) = liftIO $ do
   let rjtsVerif = M.filterWithKey (\k _ -> k `JT.member` rjt) jts
   putStr "returned joints "
   if M.keys rjts == M.keys rjtsVerif
-    then putStrLn $ inGreen "match" ++ " joints covered by the refinement"
-    else do putStrLn $ inRed "don't match" ++ " joints covered by the refinement"
+    then putStrLn $ inGreen "match" ++ " joints under the type"
+    else do putStrLn $ inRed "don't match" ++ " joints under the type"
             putStrLn $ "rtjt: " ++ show (M.keys rjts)
               ++ "\nrjts: " ++ show (M.keys rjts)
               ++ "\nrjtsVerif: " ++ show (M.keys rjtsVerif)

@@ -8,6 +8,8 @@ import Control.Monad hiding (join)
 import Control.Lens hiding (Index,(:>))
 import Control.Monad.State.Strict
 
+import Data.Maybe
+import Data.Tuple.Extra
 import qualified Data.List as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -26,9 +28,7 @@ import Diagram.JointType (JointType(..))
 import qualified Diagram.JointType as JT
 import qualified Diagram.UnionType as UT
 
-import Diagram.ConstrInterval ( CI(..)
-                              , headIndex --, headSymbol
-                              , tailIndex, tailSymbol )
+import Diagram.ConstrInterval (CI(..))
 import qualified Diagram.ConstrInterval as CI
 
 import Diagram.Util
@@ -183,35 +183,37 @@ join_ ciAs ciBs = runIdentity $ flip evalStateT (JoinState ciAs ciBs IM.empty) $
     -- the tail of an interval of the other set 'A', join together, fix
     -- count if required and re-insert in 'A' set
     go :: CI -> StateT JoinState Identity ()
-    go ciB@(CI tlA@hdB _ _ tlB _) = do
-      _A.byTail %= IM.delete tlA -- delete [.. tlA]
+    go ciB@(CI tlA@hdB _ lenB tlB stlB) = do
+      -- can't accept a ciA independent of any previous go calls (as in
+      -- IM.intersectionWith (,)) because it could have been pre-pended
+      -- to (sandwich case), so we lookup (NOTE: doesn't that only
+      -- happen on the second pass though?)
+      ciA@(CI hdA _ lenA _ stlA) <-
+        _A.byTail %%= first fromJust . deleteLookup tlA -- delete [.. tlA]
+
       _B.byHead %= IM.delete hdB -- delete [hdB ..]
       _B.byTail %= IM.delete tlB -- delete [.. tlB]
 
-      -- can't accept a ciA independent of any previous go calls because
-      -- it could have been prepended to (sandwich case), so we lookup
-      -- (NOTE: doesn't that only happen on the second pass though?)
-      ciA <- (_A.byTail) `uses` (IM.! tlA)
-      when (CI.odd ciA) $ inc (ciA^.tailSymbol)
+      when (odd lenA) $ inc stlA
+      let ciAB@(CI _ _ lenAB _ _) = CI.unsafeJoin ciA ciB
 
-      let ciAB = CI.unsafeJoin ciA ciB
       ((_A.byHead) %%= deleteLookup tlB >>=) $ \case
         -- simple collision: [hdA..tlA) <> [hdB..tlB] ==> [hdA..tlB]
         Nothing -> do
-          _A.byHead %= IM.insert (ciAB^.headIndex) ciAB -- update hdA
-          _A.byTail %= IM.insert (ciAB^.tailIndex) ciAB -- insert tlB
-          let d = fromEnum (CI.even ciAB) - fromEnum (CI.even ciB)
-          unless (d == 0) $ inc_ d (ciAB^.tailSymbol)
+          _A.byHead %= IM.insert hdA ciAB -- update hdA
+          _A.byTail %= IM.insert tlB ciAB -- insert tlB
+          let d = fromEnum (even lenAB) - fromEnum (even lenB)
+          unless (d == 0) $ inc_ d stlB
 
         -- sandwich: [hdA..tlA) <> [hdB..tlB) <> [hdA2..tlA2] ==> [hdA..tlA2]
-        Just ciA2 -> do
-          when (CI.odd ciB) $ inc (ciA2^.tailSymbol)
-          let ciABA = CI.unsafeJoin ciAB ciA2
-          _A.byHead %= IM.delete (ciA2^.headIndex) -- delete hdA2
-          _A.byHead %= IM.insert (ciABA^.headIndex) ciABA -- update hdA
-          _A.byTail %= IM.insert (ciABA^.tailIndex) ciABA -- update tlA2
-          let d = fromEnum (CI.even ciABA) - fromEnum (CI.even ciA2)
-          unless (d == 0) $ inc_ d (ciABA^.tailSymbol)
+        Just ciA2@(CI hdA2 _ lenA2 tlA2 stlA2) -> do
+          when (odd lenB) $ inc stlB
+          let ciABA@(CI _ _ lenABA _ _) = CI.unsafeJoin ciAB ciA2
+          _A.byHead %= IM.delete hdA2 -- delete hdA2
+          _A.byHead %= IM.insert hdA ciABA -- update hdA
+          _A.byTail %= IM.insert tlA2 ciABA -- update tlA2
+          let d = fromEnum (even lenABA) - fromEnum (even lenA2)
+          unless (d == 0) $ inc_ d stlA2
 
     err :: (Show k, Show v0, Show v1) => k -> v0 -> v1 -> a
     err = error . ("ConstrIntervals.join: collision: " ++) . show .:. (,,)

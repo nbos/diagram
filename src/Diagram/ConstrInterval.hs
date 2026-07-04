@@ -17,8 +17,15 @@ data CI = CI { _headIndex  :: !Index
              , _ciLength   :: !Len
              , _tailIndex  :: !Index
              , _tailSymbol :: !Sym }
-  deriving(Show,Eq)
+  deriving(Eq)
 makeLenses ''CI
+
+instance Show CI where
+  show (CI hd shd len tl stl) = "CI " ++ show hd
+                                ++ " " ++ show shd
+                                ++ " " ++ show len
+                                ++ " " ++ show tl
+                                ++ " " ++ show stl
 
 -- | Construct an interval from two successive index-symbol pairs.
 singleton :: (Index,Sym) -> (Index,Sym) -> CI

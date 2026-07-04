@@ -209,8 +209,18 @@ infixr 2 >.>
 -- Lists --
 -----------
 
--- | Like takeWhile but also includes the item on which the predicate
--- fails.
+-- | Balanced fold `f (f a b) (f c d)` instead of foldr `f a (f b (f c
+-- d))` or foldl `f a (f b (f c d))`
+foldTree :: (a -> a -> a) -> [a] -> Maybe a
+foldTree _ [] = Nothing
+foldTree _ [a] = Just a
+foldTree f as  = foldTree f (pairs as)
+  where pairs []         = []
+        pairs [a]        = [a]
+        pairs (a:b:rest) = f a b : pairs rest
+
+-- | Like `takeWhile . (not .)` but also includes the item on which the
+-- predicate fails.
 takeUntil :: (a -> Bool) -> [a] -> [a]
 takeUntil p = foldr (\x ys -> x : if p x then [] else ys) []
 
@@ -470,9 +480,6 @@ catPairs :: [(a,a)] -> [a]
 catPairs [] = []
 catPairs ((x,y):xys) = x:y:catPairs xys
 {-# INLINE catPairs #-}
-
-countdown :: Int -> [Int]
-countdown n = [n,n-1..0]
 
 ---------------
 -- Functions --

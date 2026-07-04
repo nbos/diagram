@@ -219,7 +219,8 @@ pushMut (E mut _ ddns dnm cis) = do
   -- UPDATING LOSSES FROM DELTA COUNT CHANGES
   oldEntries <- use (mutBooks.byMut) -- before we modify
   readAffected <- (mutBooks.byAffected) `uses` MV.read
-  dnsAffected <- fmap M.unions $ forM (IM.toList ddns) $ \(s,ddn) -> do
+  dnsAffected <- fmap (fromMaybe M.empty . foldTree M.union) $
+    forM (IM.toList ddns) $ \(s,ddn) -> do
     let n = ns U.! s -- count prior to intro (no change)
         old_dn = dns IM.! s -- old delta of intro (FIXME: lookup?)
         old_n' = n + old_dn -- old count after intro
@@ -251,7 +252,7 @@ pushMut (E mut _ ddns dnm cis) = do
     cisJT = cis^.CIs.jointType
     cisL = CIs.toList cis
     union = M.unionWith (IM.unionWith (+))
-    unions = M.unionsWith (IM.unionWith (+))
+    unions = fromMaybe M.empty . foldTree union
 
 ----------
 -- INIT --
@@ -264,7 +265,7 @@ init m bigN dly ns jointCIs (jt, memJointCIs) = do
   tst <- TS.init m allJoints jt
 
   cisByMut <- joinByMut tst CIs.join $ M.toList jointCIs
-  corrsByMut <- M.unionsWith (IM.unionWith (+))
+  corrsByMut <- fromMaybe M.empty . foldTree union
                 <$> mapM (corrections dly tst) (CIs.toList memCIs)
 
   fmap (EvolutionState bigN dly ns tst dns nm) $ Books.fromList m $ M.elems $
@@ -274,11 +275,12 @@ init m bigN dly ns jointCIs (jt, memJointCIs) = do
     cisByMut corrsByMut
 
   where
+    union = M.unionWith (IM.unionWith (+))
     allJoints = M.keys jointCIs
     n'Of s = maybe n (+n) $ IM.lookup s dns
       where n = ns U.! s
 
-    memCIs = foldr1 CIs.join memJointCIs
+    memCIs = fromMaybe CIs.empty $ foldTree CIs.join $ M.elems memJointCIs
     ndns = memCIs^.CIs.symCounts -- negative delta symbol counts
 
     nm = sum ndns `div` 2 -- nm := d1nm because d0nm == 0
