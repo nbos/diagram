@@ -228,7 +228,7 @@ next l i = nextKey l i >>= traverse (sequence . toSnd (read l))
 nextKey :: (PrimMonad m, MVector v a) =>
   Doubly v (PrimState m) a -> Index -> m (Maybe Index)
 nextKey (Doubly Nothing _ _ _ _) _ = emptyErr "next"
-nextKey (Doubly (Just i0) _ _ nexts _) i =
+nextKey (Doubly (Just i0) _ _ _ nexts) i =
   (MV.readMaybe nexts i >>=) $ \case
   Nothing -> oobErr "next" (i, MV.length nexts)
   Just nxt | nxt < 0   -> undefErr "next" i
