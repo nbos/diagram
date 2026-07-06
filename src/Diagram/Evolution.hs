@@ -32,7 +32,7 @@ import Diagram.Joints (Joints)
 import Diagram.JointType (JointType)
 import qualified Diagram.JointType as JT
 import Diagram.String
-import Diagram.ConstrInterval(CI(..), ciLength, tailSymbol, tailIndex)
+import Diagram.ConstrInterval(CI(..), ciLength, tailIndex)
 import qualified Diagram.ConstrInterval as CI
 import Diagram.ConstrIntervals (CIs)
 import qualified Diagram.ConstrIntervals as CIs
@@ -267,7 +267,7 @@ init m bigN dly ns jointCIs (jt, memJointCIs) = do
 
   cisByMut <- joinByMut tst CIs.join $ M.toList jointCIs
   corByMut <- fromMaybe M.empty . foldTree union
-                <$> mapM (corrections dly tst) (CIs.toList memCIs)
+              <$> mapM (corrections dly tst) (CIs.toList memCIs)
 
   str <- D.toList dly
   let es = M.mergeWithKey (Just .:. Entry.fromParamsWith jt str n'Of) -- both CIs + cor
@@ -318,6 +318,7 @@ joinByMut tst f = fmap (M.fromListWith f . concat) . mapM g
 corrections :: forall m. PrimMonad m => Doubly (PrimState m) ->
                TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
 corrections dly tst ci = fmap clean $ do
+
   -- [DEL]: decompose, treat all delMuts
   dns <- delCorrections dly tst ci
 
@@ -332,7 +333,7 @@ corrections dly tst ci = fmap clean $ do
         | otherwise -> insert addMut (addCorrections (prv:|[ci]))
                        >> insert addMut' (addCorrections (ci:|nexts))
   where
-    clean = M.filter IM.null . fmap (IM.filter (==0))
+    clean = M.filter (not . IM.null) . fmap (IM.filter (/=0))
 
     prevCI = lift . TS.prevMutCI dly tst
     nextCIs = lift . TS.nextMutCIs dly tst
@@ -344,19 +345,19 @@ corrections dly tst ci = fmap clean $ do
 -- an add mutation (alternating [in-]add-in-add-etc.), return the
 -- appropriate corrections on delta delta symbol counts (ddns)
 addCorrections :: NonEmpty CI -> IntMap Int
-addCorrections ils = case compare (even newLen) (CI.even last_) of
-  LT -> IM.insertWith (+) (last_^.tailSymbol) (-1) im
-  EQ -> im
-  GT -> IM.insertWith (+) (last_^.tailSymbol) 1 im
+addCorrections ils = L.foldl' (flip f) IM.empty (NE.init ils) &
+  case compare (even newLen) (even oldLen) of
+    LT -> IM.insertWith (+) tailSym (-1)
+    EQ -> id
+    GT -> IM.insertWith (+) tailSym 1
   where
     newLen = sum ((^.ciLength) <$> ils) -- constituents lengths
              - (length ils - 1) -- overlaps
 
-    im = L.foldl' (flip f) IM.empty (NE.init ils)
-    f ci | CI.even ci = IM.insertWith (+) (ci^.tailSymbol) (-1)
-         | otherwise = id
+    f (CI _ _ len _ stl) | even len = IM.insertWith (+) stl (-1)
+                         | otherwise = id
 
-    last_ = NE.last ils
+    CI _ _ oldLen _ tailSym = NE.last ils
 
 -- | Given a constructive interval of the joint type (in), count all
 -- the differences in symbol counts between the symCounts of the CIs
