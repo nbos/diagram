@@ -272,7 +272,7 @@ init m bigN dly ns jointCIs (jt, memJointCIs) = do
     Books.fromList m $ M.elems $
     M.mergeWithKey (Just .:. Entry.fromParamsWith n'Of) -- both CIs + corr
     (M.mapWithKey $ Entry.fromParams n'Of) -- only CIs
-    (error . ("CIs missing: " ++) . show) -- only corr
+    (fmap $ error . ("CIs missing: " ++) . show) -- only corr
     cisByMut corrsByMut
 
   where
