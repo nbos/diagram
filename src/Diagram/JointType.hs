@@ -23,6 +23,7 @@ import Diagram.String
 import Diagram.Joints (Joints)
 import Diagram.UnionType (UnionType(..))
 import qualified Diagram.UnionType as UT
+import Diagram.Evolution.Mutation (Mutation(..))
 
 import Diagram.Util
 
@@ -38,9 +39,9 @@ instance Show JointType where
   show jt = "fromLists " ++ show u0 ++ " " ++ show u1
     where (u0,u1) = toLists jt
 
--- | Dimensionality
-dims :: JointType -> (Int, Int)
-dims (JT u0 u1) = (UT.size u0, UT.size u1)
+------------------
+-- CONSTRUCTION --
+------------------
 
 singleton :: Sym -> Sym -> JointType
 singleton s0 s1 = JT u0 u1
@@ -56,9 +57,29 @@ fromLists syms0 syms1 = JT (UT.fromList syms0) (UT.fromList syms1)
 toLists :: JointType -> ([Sym],[Sym])
 toLists (JT u0 u1) = (UT.toAscList u0, UT.toAscList u1)
 
+-------------
+-- METHODS --
+-------------
+
+-- | Dimensionality
+dims :: JointType -> (Int, Int)
+dims (JT u0 u1) = (UT.size u0, UT.size u1)
+
 -- | Is the symbol a member of the union?
 member :: (Sym,Sym) -> JointType -> Bool
 member (s0,s1) (JT u0 u1) = UT.member s0 u0 && UT.member s1 u1
+
+------------
+-- MODIFY --
+------------
+
+appMut :: Mutation -> JointType -> JointType
+appMut (AddLeft s0) = insertLeft s0
+appMut (AddRight s1) = insertRight s1
+appMut (Add2 s0 s1) = insertBoth s0 s1
+appMut (DelLeft s0) = deleteLeft s0
+appMut (DelRight s1) = deleteRight s1
+appMut (Del2 s0 s1) = deleteBoth s0 s1
 
 -- | Safe left insertion
 insertLeft :: Sym -> JointType -> JointType
@@ -89,15 +110,24 @@ insertBothMissing s0 s1 (JT u0 u1) = JT u0' u1'
   where u0' = UT.insertMissing s0 u0
         u1' = UT.insertMissing s1 u1
 
+deleteLeft :: Sym -> JointType -> JointType
+deleteLeft s = left %~ UT.delete s
+
 -- | Unsafe left deletion. Breaks invariant if the symbol is not already
 -- present in left union.
 deleteLeftMember :: Sym -> JointType -> JointType
 deleteLeftMember s = left %~ UT.deleteMember s
 
+deleteRight :: Sym -> JointType -> JointType
+deleteRight s = right %~ UT.delete s
+
 -- | Unsafe right deletion. Breaks invariant if the symbol is not already
 -- present in right union.
 deleteRightMember :: Sym -> JointType -> JointType
 deleteRightMember s = right %~ UT.deleteMember s
+
+deleteBoth :: Sym -> Sym -> JointType -> JointType
+deleteBoth s0 s1 = deleteRight s1 . deleteLeft s0
 
 -------------
 -- LATTICE --

@@ -8,10 +8,10 @@ import System.IO
       stdout,
       openFile,
       hFileSize )
+import qualified Options.Applicative as Opts
 import Options.Applicative
     ( Parser,
       argument,
-      str,
       metavar,
       help,
       optional,
@@ -26,6 +26,7 @@ import Options.Applicative
       fullDesc,
       progDesc,
       header )
+
 import System.Random (StdGen)
 import qualified System.Random as R
 
@@ -56,6 +57,8 @@ import qualified Diagram.Model as Mdl
 import qualified Diagram.ConstrIntervals as CIs
 import qualified Diagram.Evolution as Evo
 
+import Diagram.Simple
+
 import Diagram.Progress (withPB)
 
 data Options = Options
@@ -65,7 +68,7 @@ data Options = Options
 
 optionsParser :: Parser Options
 optionsParser = Options
-  <$> argument str
+  <$> argument Opts.str
   ( metavar "FILENAME"
     <> help "Input text file" )
   <*> optional
@@ -99,13 +102,17 @@ main = do
     CIs.fromStream $ -- allCIs
     S.zip (S.enumFrom 0) $ -- zip [0..]
     D.fromStream @_ @U.MVector bigN $ S.copy $ -- dly
-    S.map fromEnum $ -- Word8 -> Int
+    S.map fromEnum $ -- i8 -> i64
     fmap fst $ -- discard ()
     Mdl.countAtoms $ S.copy $ -- ns
     withPB bigN "Initializing string" $
     Q.unpack $ Q.fromHandle h
+  putStrLn ""
 
-  putStr "\nString: " >> D.toList dly >>= print
+  str <- D.toList dly
+  putStrLn "String: " >> print str
+  putStrLn ""
+  putStrLn "Symbol counts: " >> print (symCounts str)
   putStrLn ""
 
   let top@(JT tu0 tu1) = JT.fromJoints allCIs
@@ -125,15 +132,23 @@ main = do
         (jt@(JT u0 u1), cis) <- JT.genRandom allCIs2s
 
         -- report stats, verify properties/integrity
-        printInfo (top, allCIs) (jt, cis)
+        let ind = (lift (putStr "  ") >>)
+        ind $ printInfo (top, allCIs) (jt, cis)
+        lift $ putStrLn ""
+        ind $ printLUB jt cis
+        ind $ printSubtyping (top, allCIs) (jt, cis)
+        ind $ printConservation (top, allCIs) (jt, cis)
+        ind $ printMembership allCIs (jt, cis)
+        lift $ putStrLn ""
+
         lift $ putStr "Generated type: " >> print (UT.toAscList u0)
         lift $ putStr "                " >> print (UT.toAscList u1)
         lift $ putStrLn ""
 
-        printLUB jt cis
-        printSubtyping (top, allCIs) (jt, cis)
-        printConservation (top, allCIs) (jt, cis)
-        printMembership allCIs (jt, cis)
+        let str' = subst jt 256 str
+        lift $ putStrLn "Chunked string: " >> print str'
+        lift $ putStrLn ""
+        lift $ putStrLn "New symbol counts: " >> print (symCounts str')
         lift $ putStrLn ""
         --
 
@@ -150,7 +165,7 @@ main = do
 printInfo :: MonadIO m => (JointType, Map (Sym,Sym) a) ->
              (JointType, Map (Sym,Sym) b) -> m ()
 printInfo (jt,jts) (rjt,rjts) = liftIO $ putStrLn $
-  "generated type with size "
+  "Generated type with size "
   ++ show (JT.dims rjt)
   ++ " from "  ++ show (JT.dims jt)
   ++ " covering " ++ show (Jts.size rjts)

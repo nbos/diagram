@@ -8,8 +8,9 @@ import Control.Monad
 import Control.Lens hiding (both,last1,Index,(:>),index)
 import Control.Monad.State.Strict
 
-import Data.Tuple.Extra (both)
+import Debug.Trace
 
+import Data.Maybe
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.IntMap.Strict (IntMap)
@@ -26,6 +27,10 @@ import Diagram.Evolution.Math (logFact)
 import qualified Diagram.Evolution.Math as Math
 import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
 
+import Diagram.Simple
+import Diagram.JointType (JointType)
+import qualified Diagram.JointType as JT
+
 import Diagram.Util
 
 --------------------
@@ -33,30 +38,63 @@ import Diagram.Util
 --------------------
 
 data Entry = E
-  { _eMut :: !Mutation
-  , _eDnsLoss :: !Double
-  , _eDdns :: !(IntMap Int)
-  , _eDnm :: !Int
-  , _eCIs :: !CIs }
+  { _mutation        :: !Mutation
+  , _d2SymCountsLoss :: !Double
+  , _d2SymCounts     :: !(IntMap Int)
+  , _deltaJointCount :: !Int
+  , _sites           :: !CIs }
   deriving (Show,Eq)
 makeLenses ''Entry
 
-fromParams :: (Sym -> Count) -> Mutation -> CIs -> Entry
-fromParams n'Of mut cis = fromParamsWith n'Of mut cis IM.empty
+fromParams :: JointType -> [Sym] -> (Sym -> Count) -> Mutation -> CIs -> Entry
+fromParams = unflip5 fromParamsWith IM.empty
 
 -- | Construct a mutation entry with a count correction
-fromParamsWith :: (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> Entry
-fromParamsWith n'Of mut cis cor = E mut loss ddns dnm cis
+fromParamsWith :: JointType -> [Sym] ->
+                  (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> Entry
+fromParamsWith jt str n'Of mut cis cor = traceShow mut $
+                                         E mut loss ddns dnm cis
   where
-    loss = sum $ uncurry (-) . both logFact <$> ils
-    ils = (<$> IM.toList ddns) $ \(s,dn) -> let n' = n'Of s
-                                                n'' = n' + dn
-                                           in seq n'' (n', n'')
+    loss = sum $ flip IM.mapWithKey ddns $ \s ddn ->
+      let n' = n'Of s
+          verif_n' = fromMaybe 0 $ IM.lookup s ns'
+          n'' = n' + ddn
+          verif_n'' = fromMaybe 0 $ IM.lookup s ns''
+      in case () of
+        _ | n' /= verif_n' -> error $ "Count before mut (n') differs\n"
+            ++ "  mut: " ++ show mut ++ "\n"
+            ++ "  sym: " ++ show s   ++ "\n"
+            ++ "  n': "  ++ show n'  ++ "\n"
+            ++ "  verif_n': " ++ show verif_n' ++ "\n"
+            ++ "\nString:\n" ++ unwords (show <$> str) ++ "\n"
+
+          | n'' /= verif_n'' -> error $ "Count after mut (n'') differs\n"
+            ++ "  mut: " ++ show mut ++ "\n"
+            ++ "  sym: " ++ show s   ++ "\n"
+            ++ "  n'': " ++ show n''
+            ++ " (cis: " ++ show (IM.lookup s sns)
+            ++ ", cor: " ++ show (IM.lookup s cor) ++ ")\n"
+            ++ "  verif_n'': " ++ show verif_n'' ++ "\n"
+            ++ "\nString:\n" ++ unwords (show <$> str) ++ "\n"
+
+          | otherwise ->  logFact n' - logFact n''
+
     dnm = -(sum ddns `div` 2)
-    ns = cis^.CIs.symCounts
-    ddns = (if typeOfMut mut == Add then negate <$> ns else ns)
-           `union` cor
+    sns = cis^.CIs.symCounts
+    ssns | typeOfMut mut == Add = negate <$> sns
+         | otherwise = sns
+    ddns = ssns `union` cor
     union = IM.mergeWithKey (const $ nothingIf (==0) .: (+)) id id
+
+    -- verif
+    -- ns = symCounts str
+    str' = subst jt 256 str
+    ns' = symCounts str'
+    jt' = JT.appMut mut jt
+    str'' = subst jt' 256 str
+    ns'' = symCounts str''
+
+
 
 eval :: Int -> Int -> Int -> Int -> Entry -> Double
 eval m bigN nm vm' (E _ dnsLoss _ dnm _) = dnsLoss + dnmLoss
@@ -89,13 +127,14 @@ fromList m es = empty m >>= execStateT (mapM_ insert es)
 -- | Index the given entry in the given books by type, dnm, dnsLoss and
 -- mut. Does nothing to byMut or byAffected.
 index :: Entry -> Books s -> Books s
-index e@(E mut loss _ dnm _) = ( case e^.eMut of
-                 AddLeft _  -> ixAddLeft
-                 AddRight _ -> ixAddRight
-                 Add2 _ _   -> ixAdd2
-                 DelLeft _  -> ixDelLeft
-                 DelRight _ -> ixDelRight
-                 Del2 _ _   -> ixDel2 ) %~ go
+index e@(E mut loss _ dnm _) =
+  ( case e^.mutation of
+      AddLeft _  -> ixAddLeft
+      AddRight _ -> ixAddRight
+      Add2 _ _   -> ixAdd2
+      DelLeft _  -> ixDelLeft
+      DelRight _ -> ixDelRight
+      Del2 _ _   -> ixDel2 ) %~ go
   where
     singleton0 = M.singleton mut e
     singleton1 = M.singleton loss singleton0
@@ -106,7 +145,7 @@ index e@(E mut loss _ dnm _) = ( case e^.eMut of
 -- | De-index the given entry in the given books by type, dnm, dnsLoss
 -- and mut. Does nothing to byMut or byAffected.
 deIndex :: Entry -> Books s -> Books s
-deIndex e@(E mut loss _ dnm _) = ( case e^.eMut of
+deIndex e@(E mut loss _ dnm _) = ( case e^.mutation of
                  AddLeft _  -> ixAddLeft
                  AddRight _ -> ixAddRight
                  Add2 _ _   -> ixAdd2

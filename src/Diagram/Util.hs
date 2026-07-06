@@ -543,25 +543,55 @@ infixr 8 .::.
 infixr 8 .:::
 {-# INLINE (.:::) #-}
 
--- Flip w/ two arguments
-flip2 :: (a -> b1 -> b2 -> c) -> b1 -> b2 -> a -> c
-flip2 = flip .: flip
+-- Flip w/ two arguments (rotate argv left)
+flip2 :: (a -> b -> c -> d) -> b -> c -> a -> d
+flip2 fn b c a = fn a b c
 {-# INLINE flip2 #-}
 
 -- three
-flip3 :: (a -> b1 -> b2 -> b3 -> c) -> b1 -> b2 -> b3 -> a -> c
-flip3 = flip .:. flip2
+flip3 :: (a -> b -> c -> d -> e) -> b -> c -> d -> a -> e
+flip3 fn b c d a = fn a b c d
 {-# INLINE flip3 #-}
 
 -- four
-flip4 :: (a -> b1 -> b2 -> b3 -> b4 -> c) -> b1 -> b2 -> b3 -> b4 -> a -> c
-flip4 = flip2 .:. flip2
+flip4 :: (a -> b -> c -> d -> e -> f) -> b -> c -> d -> e -> a -> f
+flip4 fn b c d e a = fn a b c d e
 {-# INLINE flip4 #-}
 
 -- five
-flip5 :: (a -> b1 -> b2 -> b3 -> b4 -> b5 -> c) -> b1 -> b2 -> b3 -> b4 -> b5 -> a -> c
-flip5 = flip2 .:: flip3
+flip5 :: (a -> b -> c -> d -> e -> f -> g) -> b -> c -> d -> e -> f -> a -> g
+flip5 fn b c d e f a = fn a b c d e f
 {-# INLINE flip5 #-}
+
+-- six
+flip6 :: (a -> b -> c -> d -> e -> f -> g -> h) -> b -> c -> d -> e -> f -> g -> a -> h
+flip6 fn b c d e f g a = fn a b c d e f g
+{-# INLINE flip6 #-}
+
+-- Unflip w/ two arguments (rotate argv right)
+unflip2 :: (a -> b -> c -> d) -> c -> a -> b -> d
+unflip2 fn c a b = fn a b c
+{-# INLINE unflip2 #-}
+
+-- three
+unflip3 :: (a -> b -> c -> d -> e) -> d -> a -> b -> c -> e
+unflip3 fn d a b c = fn a b c d
+{-# INLINE unflip3 #-}
+
+-- four
+unflip4 :: (a -> b -> c -> d -> e -> f) -> e -> a -> b -> c -> d -> f
+unflip4 fn e a b c d = fn a b c d e
+{-# INLINE unflip4 #-}
+
+-- five
+unflip5 :: (a -> b -> c -> d -> e -> f -> g) -> f -> a -> b -> c -> d -> e -> g
+unflip5 fn f a b c d e = fn a b c d e f
+{-# INLINE unflip5 #-}
+
+-- six
+unflip6 :: (a -> b -> c -> d -> e -> f -> g -> h) -> g -> a -> b -> c -> d -> e -> f -> h
+unflip6 fn g a b c d e f = fn a b c d e f g
+{-# INLINE unflip6 #-}
 
 -------------
 -- Tuples  --

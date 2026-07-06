@@ -34,8 +34,9 @@ import qualified Diagram.JointType as JT
 import Diagram.String
 import Diagram.ConstrInterval(CI(..), ciLength, tailSymbol, tailIndex)
 import qualified Diagram.ConstrInterval as CI
-import Diagram.ConstrIntervals (CIs(..))
+import Diagram.ConstrIntervals (CIs)
 import qualified Diagram.ConstrIntervals as CIs
+import qualified Diagram.Doubly as D
 
 import Diagram.Evolution.Math (logFact)
 import qualified Diagram.Evolution.Math as Math
@@ -43,7 +44,7 @@ import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
 
 import Diagram.Evolution.TypeState (TypeState)
 import qualified Diagram.Evolution.TypeState as TS
-import Diagram.Evolution.Books ( Entry(..), eDdns, eDnsLoss,
+import Diagram.Evolution.Books ( Entry(..), d2SymCounts, d2SymCountsLoss,
                                  Books(Books), byAffected, byMut )
 import qualified Diagram.Evolution.Books as Entry
 import qualified Diagram.Evolution.Books as Books
@@ -212,9 +213,9 @@ pushMut (E mut _ ddns dnm cis) = do
                              old_n'' = n' + eddn
                              new_n'' = old_n'' + d
                          in logFact old_n'' - logFact new_n''
-      in Just $ e{ _eDnsLoss = eloss + dloss
-                 , _eDdns = IM.unionWith (+) eddns cor
-                 , _eDnm = ednm + sum cor }
+      in Just $ e{ _d2SymCountsLoss = eloss + dloss
+                 , _d2SymCounts     = IM.unionWith (+) eddns cor
+                 , _deltaJointCount = ednm + sum cor }
 
   -- UPDATING LOSSES FROM DELTA COUNT CHANGES
   oldEntries <- use (mutBooks.byMut) -- before we modify
@@ -229,12 +230,12 @@ pushMut (E mut _ ddns dnm cis) = do
     affected <- readAffected s
     (mutBooks.byMut %=) $ flip2 (flip2 M.differenceWith) affected $
       \e _ ->
-        let eddn = (e^.eDdns) IM.! s -- entry's mut's delta (no change)
+        let eddn = (e^.d2SymCounts) IM.! s -- entry's mut's delta (no change)
             old_n'' = old_n' + eddn -- old count after intro after mut
             oldContrib = logFact old_n' - logFact old_n''
             new_n'' = new_n' + eddn -- new count after intro after mut
             newContrib = logFact new_n' - logFact new_n''
-        in Just $ e & eDnsLoss %~ (+newContrib) . (+(-oldContrib))
+        in Just $ e & d2SymCountsLoss %~ (+newContrib) . (+(-oldContrib))
     return affected
 
   -- RE-INDEXING (TODO: join corAffected to dnsAffected)
@@ -265,16 +266,23 @@ init m bigN dly ns jointCIs (jt, memJointCIs) = do
   tst <- TS.init m allJoints jt
 
   cisByMut <- joinByMut tst CIs.join $ M.toList jointCIs
-  corrsByMut <- fromMaybe M.empty . foldTree union
+  corByMut <- fromMaybe M.empty . foldTree union
                 <$> mapM (corrections dly tst) (CIs.toList memCIs)
 
-  (EvolutionState bigN dly ns tst dns nm <$>) $
-    Books.fromList m $ M.elems $
-    M.mergeWithKey (Just .:. Entry.fromParamsWith n'Of) -- both CIs + corr
-    (M.mapWithKey $ Entry.fromParams n'Of) -- only CIs
-    (fmap $ error . ("CIs missing: " ++) . show) -- only corr
-    cisByMut corrsByMut
+  str <- D.toList dly
+  let es = M.mergeWithKey (Just .:. Entry.fromParamsWith jt str n'Of) -- both CIs + cor
+        (M.mapWithKey $ Entry.fromParams jt str n'Of) -- only CIs
+        (fmap $ err' . ("have cor, but CIs missing: " ++) . show) -- only cor
+        cisByMut corByMut
 
+  books <- Books.fromList m $ M.elems es
+  return $ EvolutionState { _stringLen  = bigN
+                          , _doubly     = dly
+                          , _symCounts  = ns
+                          , _typeState  = tst
+                          , _symDeltas  = dns
+                          , _jointCount = nm
+                          , _mutBooks   = books }
   where
     union = M.unionWith (IM.unionWith (+))
     allJoints = M.keys jointCIs
@@ -286,6 +294,8 @@ init m bigN dly ns jointCIs (jt, memJointCIs) = do
 
     nm = sum ndns `div` 2 -- nm := d1nm because d0nm == 0
     dns = negate <$> ndns -- delta symbol counts (intro's)
+
+    err' = err . ("init:" ++)
 
 -- WHERE --
 
