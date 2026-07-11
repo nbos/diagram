@@ -190,12 +190,26 @@ init m allJoints jt@(JT u0 u1) = do
 ------------
 
 pushMut :: PrimMonad m => Mutation -> TypeT m ()
-pushMut = \case AddLeft s0 -> addLeft s0
-                AddRight s1 -> addRight s1
-                Add2 s0 s1 -> addLeft s0 >> addRight s1
-                DelLeft s0 -> delLeft s0
-                DelRight s1 -> delRight s1
-                Del2 s0 s1 -> delLeft s0 >> delRight s1
+pushMut = \case
+  AddLeft s0 -> addLeft s0
+  AddRight s1 -> addRight s1
+  Add2 s0 s1 -> addLeft s0 >> addRight s1
+  DelLeft s0 -> do
+    e0 <- readLeft s0
+    unless (IS.null $ e0^.dependents) $
+      err' $ "delLeft: can't del sym with deps: " ++ show (s0, e0^.dependents)
+    delLeft s0 e0
+  DelRight s1 -> do
+    e1 <- readRight s1
+    unless (IS.null $ e1^.dependents) $
+      err' $ "delRight: can't del sym with deps: " ++ show (s1, e1^.dependents)
+    delRight s1 e1
+  Del2 s0 s1 -> do -- co-deps
+    e0 <- readLeft s0
+    e1 <- readRight s1
+    delLeft s0 e0
+    delRight s1 e1
+
   where
     addLeft s0 = do
       jointType %= JT.insertLeftMissing s0
@@ -219,12 +233,9 @@ pushMut = \case AddLeft s0 -> addLeft s0
                                & coSymsOut %~ IS.delete s1
       writeRight s1 $ e1 & isMember .~ True
 
-    delLeft s0 = do
+    delLeft s0 e0@(SymEntry mem coIn _ coOut) = do
       jointType %= JT.deleteLeftMember s0
-      e0@(SymEntry mem coIn deps coOut) <- readLeft s0
       unless mem $ err' $ "delLeft: symbol not member: " ++ show s0
-      unless (IS.null deps) $
-        err' $ "delLeft: can't del sym with deps: " ++ show (s0,deps)
 
       forM_ (IS.toList coIn) $ \s1 -> do
         e1 <- readRight s1
@@ -240,12 +251,9 @@ pushMut = \case AddLeft s0 -> addLeft s0
 
       writeLeft s0 $ e0 & isMember .~ False
 
-    delRight s1 = do
+    delRight s1 e1@(SymEntry mem coIn _ coOut) = do
       jointType %= JT.deleteRightMember s1
-      e1@(SymEntry mem coIn deps coOut) <- readRight s1
       unless mem $ err' $ "delRight: symbol not member: " ++ show s1
-      unless (IS.null deps) $
-        err' $ "delRight: can't del sym with deps: " ++ show (s1,deps)
 
       forM_ (IS.toList coIn) $ \s0 -> do
         e0 <- readLeft s0
