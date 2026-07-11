@@ -35,12 +35,12 @@ import Diagram.Util
 ---------------
 
 data SymEntry = SymEntry
-  { _isMember :: !Bool -- ^ True iff self is member of the union type
-  , _coSymsIn :: !IntSet -- ^ Symbols that have a joint with
-                         -- self and member of the co-union
+  { _isMember   :: !Bool -- ^ True iff self is member of the union type
+  , _coSymsIn   :: !IntSet -- ^ Symbols that have a joint with
+                           -- self and member of the co-union
   , _dependents :: !IntSet -- ^ CoSymsIn that have self as only coSymsIn
-  , _coSymsOut :: !IntSet } -- ^ Symbols that have a joint with self and
-                            -- *not* member of the co-union
+  , _coSymsOut  :: !IntSet } -- ^ Symbols that have a joint with self and
+                             -- *not* member of the co-union
   deriving (Show,Eq,Ord)
 makeLenses ''SymEntry
 
@@ -119,7 +119,7 @@ modifyRight f s = use rightSyms >>= lift . flip2 MV.modify f s
 
 member :: PrimMonad m => TypeState (PrimState m) -> Sym -> Sym -> m Bool
 member (TS _ u0 u1) s0 s1 = liftA2 (&&) (_isMember <$> MV.read u0 s0)
-                                          (_isMember <$> MV.read u1 s1)
+                                        (_isMember <$> MV.read u1 s1)
 
 -- | Give the (possibly empty) set of available mutations that would
 -- switch the membership of the given joint in the type
@@ -296,11 +296,11 @@ decomposeIn str tst ci@(CI hd shd len tl _)
 
 -- | Return the out-interval (and the add-mutation that would switch its
 -- membership) immediately preceding the given in-interval but only if
--- the out-interval is not itself preceded by another
--- in-interval. Returns `Nothing` if the preceding interval is so
--- sandwitched, `Just Nothing` if there is either no preceding joint
--- (begining of the string) or if it not add-able, and `Just Just` if
--- there is such a mutation-interval pair.
+-- the out-interval is not itself preceded by another in-interval (will
+-- get caught by nextMutCIs instead). Returns `Nothing` if the preceding
+-- interval is so sandwitched, `Just Nothing` if there is either no
+-- preceding joint (begining of the string) or if it not add-able, and
+-- `Just Just` if there is such a mutation-interval pair.
 prevMutCI :: forall m. PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m (Maybe (Maybe (Mutation, CI)))
 prevMutCI str tst (CI tl stl _ _ _) = (D.prev str tl >>=) $ \case
@@ -396,11 +396,11 @@ superCI dly tst jt (CI hd0 shd0 len0 tl0 stl0) = do
 -- does not have an add-mutation.
 nextMutCIs :: forall m. PrimMonad m => Doubly (PrimState m) ->
               TypeState (PrimState m) -> CI -> m (Maybe (Mutation, [CI]))
-nextMutCIs str tst ci@(CI _ _ _ i0 s0) = (D.next str i0 >>=) $ \case
+nextMutCIs str tst (CI _ _ _ i0 s0) = (D.next str i0 >>=) $ \case
   Nothing -> return Nothing -- hit end
   Just (i1,s1) -> (addMutOf tst s0 s1 >>=) $ \case
     Nothing -> return Nothing -- no add-mutation
-    Just addMut -> Just . (addMut,) <$> grabOut [ci] (CI s0 i0) 2 i1 s1
+    Just addMut -> Just . (addMut,) <$> grabOut [] (CI s0 i0) 2 i1 s1
       where
         grabOut :: [CI] -> (Len -> Index -> Sym -> CI) ->
                    Len -> Index -> Sym -> m [CI]

@@ -57,7 +57,7 @@ import qualified Diagram.Model as Mdl
 import qualified Diagram.ConstrIntervals as CIs
 import qualified Diagram.Evolution as Evo
 
-import Diagram.Simple
+-- import Diagram.Simple
 
 import Diagram.Progress (withPB)
 
@@ -112,13 +112,13 @@ main = do
   str <- D.toList dly
   putStrLn "String: " >> print str
   putStrLn ""
-  putStrLn "Symbol counts: " >> print (symCounts str)
-  putStrLn ""
+  -- putStrLn "Symbol counts: " >> print (symCounts str)
+  -- putStrLn ""
 
-  let top@(JT tu0 tu1) = JT.fromJoints allCIs
-  putStr "Top type: " >> print (UT.toList tu0)
-  putStr "          " >> print (UT.toList tu1)
-  putStrLn ""
+  let top@(JT _tu0 _tu1) = JT.fromJoints allCIs
+  -- putStr "Top type: " >> print (UT.toList tu0)
+  -- putStr "          " >> print (UT.toList tu1)
+  -- putStrLn ""
 
   let allCIs2s = Jts.sized $ Jts.doubleIndex 256 allCIs
       m = 256 :: Int
@@ -145,11 +145,11 @@ main = do
         lift $ putStr "                " >> print (UT.toAscList u1)
         lift $ putStrLn ""
 
-        let str' = subst jt 256 str
-        lift $ putStrLn "Chunked string: " >> print str'
-        lift $ putStrLn ""
-        lift $ putStrLn "New symbol counts: " >> print (symCounts str')
-        lift $ putStrLn ""
+        -- let str' = subst jt 256 str
+        -- lift $ putStrLn "Chunked string: " >> print str'
+        -- lift $ putStrLn ""
+        -- lift $ putStrLn "New symbol counts: " >> print (symCounts str')
+        -- lift $ putStrLn ""
         --
 
         (JT u0' u1') <- Evo.hillClimb m bigN dly ns allCIs (jt,cis)

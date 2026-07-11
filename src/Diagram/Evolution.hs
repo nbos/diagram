@@ -5,6 +5,7 @@
 module Diagram.Evolution (module Diagram.Evolution) where
 
 import Prelude hiding (init)
+import Debug.Trace
 
 import Control.Monad
 import Control.Monad.Extra
@@ -318,20 +319,38 @@ joinByMut tst f = fmap (M.fromListWith f . concat) . mapM g
 corrections :: forall m. PrimMonad m => Doubly (PrimState m) ->
                TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
 corrections dly tst ci = fmap clean $ do
+  traceShowM ci
 
   -- [DEL]: decompose, treat all delMuts
   dns <- delCorrections dly tst ci
+  traceM $ "del corrections: " ++ show dns
 
   -- [ADD]: grab the largest chain possible, if CI is first in the chain
-  flip execStateT dns $ (prevCI ci >>=) $ flip whenJust $ \case
-    Nothing -> (nextCIs ci >>=) $ flip whenJust $
-               \(addMut, nexts) -> insert addMut $ addCorrections (ci:|nexts)
-    Just (addMut, prv) -> (nextCIs ci >>=) $ \case
-      Nothing -> insert addMut $ addCorrections (prv:|[ci])
-      Just (addMut', nexts)
-        | addMut == addMut' -> insert addMut $ addCorrections (prv:|ci:nexts)
-        | otherwise -> insert addMut (addCorrections (prv:|[ci]))
-                       >> insert addMut' (addCorrections (ci:|nexts))
+  res <- flip execStateT dns $ ((prevCI ci >>=) . (. join)) $ \case
+    Nothing -> ((traceM "no CI before" >> nextCIs ci) >>=) $ flip whenJust $
+               \(addMut, nexts) -> do
+                 traceM $ "CIs after: " ++ show (addMut,nexts)
+                 insert addMut $ addCorrections (ci:|nexts)
+
+    Just p@(addMut, prv) -> ((traceM ("prev CI: " ++ show p) >> nextCIs ci) >>=) $ \case
+      Nothing -> do
+        traceM "no CIs after"
+        insert addMut $ addCorrections (prv:|[ci])
+
+      Just p'@(addMut', nexts)
+        | addMut == addMut' -> do
+            traceM $ "CIs after (same mut): " ++ show p'
+            insert addMut $ addCorrections (prv:|ci:nexts)
+
+        | otherwise -> do
+            traceM $ "CIs after: " ++ show p'
+            insert addMut (addCorrections (prv:|[ci]))
+            insert addMut' (addCorrections (ci:|nexts))
+
+  traceM $ "all corrections: " ++ show res
+  traceM ""
+  return res
+
   where
     clean = M.filter (not . IM.null) . fmap (IM.filter (/=0))
 
@@ -345,19 +364,19 @@ corrections dly tst ci = fmap clean $ do
 -- an add mutation (alternating [in-]add-in-add-etc.), return the
 -- appropriate corrections on delta delta symbol counts (ddns)
 addCorrections :: NonEmpty CI -> IntMap Int
-addCorrections ils = L.foldl' (flip f) IM.empty (NE.init ils) &
+addCorrections cis = L.foldl' (flip f) IM.empty (traceShowId $ NE.init cis) &
   case compare (even newLen) (even oldLen) of
-    LT -> IM.insertWith (+) tailSym (-1)
+    LT -> IM.insertWith (+) tailSym 1
     EQ -> id
-    GT -> IM.insertWith (+) tailSym 1
+    GT -> IM.insertWith (+) tailSym (-1)
   where
-    newLen = sum ((^.ciLength) <$> ils) -- constituents lengths
-             - (length ils - 1) -- overlaps
+    newLen = sum ((^.ciLength) <$> cis) -- constituents lengths
+             - (length cis - 1) -- overlaps
 
-    f (CI _ _ len _ stl) | even len = IM.insertWith (+) stl (-1)
+    f (CI _ _ len _ stl) | even len = IM.insertWith (+) stl 1
                          | otherwise = id
 
-    CI _ _ oldLen _ tailSym = NE.last ils
+    CI _ _ oldLen _ tailSym = NE.last cis
 
 -- | Given a constructive interval of the joint type (in), count all
 -- the differences in symbol counts between the symCounts of the CIs
