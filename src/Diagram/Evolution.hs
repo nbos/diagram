@@ -27,6 +27,7 @@ import qualified Data.IntSet as IS
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Mutable as MV
 
+import Diagram.Pretty
 import Diagram.Primitive
 
 import Diagram.Joints (Joints)
@@ -151,7 +152,10 @@ ddInformation (E mut _ ddns dnm _) = do
 
 step :: PrimMonad m => EvolutionT m Bool
 step = do
-  e <- snd . L.minimumBy (compare `on` fst) <$> evalAll
+  es <- evalAll
+  traceM "\nEntries:"
+  mapM_ (traceM . pp) es
+  let (_, e) = L.minimumBy (compare `on` fst) es
   ddInfo <- ddInformation e
   if ddInfo > 0 then return False else
     pushMut e >> return True

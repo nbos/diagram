@@ -61,6 +61,7 @@ executable diagram
     other-modules:    Diagram
                       Diagram.Types
                       Diagram.Model
+                      Diagram.Pretty
                       Diagram.String
                       Diagram.Simple
                       Diagram.Joints
@@ -104,6 +105,7 @@ executable diagram
                     , streaming
                     , containers
                     , MonadRandom
+                    , pretty-simple
                     , random-shuffle
                     , math-functions
                     , unordered-containers
