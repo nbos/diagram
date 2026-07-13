@@ -217,6 +217,8 @@ pushMut = \case
       when mem $ err' $ "addLeft: symbol already member: " ++ show s0
       unless (IS.null deps) $
         err' $ "addLeft: out-sym shouldn't have deps: " ++ show (s0,deps)
+      whenJust (trySingleton coIn) $ modifyRight $
+          dependents %~ IS.insert s0 -- mark s1 as dependent to _
       forM_ (IS.toList coIn ++ IS.toList coOut) $
         modifyRight $ \e1 -> e1 & coSymsIn  %~ IS.insert s0
                                 & coSymsOut %~ IS.delete s0
@@ -228,6 +230,8 @@ pushMut = \case
       when mem $ err' $ "addRight: symbol already member: " ++ show s1
       unless (IS.null deps) $
         err' $ "addRight: out-sym shouldn't have deps: " ++ show (s1,deps)
+      whenJust (trySingleton coIn) $ modifyLeft $
+          dependents %~ IS.insert s1 -- mark s1 as dependent to _
       forM_ (IS.toList coIn ++ IS.toList coOut) $
         modifyLeft $ \e0 -> e0 & coSymsIn  %~ IS.insert s1
                                & coSymsOut %~ IS.delete s1
