@@ -46,7 +46,7 @@ import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
 
 import Diagram.Evolution.TypeState (TypeState)
 import qualified Diagram.Evolution.TypeState as TS
-import Diagram.Evolution.Books ( Entry(..), d2SymCounts, d2SymCountsLoss,
+import Diagram.Evolution.Books ( Entry(..), ddSymCounts, ddSymCountsLoss,
                                  Books(Books), byAffected, byMut )
 import qualified Diagram.Evolution.Books as Entry
 import qualified Diagram.Evolution.Books as Books
@@ -118,7 +118,7 @@ evalAll_ m bigN nm tst (Books als ars a2s dls drs d2s _ _) =
            , vm + sz0 + sz1 + 1 -- add2
            , vm - sz1 -- delLeft
            , vm - sz0 -- delRight
-           , vm - sz0 - sz1 - 1 ] :: [Int] -- del2
+           , vm - sz0 - sz1 + 1 ] :: [Int] -- del2
 
     entries :: [[Entry]]
     entries = flatten <$> [ als, ars, a2s, dls, drs, d2s ]
@@ -146,7 +146,7 @@ ddInformation (E mut _ ddns dnm _) = do
         Add2 _ _   -> vm + sz0 + sz1 + 1
         DelLeft _  -> vm - sz1
         DelRight _ -> vm - sz0
-        Del2 _ _   -> vm - sz0 - sz1 - 1
+        Del2 _ _   -> vm - sz0 - sz1 + 1
 
   return $ Math.ddInfo m bigN ils (nm, nm+dnm) (vm, vm')
 
@@ -178,6 +178,8 @@ hillClimb = init >======>
 -- | Apply a mutation, update books
 pushMut :: PrimMonad m => Entry -> EvolutionT m ()
 pushMut (E mut _ ddns dnm cis) = do
+  traceM $ "Pushed mutation: " ++ show mut
+
   -- ENUMERATE BEFORE/AFTER CORRECTIONS
   (oldCorrs, newCorrs) <- case typeOfMut mut of
     Add -> do old <- uses2 doubly typeState corrections
@@ -218,9 +220,9 @@ pushMut (E mut _ ddns dnm cis) = do
                              old_n'' = n' + eddn
                              new_n'' = old_n'' + d
                          in logFact old_n'' - logFact new_n''
-      in Just $ e{ _d2SymCountsLoss = eloss + dloss
-                 , _d2SymCounts     = IM.unionWith (+) eddns cor
-                 , _deltaJointCount = ednm + sum cor }
+      in Just $ e{ _ddSymCountsLoss = eloss + dloss
+                 , _ddSymCounts     = IM.unionWith (+) eddns cor
+                 , _dJointCount     = ednm + sum cor }
 
   -- UPDATING LOSSES FROM DELTA COUNT CHANGES
   oldEntries <- use (mutBooks.byMut) -- before we modify
@@ -235,12 +237,12 @@ pushMut (E mut _ ddns dnm cis) = do
     affected <- readAffected s
     (mutBooks.byMut %=) $ flip2 (flip2 M.differenceWith) affected $
       \e _ ->
-        let eddn = (e^.d2SymCounts) IM.! s -- entry's mut's delta (no change)
+        let eddn = (e^.ddSymCounts) IM.! s -- entry's mut's delta (no change)
             old_n'' = old_n' + eddn -- old count after intro after mut
             oldContrib = logFact old_n' - logFact old_n''
             new_n'' = new_n' + eddn -- new count after intro after mut
             newContrib = logFact new_n' - logFact new_n''
-        in Just $ e & d2SymCountsLoss %~ (+newContrib) . (+(-oldContrib))
+        in Just $ e & ddSymCountsLoss %~ (+newContrib) . (+(-oldContrib))
     return affected
 
   -- RE-INDEXING (TODO: join corAffected to dnsAffected)
@@ -368,7 +370,7 @@ corrections dly tst ci = fmap clean $ do
 -- an add mutation (alternating [in-]add-in-add-etc.), return the
 -- appropriate corrections on delta delta symbol counts (ddns)
 addCorrections :: NonEmpty CI -> IntMap Int
-addCorrections cis = L.foldl' (flip f) IM.empty (traceShowId $ NE.init cis) &
+addCorrections cis = L.foldl' (flip f) IM.empty (NE.init cis) &
   case compare (even newLen) (even oldLen) of
     LT -> IM.insertWith (+) tailSym 1
     EQ -> id

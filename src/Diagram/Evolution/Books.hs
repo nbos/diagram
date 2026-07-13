@@ -26,7 +26,7 @@ import qualified Diagram.Evolution.Math as Math
 import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
 
 import Diagram.Simple
-import Diagram.JointType (JointType(JT))
+import Diagram.JointType (JointType)
 import qualified Diagram.JointType as JT
 
 import Diagram.Util
@@ -37,9 +37,9 @@ import Diagram.Util
 
 data Entry = E
   { _mutation        :: !Mutation
-  , _d2SymCountsLoss :: !Double
-  , _d2SymCounts     :: !(IntMap Int)
-  , _deltaJointCount :: !Int
+  , _ddSymCountsLoss :: !Double
+  , _ddSymCounts     :: !(IntMap Int)
+  , _dJointCount     :: !Int
   , _sites           :: !CIs }
   deriving (Show,Eq)
 makeLenses ''Entry
@@ -50,7 +50,7 @@ fromParams = unflip5 fromParamsWith IM.empty
 -- | Construct a mutation entry with a count correction
 fromParamsWith :: JointType -> [Sym] ->
                   (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> Entry
-fromParamsWith jt@(JT u0 u1) str n'Of mut cis cor = E mut loss ddns dnm cis
+fromParamsWith jt str n'Of mut cis cor = E mut loss ddns dnm cis
   where
     loss = sum $ flip IM.mapWithKey ddns $ \s ddn ->
       let n = fromMaybe 0 $ IM.lookup s ns
@@ -120,8 +120,20 @@ fromParamsWith jt@(JT u0 u1) str n'Of mut cis cor = E mut loss ddns dnm cis
     normal = "\ESC[0m"
 
 eval :: Int -> Int -> Int -> Int -> Entry -> Double
-eval m bigN nm vm' (E _ dnsLoss _ dnm _) = dnsLoss + dnmLoss
-  where dnmLoss = Math.dnmLoss m bigN nm vm' dnm
+eval m bigN nm vm' (E mut dnsLoss _ dnm _)
+  | isInfinite res = error $ "Books.eval: infinite loss: "
+                     ++ "m=" ++ show m
+                     ++ ", bigN=" ++ show bigN
+                     ++ ", nm=" ++ show nm
+                     ++ ", vm'=" ++ show vm'
+                     ++ ", mut=" ++ show mut
+                     ++ ", dnsLoss=" ++ show dnsLoss
+                     ++ ", dnm=" ++ show dnm
+                     ++ ", dnmLoss=" ++ show dnmLoss
+  | otherwise = res
+  where
+    res = dnsLoss + dnmLoss
+    dnmLoss = Math.dnmLoss m bigN nm vm' dnm
 
 -----------
 -- BOOKS --

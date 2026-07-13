@@ -12,7 +12,8 @@ dnmLoss m bigN nm vm' dnm = nLoss + sLossA + rLoss
     nm' = nm + dnm
     nLoss = logFact (m + bigN - nm')
     sLossA = -logFact nm'
-    rLoss = fromIntegral nm' * ilog vm'
+    rLoss | nm' == 0 = 0
+          | otherwise = fromIntegral nm' * ilog vm'
 
 -- | Compute the part of the loss function (delta delta information,
 -- minus the terms independent of mutation) that is dependent on the
