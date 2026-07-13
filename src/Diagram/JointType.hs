@@ -29,8 +29,8 @@ import Diagram.Util
 
 -- | A joint of unions
 data JointType = JT {
-  _left :: !UnionType, -- s0s
-  _right :: !UnionType -- s1s
+  _left  :: !UnionType, -- s0s
+  _right :: !UnionType  -- s1s
 } deriving (Eq,Generic,Hashable)
 makeLenses ''JointType
 
@@ -74,12 +74,12 @@ member (s0,s1) (JT u0 u1) = UT.member s0 u0 && UT.member s1 u1
 ------------
 
 appMut :: Mutation -> JointType -> JointType
-appMut (AddLeft s0) = insertLeft s0
+appMut (AddLeft  s0) = insertLeft  s0
 appMut (AddRight s1) = insertRight s1
-appMut (Add2 s0 s1) = insertBoth s0 s1
-appMut (DelLeft s0) = deleteLeft s0
+appMut (Add2  s0 s1) = insertBoth  s0 s1
+appMut (DelLeft  s0) = deleteLeft  s0
 appMut (DelRight s1) = deleteRight s1
-appMut (Del2 s0 s1) = deleteBoth s0 s1
+appMut (Del2  s0 s1) = deleteBoth  s0 s1
 
 -- | Safe left insertion
 insertLeft :: Sym -> JointType -> JointType

@@ -154,7 +154,7 @@ step :: PrimMonad m => EvolutionT m Bool
 step = do
   es <- evalAll
   traceM "\nEntries:"
-  mapM_ (traceM . pp) es
+  mapM_ (traceM . pShow) es
   let (_, e) = L.minimumBy (compare `on` fst) es
   ddInfo <- ddInformation e
   if ddInfo > 0 then return False else
@@ -167,8 +167,7 @@ step = do
 hillClimb :: forall m. PrimMonad m =>
   Int -> Int -> Doubly (PrimState m) -> U.Vector Int -> Joints CIs ->
   (JointType, Joints CIs) -> m JointType
-hillClimb = init >======>
-            execStateT (whileM step)
+hillClimb = init_ >======> execStateT (whileM step)
             >.> fmap (^.typeState.TS.jointType)
 
 ------------
@@ -178,7 +177,7 @@ hillClimb = init >======>
 -- | Apply a mutation, update books
 pushMut :: PrimMonad m => Entry -> EvolutionT m ()
 pushMut (E mut _ ddns dnm cis) = do
-  traceM $ "Pushed mutation: " ++ show mut
+  traceM $ "Pushing mutation: " ++ show mut
 
   -- ENUMERATE BEFORE/AFTER CORRECTIONS
   (oldCorrs, newCorrs) <- case typeOfMut mut of
@@ -266,17 +265,27 @@ pushMut (E mut _ ddns dnm cis) = do
 -- INIT --
 ----------
 
-init :: forall m. PrimMonad m =>
+-- | Construct a new EvolutionState
+init :: PrimMonad m =>
+  Int -> Int -> Doubly (PrimState m) -> U.Vector Int -> Joints CIs ->
+  JointType -> m (EvolutionState (PrimState m))
+init m bigN dly ns jointCIs jt = init_ m bigN dly ns jointCIs (jt, memJointCIs)
+  where memJointCIs = M.filterWithKey (const . flip JT.member jt) jointCIs
+
+-- | Construct a new EvolutionState where the second set of CIs given is
+-- a subset of the first set and corresponds exactly to its entries for
+-- each joint that falls under the given type.
+init_ :: forall m. PrimMonad m =>
   Int -> Int -> Doubly (PrimState m) -> U.Vector Int -> Joints CIs ->
   (JointType, Joints CIs) -> m (EvolutionState (PrimState m))
-init m bigN dly ns jointCIs (jt, memJointCIs) = do
+init_ m bigN dly ns jointCIs (jt, memJointCIs) = do
   tst <- TS.init m allJoints jt
 
   cisByMut <- joinByMut tst CIs.join $ M.toList jointCIs
   corByMut <- fromMaybe M.empty . foldTree union
               <$> mapM (corrections dly tst) (CIs.toList memCIs)
 
-  str <- D.toList dly
+  str <- D.toList dly -- TODO: rm
   let es = M.mergeWithKey (Just .:. Entry.fromParamsWith jt str n'Of) -- both CIs + cor
         (M.mapWithKey $ Entry.fromParams jt str n'Of) -- only CIs
         (fmap $ err' . ("have cor, but CIs missing: " ++) . show) -- only cor

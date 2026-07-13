@@ -200,6 +200,7 @@ infixl 4 <<$
 {-# INLINE (<<<$) #-}
 infixl 4 <<<$
 
+-- | `flip (.)`
 (>.>) :: (a -> b) -> (b -> c) -> a -> c
 (>.>) f g = g . f
 {-# INLINE (>.>) #-}

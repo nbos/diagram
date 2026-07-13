@@ -15,6 +15,7 @@ import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Vector.Mutable as MV
 
+import Diagram.Pretty (pShowStr)
 import Diagram.Primitive
 
 import Diagram.String
@@ -48,7 +49,7 @@ fromParams :: JointType -> [Sym] -> (Sym -> Count) -> Mutation -> CIs -> Entry
 fromParams = unflip5 fromParamsWith IM.empty
 
 -- | Construct a mutation entry with a count correction
-fromParamsWith :: JointType -> [Sym] ->
+fromParamsWith :: JointType -> [Sym] -> -- TODO: rm JointType and [Sym]
                   (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> Entry
 fromParamsWith jt str n'Of mut cis cor = E mut loss ddns dnm cis
   where
@@ -61,7 +62,7 @@ fromParamsWith jt str n'Of mut cis cor = E mut loss ddns dnm cis
       in case () of
         _ | n' /= verif_n' -> error $
             "Count before mut (n') is not what it should be\n"
-            ++ "\nString:\n" ++ pprint str ++ "\n\n"
+            ++ "\nString:\n" ++ pShowStr jt jt' str ++ "\n\n"
             ++ "  mut: " ++ show mut ++ "\n"
             ++ "  sym: " ++ show s   ++ "\n"
             ++ "  n': "  ++ show n'  ++ "\n"
@@ -69,7 +70,7 @@ fromParamsWith jt str n'Of mut cis cor = E mut loss ddns dnm cis
 
           | n'' /= verif_n'' -> error $
             "Count after mut (n'') is not what it should be\n"
-            ++ "\nString:\n" ++ pprint str ++ "\n\n"
+            ++ "\nString:\n" ++ pShowStr jt jt' str ++ "\n\n"
             ++ "  mut: " ++ show mut ++ "\n"
             ++ "  sym: " ++ show s   ++ "\n"
             ++ "  n: "   ++ show n   ++ "\n"
@@ -79,7 +80,7 @@ fromParamsWith jt str n'Of mut cis cor = E mut loss ddns dnm cis
             ++ ", cor: " ++ show (IM.lookup s cor) ++ ")\n"
             ++ "  verif_n'': " ++ show verif_n'' ++ "\n"
 
-          | otherwise ->  logFact n' - logFact n''
+          | otherwise -> logFact n' - logFact n''
 
     dnm = -(sum ddns `div` 2)
     sns = cis^.CIs.symCounts
@@ -88,7 +89,7 @@ fromParamsWith jt str n'Of mut cis cor = E mut loss ddns dnm cis
     ddns = ssns `union` cor
     union = IM.mergeWithKey (const $ nothingIf (==0) .: (+)) id id
 
-    -- verif
+    -- verif -- TODO: remove
     ns = symCounts str
     str' = subst jt 256 str
     ns' = symCounts str'
@@ -96,29 +97,7 @@ fromParamsWith jt str n'Of mut cis cor = E mut loss ddns dnm cis
     str'' = subst jt' 256 str
     ns'' = symCounts str''
 
-    pprint [] = normal
-    pprint [s] = red ++ show s ++ normal
-    pprint (s0:s1:ss)
-      | mem s0 s1 =
-        (if not (mem' s0 s1) then normal ++ "***" else "") -- del i0
-        ++ normal ++ "(" ++ green ++ show s0 ++ " "
-        ++ (case ss of s2:_ | not (mem s1 s2)
-                            , mem' s1 s2 -> normal ++ "***" ++ green -- add i1
-                       _else -> "")
-        ++ show s1 ++ normal ++ ") "
-        ++ pprint ss
-
-      | mem' s0 s1 = normal ++ "***" ++ red ++ show s0 ++ " " ++ pprint (s1:ss) -- add i0
-      | otherwise = red ++ show s0 ++ " "
-                    ++ pprint (s1:ss)
-      where
-        mem = (`JT.member` jt) .: (,)
-        mem' = (`JT.member` jt') .: (,)
-
-    red = "\ESC[91m"
-    green = "\ESC[32m"
-    normal = "\ESC[0m"
-
+-- | Evaluate full loss given parameters
 eval :: Int -> Int -> Int -> Int -> Entry -> Double
 eval m bigN nm vm' (E mut dnsLoss _ dnm _)
   | isInfinite res = error $ "Books.eval: infinite loss: "
@@ -181,12 +160,12 @@ index e@(E mut loss _ dnm _) =
 -- and mut. Does nothing to byMut or byAffected.
 deIndex :: Entry -> Books s -> Books s
 deIndex e@(E mut loss _ dnm _) = ( case e^.mutation of
-                 AddLeft _  -> ixAddLeft
-                 AddRight _ -> ixAddRight
-                 Add2 _ _   -> ixAdd2
-                 DelLeft _  -> ixDelLeft
-                 DelRight _ -> ixDelRight
-                 Del2 _ _   -> ixDel2 ) %~ go
+    AddLeft _  -> ixAddLeft
+    AddRight _ -> ixAddRight
+    Add2 _ _   -> ixAdd2
+    DelLeft _  -> ixDelLeft
+    DelRight _ -> ixDelRight
+    Del2 _ _   -> ixDel2 ) %~ go
   where
     go = flip IM.update dnm $
          (nothingIf M.null .) $ flip M.update loss $
