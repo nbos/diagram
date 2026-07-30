@@ -78,6 +78,7 @@ executable diagram
                       Diagram.Evolution.Math
                       Diagram.Evolution.Books
                       Diagram.Evolution.Mutation
+                      Diagram.Evolution.SymEntry
                       Diagram.Evolution.TypeState
                       Diagram.Information
                       Diagram.ConstrInterval

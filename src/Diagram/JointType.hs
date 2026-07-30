@@ -69,6 +69,20 @@ dims (JT u0 u1) = (UT.size u0, UT.size u1)
 member :: (Sym,Sym) -> JointType -> Bool
 member (s0,s1) (JT u0 u1) = UT.member s0 u0 && UT.member s1 u1
 
+-- | Return a Map of all joints that could be member of the given type,
+-- regardless of their presence in the string. O(n^2)
+extension :: JointType -> Joints ()
+extension = M.fromDistinctAscList . fmap (,()) . extension_
+
+-- | Return a list of all joints that could be member of the given type,
+-- regardless of their presence in the string. List is in ascending
+-- order. O(n^2)
+extension_ :: JointType -> [(Sym,Sym)]
+extension_ (JT u0 u1) = [ (s0,s1) | s0 <- s0s, s1 <- s1s ]
+  where
+    s0s = UT.toAscList u0
+    s1s = UT.toAscList u1
+
 ------------
 -- MODIFY --
 ------------

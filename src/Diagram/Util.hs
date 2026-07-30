@@ -210,7 +210,7 @@ infixr 2 >.>
 -- Lists --
 -----------
 
--- | Balanced fold `f (f a b) (f c d)` instead of foldr `f a (f b (f c
+-- | Balanced reduce `f (f a b) (f c d)` instead of foldr `f a (f b (f c
 -- d))` or foldl `f a (f b (f c d))`
 foldTree :: (a -> a -> a) -> [a] -> Maybe a
 foldTree _ [] = Nothing
@@ -219,6 +219,12 @@ foldTree f as  = foldTree f (pairs as)
   where pairs []         = []
         pairs [a]        = [a]
         pairs (a:b:rest) = f a b : pairs rest
+
+-- | Balanced reduce `f (f a b) (f c d)` instead of foldr `f a (f b (f c
+-- d))` or foldl `f a (f b (f c d))`. Returns `mempty` if the list is
+-- empty.
+mfoldTree :: Monoid a => [a] -> a
+mfoldTree = fromMaybe mempty . foldTree (<>)
 
 -- | Like `takeWhile . (not .)` but also includes the item on which the
 -- predicate fails.

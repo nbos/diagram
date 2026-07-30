@@ -49,7 +49,7 @@ fromParams :: JointType -> [Sym] -> (Sym -> Count) -> Mutation -> CIs -> Entry
 fromParams = unflip5 fromParamsWith IM.empty
 
 -- | Construct a mutation entry with a count correction
-fromParamsWith :: JointType -> [Sym] -> -- TODO: rm JointType and [Sym]
+fromParamsWith :: JointType -> [Sym] -> -- TODO: rm JointType and [Sym] (DEBUG)
                   (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> Entry
 fromParamsWith jt str n'Of mut cis cor = E mut loss ddns dnm cis
   where
@@ -60,7 +60,7 @@ fromParamsWith jt str n'Of mut cis cor = E mut loss ddns dnm cis
           n'' = n' + ddn
           verif_n'' = fromMaybe 0 $ IM.lookup s ns''
       in case () of
-        _ | n' /= verif_n' -> error $
+        _ | n' /= verif_n' -> err' $
             "Count before mut (n') is not what it should be\n"
             ++ "\nString:\n" ++ pShowStr jt jt' str ++ "\n\n"
             ++ "  mut: " ++ show mut ++ "\n"
@@ -68,7 +68,7 @@ fromParamsWith jt str n'Of mut cis cor = E mut loss ddns dnm cis
             ++ "  n': "  ++ show n'  ++ "\n"
             ++ "  verif_n': " ++ show verif_n' ++ "\n"
 
-          | n'' /= verif_n'' -> error $
+          | n'' /= verif_n'' -> err' $
             "Count after mut (n'') is not what it should be\n"
             ++ "\nString:\n" ++ pShowStr jt jt' str ++ "\n\n"
             ++ "  mut: " ++ show mut ++ "\n"
@@ -82,7 +82,9 @@ fromParamsWith jt str n'Of mut cis cor = E mut loss ddns dnm cis
 
           | otherwise -> logFact n' - logFact n''
 
-    dnm = -(sum ddns `div` 2)
+    two_dnm = sum ddns
+    dnm | odd two_dnm = err' $ "expected even number: " ++ show (two_dnm, ddns)
+        | otherwise = -(two_dnm `div` 2)
     sns = cis^.CIs.symCounts
     ssns | typeOfMut mut == Add = negate <$> sns
          | otherwise = sns
@@ -97,10 +99,12 @@ fromParamsWith jt str n'Of mut cis cor = E mut loss ddns dnm cis
     str'' = subst jt' 256 str
     ns'' = symCounts str''
 
+    err' = err . ("fromParamsWith: " ++)
+
 -- | Evaluate full loss given parameters
 eval :: Int -> Int -> Int -> Int -> Entry -> Double
 eval m bigN nm vm' (E mut dnsLoss _ dnm _)
-  | isInfinite res = error $ "Books.eval: infinite loss: "
+  | isInfinite res = err' $ "Books.eval: infinite loss: "
                      ++ "m=" ++ show m
                      ++ ", bigN=" ++ show bigN
                      ++ ", nm=" ++ show nm
@@ -113,6 +117,10 @@ eval m bigN nm vm' (E mut dnsLoss _ dnm _)
   where
     res = dnsLoss + dnmLoss
     dnmLoss = Math.dnmLoss m bigN nm vm' dnm
+    err' = err . ("eval: " ++)
+
+err :: String -> a
+err = error . ("Books." ++)
 
 -----------
 -- BOOKS --
@@ -190,6 +198,3 @@ delete e@(E mut _ ddns _ _) = do
 -- | Delete the first entry and insert the second
 update :: PrimMonad m => Entry -> Entry -> BooksT m ()
 update old new = delete old >> insert new
-
-err :: String -> a
-err = error . ("Books." ++)

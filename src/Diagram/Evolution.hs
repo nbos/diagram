@@ -1,7 +1,10 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
 {-# LANGUAGE TypeApplications, TypeOperators #-}
-{-# LANGUAGE TupleSections, LambdaCase, BangPatterns #-}
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TupleSections #-}
+
 module Diagram.Evolution (module Diagram.Evolution) where
 
 import Prelude hiding (init)
@@ -36,7 +39,7 @@ import qualified Diagram.JointType as JT
 import Diagram.String
 import Diagram.ConstrInterval(CI(..), ciLength, tailIndex)
 import qualified Diagram.ConstrInterval as CI
-import Diagram.ConstrIntervals (CIs)
+import Diagram.ConstrIntervals (CIs(CIs))
 import qualified Diagram.ConstrIntervals as CIs
 import qualified Diagram.Doubly as D
 
@@ -64,6 +67,7 @@ data EvolutionState s = EvolutionState
   { _stringLen :: !Int -- N, bigN
   , _doubly :: !(Doubly s) -- dly :: underlying string :: [N]Sym
   , _symCounts :: !(U.Vector Count) -- ns :: symbol counts (TODO: dyn?)
+  , _jointCIs :: !(Joints CIs) -- allCIs :: (s0,s1) -> CIs
 
   -- Type intro state
   , _typeState :: !(TypeState s)
@@ -90,7 +94,7 @@ getIntroInfo :: Monad m => EvolutionT m Double
 getIntroInfo = Math.dInfo <$> numSymbols -- m
                           <*> use stringLen -- N
                           <*> use jointCount -- nm
-                          <*> (d2ils <*> use symDeltas) -- ils
+                          <*> (d2ils <*> use symDeltas) -- [(n,n')]
                           <*> variety -- vm
   where d2ils = (<$> use symCounts) $
           \ns -> IM.elems . IM.mapWithKey (\s dn -> toSnd (+dn) (ns U.! s))
@@ -175,33 +179,40 @@ hillClimb = init_ >======> execStateT (whileM step)
 ------------
 
 -- | Apply a mutation, update books
-pushMut :: PrimMonad m => Entry -> EvolutionT m ()
-pushMut (E mut _ ddns dnm cis) = do
+pushMut :: forall m. PrimMonad m => Entry -> EvolutionT m ()
+pushMut (E mut _ ddns dnm (CIs djt _ bhd _)) = do
   traceM $ "Pushing mutation: " ++ show mut
 
-  -- ENUMERATE BEFORE/AFTER CORRECTIONS
-  (oldCorrs, newCorrs) <- case typeOfMut mut of
-    Add -> do old <- uses2 doubly typeState corrections
-                     >>= forM cisL
-              -- ADD SYMBOL(S) TO TYPE
-              zoom typeState $ TS.pushMut mut
-              new <- do dly <- use doubly
-                        tst <- use typeState
-                        mapM (TS.superCI dly tst cisJT) cisL
-                          >>= mapM (maybe (return M.empty)
-                                          (corrections dly tst))
-              return (old,new)
+  let cisL = IM.elems bhd
+      -- | Map over the CIs from the Entry. CIs are *not* assumed to be
+      -- inside (in fact they are outside, but I don't think that's
+      -- assumed).
+      getCIsCorrs :: EvolutionT m [Map Mutation (IntMap Int)]
+      getCIsCorrs = uses2 doubly typeState corrections
+                >>= forM cisL
+      -- | Map over the super-CIs of the CIs of the Entry. CIs are
+      -- assumed to be *inside* the type when called.
+      getSuperCorrs :: EvolutionT m [Map Mutation (IntMap Int)]
+      getSuperCorrs = do
+        dly <- use doubly
+        tst <- use typeState
+        mapM (TS.superCI dly tst djt) cisL
+          >>= mapM (maybe (return M.empty)
+                          (corrections dly tst))
 
-    Del -> do old <- do dly <- use doubly
-                        tst <- use typeState
-                        mapM (TS.superCI dly tst cisJT) cisL
-                          >>= mapM (maybe (return M.empty)
-                                          (corrections dly tst))
-              -- DELETE SYMBOL(S) FROM TYPE
-              zoom typeState $ TS.pushMut mut
-              new <- uses2 doubly typeState corrections
-                     >>= forM cisL
-              return (old,new)
+  -- ENUMERATE CORRECTIONS (BEFORE/AFTER)
+  (oldCorrs, newCorrs) <- case typeOfMut mut of
+    Add -> do
+      oldCorrs <- getCIsCorrs
+      -- UPDATES TYPE: ADD SYMBOL(S) TO TYPE
+      zoom typeState $ TS.pushMut mut
+      (oldCorrs,) <$> getSuperCorrs
+
+    Del -> do
+      oldCorrs <- getSuperCorrs
+      -- UPDATES TYPE: DELETE SYMBOL(S) FROM TYPE
+      zoom typeState $ TS.pushMut mut
+      (oldCorrs,) <$> getCIsCorrs
 
   let corDelta = unions $ zipWith (clean .: union) newCorrs $
                  negate <<<$>>> oldCorrs
@@ -209,7 +220,7 @@ pushMut (E mut _ ddns dnm cis) = do
   ns <- use symCounts
   dns <- use symDeltas
 
-  -- UPDATING ENTRIES FROM DELTA DELTA COUNT CHANGES
+  -- UPDATE ENTRIES
   (mutBooks.byMut %=) $ flip2 (flip2 M.differenceWith) corDelta $
     \e@(E _ eloss eddns ednm _) cor ->
       let dloss = sum $ flip2 IM.intersectionWithKey eddns cor $
@@ -219,11 +230,13 @@ pushMut (E mut _ ddns dnm cis) = do
                              old_n'' = n' + eddn
                              new_n'' = old_n'' + d
                          in logFact old_n'' - logFact new_n''
+          sum_cor = sum cor & \r -> if even r then r
+            else err' $ "expected even number: " ++ show (r,cor)
       in Just $ e{ _ddSymCountsLoss = eloss + dloss
                  , _ddSymCounts     = IM.unionWith (+) eddns cor
-                 , _dJointCount     = ednm + sum cor }
+                 , _dJointCount     = ednm + sum_cor }
 
-  -- UPDATING LOSSES FROM DELTA COUNT CHANGES
+  -- UPDATE LOSSES
   oldEntries <- use (mutBooks.byMut) -- before we modify
   readAffected <- (mutBooks.byAffected) `uses` MV.read
   dnsAffected <- fmap (fromMaybe M.empty . foldTree M.union) $
@@ -256,10 +269,9 @@ pushMut (E mut _ ddns dnm cis) = do
 
   where
     clean = M.filter (not . IM.null) . fmap (IM.filter (/= 0))
-    cisJT = cis^.CIs.jointType
-    cisL = CIs.toList cis
     union = M.unionWith (IM.unionWith (+))
     unions = fromMaybe M.empty . foldTree union
+    err' = err . ("pushMut: " ++)
 
 ----------
 -- INIT --
@@ -269,8 +281,8 @@ pushMut (E mut _ ddns dnm cis) = do
 init :: PrimMonad m =>
   Int -> Int -> Doubly (PrimState m) -> U.Vector Int -> Joints CIs ->
   JointType -> m (EvolutionState (PrimState m))
-init m bigN dly ns jointCIs jt = init_ m bigN dly ns jointCIs (jt, memJointCIs)
-  where memJointCIs = M.filterWithKey (const . flip JT.member jt) jointCIs
+init m bigN dly ns allCIs jt = init_ m bigN dly ns allCIs (jt, memJointCIs)
+  where memJointCIs = M.filterWithKey (const . flip JT.member jt) allCIs
 
 -- | Construct a new EvolutionState where the second set of CIs given is
 -- a subset of the first set and corresponds exactly to its entries for
@@ -278,40 +290,44 @@ init m bigN dly ns jointCIs jt = init_ m bigN dly ns jointCIs (jt, memJointCIs)
 init_ :: forall m. PrimMonad m =>
   Int -> Int -> Doubly (PrimState m) -> U.Vector Int -> Joints CIs ->
   (JointType, Joints CIs) -> m (EvolutionState (PrimState m))
-init_ m bigN dly ns jointCIs (jt, memJointCIs) = do
+init_ m bigN dly ns allCIs (jt, memJointCIs) = do
   tst <- TS.init m allJoints jt
 
-  cisByMut <- joinByMut tst CIs.join $ M.toList jointCIs
+  cisByMut <- joinByMut tst CIs.join $ M.toList allCIs
   corByMut <- fromMaybe M.empty . foldTree union
               <$> mapM (corrections dly tst) (CIs.toList memCIs)
 
   str <- D.toList dly -- TODO: rm
-  let es = M.mergeWithKey (Just .:. Entry.fromParamsWith jt str n'Of) -- both CIs + cor
-        (M.mapWithKey $ Entry.fromParams jt str n'Of) -- only CIs
-        (fmap $ err' . ("have cor, but CIs missing: " ++) . show) -- only cor
-        cisByMut corByMut
+  let es = M.mergeWithKey
+           (Just .:. Entry.fromParamsWith jt str n'Of) -- both CIs + cor
+           (M.mapWithKey $ Entry.fromParams jt str n'Of) -- only CIs
+           (fmap $ err' . ("have cor, but CIs missing: " ++) . show) -- only cor
+           cisByMut corByMut
 
   books <- Books.fromList m $ M.elems es
   return $ EvolutionState { _stringLen  = bigN
                           , _doubly     = dly
                           , _symCounts  = ns
+                          , _jointCIs   = allCIs
                           , _typeState  = tst
                           , _symDeltas  = dns
                           , _jointCount = nm
                           , _mutBooks   = books }
   where
     union = M.unionWith (IM.unionWith (+))
-    allJoints = M.keys jointCIs
+    allJoints = M.keys allCIs
     n'Of s = maybe n (+n) $ IM.lookup s dns
       where n = ns U.! s
 
     memCIs = fromMaybe CIs.empty $ foldTree CIs.join $ M.elems memJointCIs
     ndns = memCIs^.CIs.symCounts -- negative delta symbol counts
 
-    nm = sum ndns `div` 2 -- nm := d1nm because d0nm == 0
+    two_nm = sum ndns
+    nm | odd two_nm = err' $ "expected an even number: " ++ show (two_nm, ndns)
+       | otherwise = two_nm `div` 2
     dns = negate <$> ndns -- delta symbol counts (intro's)
 
-    err' = err . ("init:" ++)
+    err' = err . ("init: " ++)
 
 -- WHERE --
 

@@ -10,6 +10,10 @@ data Mutation = AddLeft  !Sym
               | Del2     !Sym !Sym
   deriving(Show,Eq,Ord)
 
+-- IMPORTANT: Ord instance is assumed to preserve order of arg symbols
+-- within a given constructor in Diagram.Evolution.TypeState.deltaMut
+-- (M.fromDistinctAscList)
+
 data MutType = Add | Del
   deriving(Show,Eq,Ord)
 

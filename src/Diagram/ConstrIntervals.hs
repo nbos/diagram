@@ -49,7 +49,12 @@ toList = IM.elems . _byHead
 
 -- | Count the number of constructions
 jointCount :: CIs -> Int
-jointCount = (`div` 2) . sum . _symCounts
+jointCount (CIs _ ns _ _) | odd sum_ns = error ""
+                          | otherwise = sum_ns `div` 2
+  where sum_ns = sum ns
+
+err :: String -> a
+err = error . ("ConstrIntervals." ++)
 
 ------------------
 -- CONSTRUCTION --
@@ -93,8 +98,8 @@ fromStream_0 is0@(i0,s0) ss !m = (S.next ss >>=) $ \case
       let ci = CI i0 s0 2 i1 s1
       in flip3 M.insertWith (s0,s1) (singleton is0 is1) m $ \_ ->
         (symCounts %~ IM.insertWith (+) s0 1 . IM.insertWith (+) s1 1)
-        . (byHead %~ IM.insertWithKey err i0 ci)
-        . (byTail %~ IM.insertWithKey err i1 ci)
+        . (byHead %~ IM.insertWithKey err' i0 ci)
+        . (byTail %~ IM.insertWithKey err' i1 ci)
 
     | otherwise -> do -- s0 == s1
         is :> ss'' <- S.toList $ S.map fst $ S.span ((s0 ==) . snd) ss'
@@ -106,12 +111,12 @@ fromStream_0 is0@(i0,s0) ss !m = (S.next ss >>=) $ \case
 
         fromStream_0 (itl,s0) ss'' $ m & at (s0,s0) . non empty' %~
           (symCounts %~ IM.insertWith (+) s0 constrlen)
-          . (byHead %~ IM.insertWithKey err i0 ci)
-          . (byTail %~ IM.insertWithKey err itl ci)
+          . (byHead %~ IM.insertWithKey err' i0 ci)
+          . (byTail %~ IM.insertWithKey err' itl ci)
 
   where
-    err :: (Show k, Show v0, Show v1) => k -> v0 -> v1 -> a
-    err = error . ("ConstrIntervals.fromStream: collision: " ++) . show .:. (,,)
+    err' :: (Show k, Show v0, Show v1) => k -> v0 -> v1 -> a
+    err' = err . ("fromStream: collision: " ++) . show .:. (,,)
 
 -----------------
 -- COMPOSITION --
@@ -158,8 +163,8 @@ join_ ciAs ciBs = runIdentity $ flip evalStateT (JoinState ciAs ciBs IM.empty) $
 
   -- fold new sym count deltas into the counts map
   dns <- use delta
-  bhd <- uses2 (_A.byHead) (_B.byHead) $ IM.unionWithKey err
-  btl <- uses2 (_A.byTail) (_B.byTail) $ IM.unionWithKey err
+  bhd <- uses2 (_A.byHead) (_B.byHead) $ IM.unionWithKey err'
+  btl <- uses2 (_A.byTail) (_B.byTail) $ IM.unionWithKey err'
   let ns' = L.foldl' (flip $ uc alter) ns (IM.toList dns)
 
   return (CIs jt ns' bhd btl, dns)
@@ -215,8 +220,8 @@ join_ ciAs ciBs = runIdentity $ flip evalStateT (JoinState ciAs ciBs IM.empty) $
           let d = fromEnum (even lenABA) - fromEnum (even lenA2)
           unless (d == 0) $ inc_ d stlA2
 
-    err :: (Show k, Show v0, Show v1) => k -> v0 -> v1 -> a
-    err = error . ("ConstrIntervals.join: collision: " ++) . show .:. (,,)
+    err' :: (Show k, Show v0, Show v1) => k -> v0 -> v1 -> a
+    err' = error . ("join: collision: " ++) . show .:. (,,)
 
 deleteLookup :: Sym -> IntMap a -> (Maybe a, IntMap a)
 deleteLookup = IM.updateLookupWithKey (\_ _ -> Nothing)
