@@ -176,7 +176,11 @@ deltaMut mut = fmap (Strict.uncurry (,)) $ case mut of
 
   AddLeft s0 -> flip execStateT ([DelLeft s0] :!: [mut]) $ do
     SymEntry _ coIn0 _ coOut0 <- lift $ readLeft s0
-    forM_ (IS.toList coOut0) $ addAddRightsFromAddLeft s0 --
+    forM_ (IS.toList coOut0) addAddRightsFromAddLeft --
+
+    whenJust (trySingleton coIn0) $ \s1 -> do
+      SymEntry _ _ deps1 _ <- lift $ readRight s1
+      when (IS.null deps1) $ delMut (DelRight s1) --
 
     depsLost <- fmap (IM.fromListWith IS.union . catMaybes) $
       forM (IS.toList coIn0) $ \s1 -> do
@@ -193,7 +197,11 @@ deltaMut mut = fmap (Strict.uncurry (,)) $ case mut of
   -- symmetric w/ above
   AddRight s1 -> flip execStateT ([DelRight s1] :!: [mut]) $ do
     SymEntry _ coIn1 _ coOut1 <- lift $ readRight s1
-    forM_ (IS.toList coOut1) $ addAddLeftsFromAddRight s1 --
+    forM_ (IS.toList coOut1) addAddLeftsFromAddRight --
+
+    whenJust (trySingleton coIn1) $ \s0 -> do
+      SymEntry _ _ deps0 _ <- lift $ readLeft s0
+      when (IS.null deps0) $ delMut (DelLeft s0) --
 
     depsLost <- fmap (IM.fromListWith IS.union . catMaybes) $
       forM (IS.toList coIn1) $ \s0 -> do
@@ -209,15 +217,17 @@ deltaMut mut = fmap (Strict.uncurry (,)) $ case mut of
 
   Add2 s0 s1 -> flip execStateT ([Del2 s0 s1] :!: [mut]) $ do
     SymEntry _ _ _ coOut0 <- lift $ readLeft s0
-    forM_ (IS.toList $ IS.delete s1 coOut0) $
-      addAddRightsFromAddLeft s0 --
-    SymEntry _ _ _ coOut1 <- lift $ readLeft s1
-    forM_ (IS.toList $ IS.delete s0 coOut1) $
-      addAddLeftsFromAddRight s1 --
+    forM_ (IS.toList $ IS.delete s1 coOut0) addAddRightsFromAddLeft --
+    SymEntry _ _ _ coOut1 <- lift $ readRight s1
+    forM_ (IS.toList $ IS.delete s0 coOut1) addAddLeftsFromAddRight --
 
   DelLeft s0 -> flip execStateT ([AddLeft s0] :!: [mut]) $ do
     SymEntry _ coIn0 _ coOut0 <- lift $ readLeft s0
     forM_ (IS.toList coOut0) delAddRightsFromDelLeft --
+
+    whenJust (trySingleton coIn0) $ \s1 -> do
+      SymEntry _ _ deps1 _ <- lift $ readRight s1
+      when (deps1 == IS.singleton s0) $ addMut (DelRight s1) --
 
     depsGained <- fmap (IM.fromListWith IS.union . catMaybes) $
       forM (IS.toList coIn0) $ \s1 -> do
@@ -236,6 +246,10 @@ deltaMut mut = fmap (Strict.uncurry (,)) $ case mut of
     SymEntry _ coIn1 _ coOut1 <- lift $ readRight s1
     forM_ (IS.toList coOut1) delAddLeftsFromDelRight --
 
+    whenJust (trySingleton coIn1) $ \s0 -> do
+      SymEntry _ _ deps0 _ <- lift $ readLeft s0
+      when (deps0 == IS.singleton s1) $ addMut (DelLeft s0) --
+
     depsGained <- fmap (IM.fromListWith IS.union . catMaybes) $
       forM (IS.toList coIn1) $ \s0 -> do
         SymEntry _ coIn0 _ _ <- lift $ readLeft s0
@@ -251,7 +265,7 @@ deltaMut mut = fmap (Strict.uncurry (,)) $ case mut of
   Del2 s0 s1 -> flip execStateT ([Add2 s0 s1] :!: [mut]) $ do
     SymEntry _ _ _ coOut0 <- lift $ readLeft s0
     forM_ (IS.toList coOut0) delAddRightsFromDelLeft --
-    SymEntry _ _ _ coOut1 <- lift $ readLeft s1
+    SymEntry _ _ _ coOut1 <- lift $ readRight s1
     forM_ (IS.toList coOut1) delAddLeftsFromDelRight --
 
   where
@@ -262,12 +276,12 @@ deltaMut mut = fmap (Strict.uncurry (,)) $ case mut of
 
     -- | Add an `AddRight s1` mutation made available by the
     -- introduction of a neighbor `s0` to the left union
-    addAddRightsFromAddLeft s0 s1 = do
+    addAddRightsFromAddLeft s1 = do
       SymEntry _ coIn1 _ coOut1 <- lift $ readRight s1
       when (IS.null coIn1) $ do
         addMut (AddRight s1) --
         forM_ (IS.toList coOut1) $ \s0' -> do
-          SymEntry _ coIn0' _ _ <- lift $ readLeft s0
+          SymEntry _ coIn0' _ _ <- lift $ readLeft s0'
           when (IS.null coIn0') $ delMut (Add2 s0' s1) --
 
     -- | Delete `AddRight s1` mutations invalidated from the deltion of
@@ -282,12 +296,12 @@ deltaMut mut = fmap (Strict.uncurry (,)) $ case mut of
 
     -- | Add an `AddLeft s0` mutation made available by the introduction
     -- of a neighbor `s1` to the left union
-    addAddLeftsFromAddRight s1 s0 = do
+    addAddLeftsFromAddRight s0 = do
       SymEntry _ coIn0 _ coOut0 <- lift $ readLeft s0
       when (IS.null coIn0) $ do
         addMut (AddLeft s0) --
         forM_ (IS.toList coOut0) $ \s1' -> do
-          SymEntry _ coIn1' _ _ <- lift $ readRight s1
+          SymEntry _ coIn1' _ _ <- lift $ readRight s1'
           when (IS.null coIn1') $ delMut (Add2 s0 s1') --
 
     -- | Delete `AddLeft s0` mutations invalidated from the deltion of
@@ -343,7 +357,6 @@ pushMut = \case
       forM_ (IS.toList coIn ++ IS.toList coOut) $
         modifyRight $ (coSymsIn  %~ IS.insert s0)
                     . (coSymsOut %~ IS.delete s0)
-
 
       writeLeft s0 $ e0 & isMember .~ True
 
