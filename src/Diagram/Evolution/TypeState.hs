@@ -320,36 +320,62 @@ err = error . ("TypeState." ++)
 -- | Apply a mutation to the type state
 pushMut :: PrimMonad m => Mutation -> TypeT m ()
 pushMut = \case
-  AddLeft s0 -> addLeft s0
-  AddRight s1 -> addRight s1
-  Add2 s0 s1 -> addLeft s0 >> addRight s1
+  AddLeft s0 -> do
+    SymEntry _ coIn _ _ <- readLeft s0
+    when (IS.null coIn) $
+      err' $ "AddLeft: need at least one cosym in: " ++ show s0
+    addLeft s0
+
+  AddRight s1 -> do
+    SymEntry _ coIn _ _ <- readRight s1
+    when (IS.null coIn) $
+      err' $ "AddRight: need at least one cosym in: " ++ show s1
+    addRight s1
+
+  Add2 s0 s1 -> do
+    SymEntry _ coIn0 _ _ <- readLeft s0
+    SymEntry _ coIn1 _ _ <- readRight s1
+    unless (IS.null coIn0 && IS.null coIn1) $
+      err' $ "Add2: unatomic, cosym already in: " ++ show ((s0,coIn0)
+                                                          ,(s1,coIn1))
+    addLeft s0 >> addRight s1
 
   DelLeft s0 -> do
-    e0 <- readLeft s0
-    unless (IS.null $ e0^.dependents) $
-      err' $ "delLeft: can't del sym with deps: " ++ show (s0, e0^.dependents)
-    delLeft s0 e0
+    SymEntry _ _ deps _ <- readLeft s0
+    unless (IS.null deps) $
+      err' $ "DelLeft: can't del sym with deps: " ++ show (s0, deps)
+    delLeft s0
 
   DelRight s1 -> do
-    e1 <- readRight s1
-    unless (IS.null $ e1^.dependents) $
-      err' $ "delRight: can't del sym with deps: " ++ show (s1, e1^.dependents)
-    delRight s1 e1
+    SymEntry _ _ deps _ <- readRight s1
+    unless (IS.null deps) $
+      err' $ "DelRight: can't del sym with deps: " ++ show (s1, deps)
+    delRight s1
 
   Del2 s0 s1 -> do -- co-deps
-    e0 <- readLeft s0
-    e1 <- readRight s1
-    delLeft s0 e0
-    delRight s1 e1
+    SymEntry _ coIn0 _ _ <- readLeft s0
+    SymEntry _ coIn1 _ _ <- readRight s1
+    unless (coIn0 == IS.singleton s1 && coIn1 == IS.singleton s0) $
+      err' $ "Del2: not co-dep: " ++ show ((s0,coIn0)
+                                          ,(s1,coIn1))
+    delLeft s0 >> delRight s1
+
   where
     addLeft s0 = do
-      jointType %= JT.insertLeftMissing s0
-      e0@(SymEntry mem coIn deps coOut) <- readLeft s0
+      SymEntry mem coIn deps coOut <- readLeft s0
       when mem $ err' $ "addLeft: symbol already member: " ++ show s0
       unless (IS.null deps) $
         err' $ "addLeft: out-sym shouldn't have deps: " ++ show (s0,deps)
 
-      -- case: mark s0 as dependent to dependor
+      -- deps updates through coIn
+      forM_ (IS.toList coIn) $ \s1 -> do
+        SymEntry _ coIn1 _ _ <- readRight s1
+        case IS.toList coIn1 of
+          []    -> flip modifyLeft s0  $ dependents %~ IS.insert s1
+          [s0'] -> flip modifyLeft s0' $ dependents %~ IS.delete s1
+          _else -> return ()
+
+      -- case: mark s0 as dependent to s1
       whenJust (trySingleton coIn) $ modifyRight $
           dependents %~ IS.insert s0
 
@@ -358,58 +384,100 @@ pushMut = \case
         modifyRight $ (coSymsIn  %~ IS.insert s0)
                     . (coSymsOut %~ IS.delete s0)
 
-      writeLeft s0 $ e0 & isMember .~ True
+      -- commit membership
+      flip modifyLeft s0 $ isMember .~ True
+      jointType %= JT.insertLeftMissing s0
 
-    -- FIXME: missing some dependency deleting
+      ------------------------------------
 
     addRight s1 = do
-      jointType %= JT.insertRightMissing s1
-      e1@(SymEntry mem coIn deps coOut) <- readRight s1
+      SymEntry mem coIn deps coOut <- readRight s1
       when mem $ err' $ "addRight: symbol already member: " ++ show s1
       unless (IS.null deps) $
         err' $ "addRight: out-sym shouldn't have deps: " ++ show (s1,deps)
-      whenJust (trySingleton coIn) $ modifyLeft $
-          dependents %~ IS.insert s1 -- mark s1 as dependent to _
-      forM_ (IS.toList coIn ++ IS.toList coOut) $
-        modifyLeft $ \e0 -> e0 & coSymsIn  %~ IS.insert s1
-                               & coSymsOut %~ IS.delete s1
-      writeRight s1 $ e1 & isMember .~ True
 
-    delLeft s0 e0@(SymEntry mem coIn _ coOut) = do
-      jointType %= JT.deleteLeftMember s0
+      -- deps updates through coIn
+      forM_ (IS.toList coIn) $ \s0 -> do
+        SymEntry _ coIn0 _ _ <- readLeft s0
+        case IS.toList coIn0 of
+          []    -> flip modifyRight s1  $ dependents %~ IS.insert s0
+          [s1'] -> flip modifyRight s1' $ dependents %~ IS.delete s0
+          _else -> return ()
+
+      -- case: mark s1 as dependent to s0
+      whenJust (trySingleton coIn) $ modifyLeft $
+          dependents %~ IS.insert s1
+
+      -- unset as Out, set as In, for all neighbors
+      forM_ (IS.toList coIn ++ IS.toList coOut) $
+        modifyLeft $ (coSymsIn  %~ IS.insert s1)
+                   . (coSymsOut %~ IS.delete s1)
+
+      -- commit membership
+      flip modifyRight s1 $ isMember .~ True
+      jointType %= JT.insertRightMissing s1
+
+      -------------------------------------
+
+    delLeft s0 = do
+      SymEntry mem coIn _ coOut <- readLeft s0
       unless mem $ err' $ "delLeft: symbol not member: " ++ show s0
 
+      -- case: remove s0 as dependent to s1
+      whenJust (trySingleton coIn) $
+        modifyRight (dependents %~ IS.delete s0)
+
+      -- deps updates, set/unset in/out for in-neighbors
       forM_ (IS.toList coIn) $ \s1 -> do
-        e1 <- readRight s1
-        let e1' = e1 & coSymsIn  %~ IS.delete s0
-                     & coSymsOut %~ IS.insert s0
-        whenJust (trySingleton $ e1'^.coSymsIn) $ modifyLeft $
-          dependents %~ IS.insert s1 -- mark s1 as dependent to _
-        writeRight s1 e1'
+        e1@(SymEntry _ coIn1 _ _) <- readRight s1
+        let coIn1' = IS.delete s0 coIn1
+        writeRight s1 $ e1 & coSymsIn  .~ coIn1'
+                           & coSymsOut %~ IS.insert s0
+        case IS.toList coIn1' of
+          []    -> flip modifyLeft s0  $ dependents %~ IS.delete s1
+          [s0'] -> flip modifyLeft s0' $ dependents %~ IS.insert s1
+          _else -> return ()
 
+      -- unset as Out, set as In, for out-neighbors
       forM_ (IS.toList coOut) $
-        modifyRight $ \e1 -> e1 & coSymsIn  %~ IS.delete s0
-                                & coSymsOut %~ IS.insert s0
+        modifyRight $ (coSymsIn  %~ IS.delete s0)
+                    . (coSymsOut %~ IS.insert s0)
 
-      writeLeft s0 $ e0 & isMember .~ False
+      -- commit removal
+      flip modifyLeft s0 $ isMember .~ False
+      jointType %= JT.deleteLeftMember s0
 
-    delRight s1 e1@(SymEntry mem coIn _ coOut) = do
-      jointType %= JT.deleteRightMember s1
+      -----------------------------------
+
+    delRight s1 = do
+      SymEntry mem coIn _ coOut <- readRight s1
       unless mem $ err' $ "delRight: symbol not member: " ++ show s1
 
-      forM_ (IS.toList coIn) $ \s0 -> do
-        e0 <- readLeft s0
-        let e0' = e0 & coSymsIn  %~ IS.delete s1
-                     & coSymsOut %~ IS.insert s1
-        whenJust (trySingleton $ e0'^.coSymsIn) $ modifyRight $
-          dependents %~ IS.insert s0 -- mark s0 as dependent to _
-        writeLeft s0 e0'
+      -- case: remove s1 as dependent to s0
+      whenJust (trySingleton coIn) $
+        modifyLeft (dependents %~ IS.delete s1)
 
+      -- deps updates, set/unset in/out for in-neighbors
+      forM_ (IS.toList coIn) $ \s0 -> do
+        e0@(SymEntry _ coIn0 _ _) <- readLeft s0
+        let coIn0' = IS.delete s1 coIn0
+        writeLeft s0 $ e0 & coSymsIn  .~ coIn0'
+                          & coSymsOut %~ IS.insert s1
+        case IS.toList coIn0' of
+          []    -> flip modifyRight s1  $ dependents %~ IS.delete s0
+          [s1'] -> flip modifyRight s1' $ dependents %~ IS.insert s0
+          _else -> return ()
+
+      -- unset as Out, set as In, for out-neighbors
       forM_ (IS.toList coOut) $
         modifyLeft $ (coSymsIn  %~ IS.delete s1)
                    . (coSymsOut %~ IS.insert s1)
 
-      writeRight s1 $ e1 & isMember .~ False
+      -- commit removal
+      flip modifyRight s1 $ isMember .~ False
+      jointType %= JT.deleteRightMember s1
+
+      ------------------------------------
 
     err' = err . ("pushMut: " ++)
 
