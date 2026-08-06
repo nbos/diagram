@@ -21,6 +21,7 @@ import qualified Data.List as L
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NE
 
+import qualified Data.Set as Set
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.IntMap.Strict (IntMap)
@@ -63,19 +64,19 @@ import Diagram.Util
 type EvolutionT m = StateT (EvolutionState (PrimState m)) m
 -- | Evolution state of a JointType in a given string
 data EvolutionState s = EvolutionState
-  -- String state (readonly, only changes accross intros)
+  -- String state (readonly, only changes accross intros, not evolution)
   { _stringLen :: !Int -- N, bigN
   , _doubly :: !(Doubly s) -- dly :: underlying string :: [N]Sym
   , _symCounts :: !(U.Vector Count) -- ns :: symbol counts (TODO: dyn?)
   , _jointCIs :: !(Joints CIs) -- allCIs :: (s0,s1) -> CIs
 
-  -- Type intro state
+  -- curr. Type state (evolves)
   , _typeState :: !(TypeState s)
   , _symDeltas :: !(IntMap Int) -- dns :: delta symbol count :: u0 U u1 -> dn
   , _jointCount :: !Count -- nm :: joint count, popCount of constructed
 
-  -- Books
-  , _mutBooks :: !(Books s) }
+  -- indexed Mutations
+  , _books :: !(Books s) }
 makeLenses ''EvolutionState
 
 -- GETTERS --
@@ -107,7 +108,7 @@ evalAll = evalAll_ <$> numSymbols -- m
                    <*> use stringLen -- N
                    <*> use jointCount -- nm
                    <*> use typeState -- TypeState
-                   <*> use mutBooks -- Books
+                   <*> use books -- Books
 
 evalAll_ :: Int -> Int -> Int -> TypeState s -> Books s -> [(Double, Entry)]
 evalAll_ m bigN nm tst (Books als ars a2s dls drs d2s _ _) =
@@ -183,45 +184,68 @@ pushMut :: forall m. PrimMonad m => Entry -> EvolutionT m ()
 pushMut (E mut _ ddns dnm (CIs djt _ bhd _)) = do
   traceM $ "Pushing mutation: " ++ show mut
 
-  let cisL = IM.elems bhd
-      -- | Map over the CIs from the Entry. CIs are *not* assumed to be
-      -- inside (in fact they are outside, but I don't think that's
-      -- assumed).
+  -- info: corrections need to be computed on the mut's CIs and their
+  -- super-CIs in different order depending on if it's an add/del
+  -- mutation
+  let cis = IM.elems bhd
+      -- | Map over the CIs from the Entry.
       getCIsCorrs :: EvolutionT m [Map Mutation (IntMap Int)]
       getCIsCorrs = uses2 doubly typeState corrections
-                >>= forM cisL
+                    >>= forM cis
       -- | Map over the super-CIs of the CIs of the Entry. CIs are
       -- assumed to be *inside* the type when called.
-      getSuperCorrs :: EvolutionT m [Map Mutation (IntMap Int)]
-      getSuperCorrs = do
+      getSuperCIsCorrs :: EvolutionT m [Map Mutation (IntMap Int)]
+      getSuperCIsCorrs = do
         dly <- use doubly
         tst <- use typeState
-        mapM (TS.superCI dly tst djt) cisL
+        mapM (TS.superCI dly tst djt) cis
           >>= mapM (maybe (return M.empty)
                           (corrections dly tst))
 
-  -- ENUMERATE CORRECTIONS (BEFORE/AFTER)
-  (oldCorrs, newCorrs) <- case typeOfMut mut of
-    Add -> do
-      oldCorrs <- getCIsCorrs
-      -- UPDATES TYPE: ADD SYMBOL(S) TO TYPE
-      zoom typeState $ TS.pushMut mut
-      (oldCorrs,) <$> getSuperCorrs
+  -- ENUMERATE CORRECTIONS AND APPLY MUT
+  ((enabledMuts, expiredMuts), oldCorrs, newCorrs) <- case typeOfMut mut of
+    Add -> do oldCorrs <- getCIsCorrs
+              mutChange <- zoom typeState $ TS.pushMut mut -- APPLY
+              (mutChange, oldCorrs,) <$> getSuperCIsCorrs
 
-    Del -> do
-      oldCorrs <- getSuperCorrs
-      -- UPDATES TYPE: DELETE SYMBOL(S) FROM TYPE
-      zoom typeState $ TS.pushMut mut
-      (oldCorrs,) <$> getCIsCorrs
+    Del -> do oldCorrs <- getSuperCIsCorrs
+              mutChange <- zoom typeState $ TS.pushMut mut -- APPLY
+              (mutChange, oldCorrs,) <$> getCIsCorrs
+
+  -- DELETE EACH EXPIRED MUT
+  zoom books $ forM_ (Set.toList expiredMuts) Books.delete
+
+  -- INSERT NEWLY ENABLED MUTS
+  allCIs <- use jointCIs
+  dly <- use doubly
+  tst <- use typeState
+
+  -- [debug]
+  jt <- use $ typeState.TS.jointType
+  str <- use doubly >>= D.toList
+  --
+
+  ns <- use symCounts
+  dns <- use symDeltas
+  let n'Of s = maybe n (+n) $ IM.lookup s dns
+        where n = ns U.! s
+
+  newmutJoints <- sequence $ M.fromSet (TS.jointsOf tst) enabledMuts
+  let joints2CIs = mfoldTree . fmap (allCIs M.!)
+      newmutCIs = fmap joints2CIs newmutJoints
+  newmutCIsCorrs <- forM newmutCIs $ sequence
+                    . toSnd ( fmap unions
+                              . mapM (corrections dly tst)
+                              . CIs.toList )
+
+  let newmutEntries = Entry.fromParamsWith jt str n'Of
+  -- FIXME: TODO
 
   let corDelta = unions $ zipWith (clean .: union) newCorrs $
                  negate <<<$>>> oldCorrs
 
-  ns <- use symCounts
-  dns <- use symDeltas
-
   -- UPDATE ENTRIES
-  (mutBooks.byMut %=) $ flip2 (flip2 M.differenceWith) corDelta $
+  (books.byMut %=) $ flip2 (flip2 M.differenceWith) corDelta $
     \e@(E _ eloss eddns ednm _) cor ->
       let dloss = sum $ flip2 IM.intersectionWithKey eddns cor $
             \s eddn d -> let n = ns U.! s
@@ -237,8 +261,8 @@ pushMut (E mut _ ddns dnm (CIs djt _ bhd _)) = do
                  , _dJointCount     = ednm + sum_cor }
 
   -- UPDATE LOSSES
-  oldEntries <- use (mutBooks.byMut) -- before we modify
-  readAffected <- (mutBooks.byAffected) `uses` MV.read
+  oldEntries <- use (books.byMut) -- before we modify
+  readAffected <- (books.byAffected) `uses` MV.read
   dnsAffected <- fmap (fromMaybe M.empty . foldTree M.union) $
     forM (IM.toList ddns) $ \(s,ddn) -> do
     let n = ns U.! s -- count prior to intro (no change)
@@ -247,7 +271,7 @@ pushMut (E mut _ ddns dnm (CIs djt _ bhd _)) = do
         new_n' = old_n' + ddn -- new count after intro
 
     affected <- readAffected s
-    (mutBooks.byMut %=) $ flip2 (flip2 M.differenceWith) affected $
+    (books.byMut %=) $ flip2 (flip2 M.differenceWith) affected $
       \e _ ->
         let eddn = (e^.ddSymCounts) IM.! s -- entry's mut's delta (no change)
             old_n'' = old_n' + eddn -- old count after intro after mut
@@ -259,10 +283,11 @@ pushMut (E mut _ ddns dnm (CIs djt _ bhd _)) = do
 
   -- RE-INDEXING (TODO: join corAffected to dnsAffected)
   let affected = void corDelta `M.union` dnsAffected
-  affectedNew <- (mutBooks.byMut) `uses` (`M.intersection` affected)
+  affectedNew <- (books.byMut) `uses` (`M.intersection` affected)
   let affectedOld = oldEntries `M.intersection` affected
-  zoom mutBooks $ sequence_ $
-    M.intersectionWith Books.update affectedOld affectedNew
+  -- zoom books $ sequence_ $
+  --   M.intersectionWith undefined ---------- FIXME: TODO -----------
+  --   affectedOld affectedNew -- Books.update
 
   symDeltas %= IM.unionWith (+) ddns -- delta ns
   jointCount += dnm -- delta nm
@@ -299,12 +324,12 @@ init_ m bigN dly ns allCIs (jt, memJointCIs) = do
 
   str <- D.toList dly -- TODO: rm
   let es = M.mergeWithKey
-           (Just .:. Entry.fromParamsWith jt str n'Of) -- both CIs + cor
+           (Just .:. Entry.fromParamsWith jt str n'Of) -- CIs * cor
            (M.mapWithKey $ Entry.fromParams jt str n'Of) -- only CIs
            (fmap $ err' . ("have cor, but CIs missing: " ++) . show) -- only cor
            cisByMut corByMut
 
-  books <- Books.fromList m $ M.elems es
+  mutBooks <- Books.fromList m $ M.elems es
   return $ EvolutionState { _stringLen  = bigN
                           , _doubly     = dly
                           , _symCounts  = ns
@@ -312,7 +337,7 @@ init_ m bigN dly ns allCIs (jt, memJointCIs) = do
                           , _typeState  = tst
                           , _symDeltas  = dns
                           , _jointCount = nm
-                          , _mutBooks   = books }
+                          , _books      = mutBooks }
   where
     union = M.unionWith (IM.unionWith (+))
     allJoints = M.keys allCIs
@@ -390,6 +415,8 @@ corrections dly tst ci = fmap clean $ do
 
     insert :: Mutation -> IntMap Int -> StateT (Map Mutation (IntMap Int)) m ()
     insert mut im = modify $ M.insertWith (IM.unionWith (+)) mut im
+
+-- where --
 
 -- | Given a non-empty list of overlapping (connecting) intervals after
 -- an add mutation (alternating [in-]add-in-add-etc.), return the

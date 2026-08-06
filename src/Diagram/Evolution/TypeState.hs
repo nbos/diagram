@@ -15,6 +15,8 @@ import Data.Maybe
 import qualified Data.List as L
 import Data.Strict.Tuple (Pair((:!:)),(:!:))
 import qualified Data.Strict.Tuple as Strict
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IS
 import qualified Data.IntMap.Strict as IM
@@ -99,6 +101,8 @@ rightMember (TS _ _ u1) s = _isMember <$> MV.read u1 s
 member :: PrimMonad m => TypeState (PrimState m) -> Sym -> Sym -> m Bool
 member ts s0 s1 = liftA2 (&&) (leftMember ts s0) (rightMember ts s1)
 
+-- RELATIONS
+
 -- | Give the (possibly empty) set of available mutations that would
 -- switch the membership of the given joint in the type
 mutsOf :: PrimMonad m =>
@@ -119,6 +123,25 @@ delMutsOf :: PrimMonad m =>
              TypeState (PrimState m) -> Sym -> Sym -> m [Mutation]
 delMutsOf (TS _ u0 u1) s0 s1 = Sym.delMutsOf <$> sequence (s0, MV.read u0 s0)
                                              <*> sequence (s1, MV.read u1 s1)
+
+-- | Assuming the mutation is valid/available, return the set of joints
+-- that will flip membership upon its application. Returned list is in
+-- order.
+jointsOf :: PrimMonad m => TypeState (PrimState m) -> Mutation -> m [(Sym,Sym)]
+jointsOf ts mut = case mut of
+  AddLeft s0  -> goLeft s0
+  AddRight s1 -> goRight s1
+  Add2 s0 s1  -> return [(s0,s1)]
+  DelLeft s0  -> goLeft s0
+  DelRight s1 -> goRight s1
+  Del2 s0 s1  -> return [(s0,s1)]
+  where
+    goLeft s0 = do
+      SymEntry _ coIn _ _ <- readLeft_ ts s0
+      return $ (s0,) <$> IS.toAscList coIn
+    goRight s1 = do
+      SymEntry _ coIn _ _ <- readLeft_ ts s1
+      return $ (,s1) <$> IS.toAscList coIn
 
 ----------
 -- INIT --
@@ -167,14 +190,20 @@ init m allJoints jt@(JT u0 u1) = do
 -- UPDATE --
 ------------
 
+pushMut :: PrimMonad m => Mutation -> TypeT m (Set Mutation, Set Mutation)
+pushMut mut = do
+  res <- mutsChange mut
+  pushMut_ mut
+  return res
+
 -- | (Read only) Return the Mutations to be added (fst) or removed (snd)
 -- from the Books after a given Mutation is applied. This must be called
 -- *before* applying the mutation.
-deltaMut :: forall m.
-  PrimMonad m => Mutation -> TypeT m ([Mutation], [Mutation])
-deltaMut mut = fmap (Strict.uncurry (,)) $ case mut of
+mutsChange :: forall m.
+  PrimMonad m => Mutation -> TypeT m (Set Mutation, Set Mutation)
+mutsChange mut = fmap (Strict.uncurry (,)) $ case mut of
 
-  AddLeft s0 -> flip execStateT ([DelLeft s0] :!: [mut]) $ do
+  AddLeft s0 -> flip execStateT (ss (DelLeft s0) :!: ss mut) $ do
     SymEntry _ coIn0 _ coOut0 <- lift $ readLeft s0
     forM_ (IS.toList coOut0) addAddRightsFromAddLeft --
 
@@ -195,7 +224,7 @@ deltaMut mut = fmap (Strict.uncurry (,)) $ case mut of
         addMut (DelLeft s0') --
 
   -- symmetric w/ above
-  AddRight s1 -> flip execStateT ([DelRight s1] :!: [mut]) $ do
+  AddRight s1 -> flip execStateT (ss (DelRight s1) :!: ss mut) $ do
     SymEntry _ coIn1 _ coOut1 <- lift $ readRight s1
     forM_ (IS.toList coOut1) addAddLeftsFromAddRight --
 
@@ -215,13 +244,13 @@ deltaMut mut = fmap (Strict.uncurry (,)) $ case mut of
       when lostAllDeps $ do
         addMut (DelRight s1') --
 
-  Add2 s0 s1 -> flip execStateT ([Del2 s0 s1] :!: [mut]) $ do
+  Add2 s0 s1 -> flip execStateT (ss (Del2 s0 s1) :!: ss mut) $ do
     SymEntry _ _ _ coOut0 <- lift $ readLeft s0
     forM_ (IS.toList $ IS.delete s1 coOut0) addAddRightsFromAddLeft --
     SymEntry _ _ _ coOut1 <- lift $ readRight s1
     forM_ (IS.toList $ IS.delete s0 coOut1) addAddLeftsFromAddRight --
 
-  DelLeft s0 -> flip execStateT ([AddLeft s0] :!: [mut]) $ do
+  DelLeft s0 -> flip execStateT (ss (AddLeft s0) :!: ss mut) $ do
     SymEntry _ coIn0 _ coOut0 <- lift $ readLeft s0
     forM_ (IS.toList coOut0) delAddRightsFromDelLeft --
 
@@ -242,7 +271,7 @@ deltaMut mut = fmap (Strict.uncurry (,)) $ case mut of
             addMut (Del2 s0' s1) --
 
   -- symmetric w/ above
-  DelRight s1 -> flip execStateT ([AddRight s1] :!: [mut]) $ do
+  DelRight s1 -> flip execStateT (ss (AddRight s1) :!: ss mut) $ do
     SymEntry _ coIn1 _ coOut1 <- lift $ readRight s1
     forM_ (IS.toList coOut1) delAddLeftsFromDelRight --
 
@@ -262,17 +291,20 @@ deltaMut mut = fmap (Strict.uncurry (,)) $ case mut of
           when (coIn1' == IS.singleton s0) $
             addMut (Del2 s0 s1') --
 
-  Del2 s0 s1 -> flip execStateT ([Add2 s0 s1] :!: [mut]) $ do
+  Del2 s0 s1 -> flip execStateT (ss (Add2 s0 s1) :!: ss mut) $ do
     SymEntry _ _ _ coOut0 <- lift $ readLeft s0
     forM_ (IS.toList coOut0) delAddRightsFromDelLeft --
     SymEntry _ _ _ coOut1 <- lift $ readRight s1
     forM_ (IS.toList coOut1) delAddLeftsFromDelRight --
 
   where
-    addMut :: Mutation -> StateT ([Mutation] :!: [Mutation]) (TypeT m) ()
-    addMut mt = _1 %= (mt:)
-    delMut :: Mutation -> StateT ([Mutation] :!: [Mutation]) (TypeT m) ()
-    delMut mt = _2 %= (mt:)
+    addMut :: Mutation -> StateT (Set Mutation :!: Set Mutation) (TypeT m) ()
+    addMut mu = _1 %= Set.insert mu
+    delMut :: Mutation -> StateT (Set Mutation :!: Set Mutation) (TypeT m) ()
+    delMut mu = _2 %= Set.insert mu
+
+    ss :: Mutation -> Set Mutation
+    ss = Set.singleton
 
     -- | Add an `AddRight s1` mutation made available by the
     -- introduction of a neighbor `s0` to the left union
@@ -318,8 +350,8 @@ err :: String -> a
 err = error . ("TypeState." ++)
 
 -- | Apply a mutation to the type state
-pushMut :: PrimMonad m => Mutation -> TypeT m ()
-pushMut = \case
+pushMut_ :: PrimMonad m => Mutation -> TypeT m ()
+pushMut_ = \case
   AddLeft s0 -> do
     SymEntry _ coIn _ _ <- readLeft s0
     when (IS.null coIn) $
