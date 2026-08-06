@@ -71,15 +71,17 @@ executable diagram
                       Diagram.Progress
                       Diagram.Primitive
                       Diagram.Streaming
+                      Diagram.UnionType
                       Diagram.JointType
                       Diagram.JointType.Random
-                      Diagram.UnionType
                       Diagram.Evolution
                       Diagram.Evolution.Math
-                      Diagram.Evolution.Books
+                      Diagram.Evolution.MutEntry
+                      Diagram.Evolution.MutBooks
                       Diagram.Evolution.Mutation
                       Diagram.Evolution.SymEntry
                       Diagram.Evolution.TypeState
+                      Diagram.Evolution.Correction
                       Diagram.Information
                       Diagram.ConstrInterval
                       Diagram.ConstrIntervals

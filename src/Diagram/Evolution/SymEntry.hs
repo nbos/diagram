@@ -16,7 +16,7 @@ import Diagram.String
 import Diagram.Evolution.Mutation (Mutation(..))
 
 
-data SymEntry = SymEntry
+data SymEntry = SE
   { _isMember   :: !Bool -- ^ True iff self is member of the union type
   , _coSymsIn   :: !IntSet -- ^ Symbols that have a joint with
                            -- self and member of the co-union
@@ -27,13 +27,13 @@ data SymEntry = SymEntry
 makeLenses ''SymEntry
 
 emptyIn :: SymEntry
-emptyIn = SymEntry True IS.empty IS.empty IS.empty
+emptyIn = SE True IS.empty IS.empty IS.empty
 
 emptyOut :: SymEntry
-emptyOut = SymEntry False IS.empty IS.empty IS.empty
+emptyOut = SE False IS.empty IS.empty IS.empty
 
 mutsOf :: (Sym, SymEntry) -> (Sym, SymEntry) -> [Mutation]
-mutsOf se0@(_, SymEntry mem0 _ _ _) se1@(_, SymEntry mem1 _ _ _)
+mutsOf se0@(_, SE mem0 _ _ _) se1@(_, SE mem1 _ _ _)
   | mem0, mem1 = delMutsOf se0 se1
   | Just mut <- addMutOf se0 se1 = [mut]
   | otherwise = []
@@ -42,7 +42,7 @@ mutsOf se0@(_, SymEntry mem0 _ _ _) se1@(_, SymEntry mem1 _ _ _)
 -- joint member of the type (assumes it's not member of the type and
 -- that it exists in the string, i.e. an out-joint)
 addMutOf :: (Sym, SymEntry) -> (Sym, SymEntry) -> Maybe Mutation
-addMutOf (s0, SymEntry mem0 ic0s _ _) (s1, SymEntry mem1 ic1s _ _)
+addMutOf (s0, SE mem0 ic0s _ _) (s1, SE mem1 ic1s _ _)
   | mem0 = Just $ AddRight s1 -- assert (not mem1)
   | mem1 = Just $ AddLeft s0  -- assert (not mem0)
   | IS.null ic0s && IS.null ic1s = Just $ Add2 s0 s1
@@ -52,7 +52,7 @@ addMutOf (s0, SymEntry mem0 ic0s _ _) (s1, SymEntry mem1 ic1s _ _)
 -- take the given joint out of the type (assumes it's member of the type
 -- and present in the string, i.e. an in-joint)
 delMutsOf :: (Sym, SymEntry) -> (Sym, SymEntry) -> [Mutation]
-delMutsOf (s0, SymEntry _ _ d0s _) (s1, SymEntry _ _ d1s _)
+delMutsOf (s0, SE _ _ d0s _) (s1, SE _ _ d1s _)
   | d0s == IS.singleton s1
   , d1s == IS.singleton s0 = [Del2 s0 s1] -- co-dependent
   | otherwise = [ DelLeft s0 | IS.null d0s ]

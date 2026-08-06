@@ -18,15 +18,12 @@ import Control.Monad.State.Strict
 import Data.Maybe
 import Data.Function
 import qualified Data.List as L
-import Data.List.NonEmpty (NonEmpty(..))
-import qualified Data.List.NonEmpty as NE
 
 import qualified Data.Set as Set
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
-import qualified Data.IntSet as IS
 
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Mutable as MV
@@ -38,8 +35,6 @@ import Diagram.Joints (Joints)
 import Diagram.JointType (JointType)
 import qualified Diagram.JointType as JT
 import Diagram.String
-import Diagram.ConstrInterval(CI(..), ciLength, tailIndex)
-import qualified Diagram.ConstrInterval as CI
 import Diagram.ConstrIntervals (CIs(CIs))
 import qualified Diagram.ConstrIntervals as CIs
 import qualified Diagram.Doubly as D
@@ -48,12 +43,16 @@ import Diagram.Evolution.Math (logFact)
 import qualified Diagram.Evolution.Math as Math
 import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
 
+import Diagram.Evolution.Correction
+
 import Diagram.Evolution.TypeState (TypeState)
 import qualified Diagram.Evolution.TypeState as TS
-import Diagram.Evolution.Books ( Entry(..), ddSymCounts, ddSymCountsLoss,
-                                 Books(Books), byAffected, byMut )
-import qualified Diagram.Evolution.Books as Entry
-import qualified Diagram.Evolution.Books as Books
+
+import Diagram.Evolution.MutEntry (MutEntry(..), ddSymCounts, ddSymCountsLoss)
+import qualified Diagram.Evolution.MutEntry as ME
+
+import Diagram.Evolution.MutBooks (MutBooks(MutBooks), byAffected, byMut)
+import qualified Diagram.Evolution.MutBooks as MB
 
 import Diagram.Util
 
@@ -76,7 +75,7 @@ data EvolutionState s = EvolutionState
   , _jointCount :: !Count -- nm :: joint count, popCount of constructed
 
   -- indexed Mutations
-  , _books :: !(Books s) }
+  , _books :: !(MutBooks s) }
 makeLenses ''EvolutionState
 
 -- GETTERS --
@@ -103,21 +102,21 @@ getIntroInfo = Math.dInfo <$> numSymbols -- m
 -- EVAL --
 
 -- | Enumerate all available mutations with their loss. Unsorted.
-evalAll :: Monad m => EvolutionT m [(Double, Entry)]
+evalAll :: Monad m => EvolutionT m [(Double, MutEntry)]
 evalAll = evalAll_ <$> numSymbols -- m
                    <*> use stringLen -- N
                    <*> use jointCount -- nm
                    <*> use typeState -- TypeState
                    <*> use books -- Books
 
-evalAll_ :: Int -> Int -> Int -> TypeState s -> Books s -> [(Double, Entry)]
-evalAll_ m bigN nm tst (Books als ars a2s dls drs d2s _ _) =
+evalAll_ :: Int -> Int -> Int -> TypeState s -> MutBooks s -> [(Double, MutEntry)]
+evalAll_ m bigN nm tst (MutBooks als ars a2s dls drs d2s _ _) =
   concat $ zipWith (fmap . toFst) lossFns entries
   where
     (sz0,sz1) = JT.dims $ tst^.TS.jointType
     vm = sz0 * sz1
-    lossFns :: [Entry -> Double]
-    lossFns = Entry.eval m bigN nm <$> vm's
+    lossFns :: [MutEntry -> Double]
+    lossFns = ME.eval m bigN nm <$> vm's
     vm's = [ vm + sz1 -- addLeft
            , vm + sz0 -- addRight
            , vm + sz0 + sz1 + 1 -- add2
@@ -125,15 +124,15 @@ evalAll_ m bigN nm tst (Books als ars a2s dls drs d2s _ _) =
            , vm - sz0 -- delRight
            , vm - sz0 - sz1 + 1 ] :: [Int] -- del2
 
-    entries :: [[Entry]]
+    entries :: [[MutEntry]]
     entries = flatten <$> [ als, ars, a2s, dls, drs, d2s ]
     flatten = concatMap (concatMap M.elems . M.elems)
               . IM.elems
 
 -- EXEC --
 
-ddInformation :: PrimMonad m => Entry -> EvolutionT m Double
-ddInformation (E mut _ ddns dnm _) = do
+ddInformation :: PrimMonad m => MutEntry -> EvolutionT m Double
+ddInformation (ME mut _ ddns dnm _) = do
   m <- numSymbols
   bigN <- use stringLen
   ns <- use symCounts
@@ -180,40 +179,40 @@ hillClimb = init_ >======> execStateT (whileM step)
 ------------
 
 -- | Apply a mutation, update books
-pushMut :: forall m. PrimMonad m => Entry -> EvolutionT m ()
-pushMut (E mut _ ddns dnm (CIs djt _ bhd _)) = do
+pushMut :: forall m. PrimMonad m => MutEntry -> EvolutionT m ()
+pushMut (ME mut _ ddns dnm (CIs djt _ bhd _)) = do
   traceM $ "Pushing mutation: " ++ show mut
 
-  -- info: corrections need to be computed on the mut's CIs and their
+  -- info: correction need to be computed on the mut's CIs and their
   -- super-CIs in different order depending on if it's an add/del
   -- mutation
   let cis = IM.elems bhd
       -- | Map over the CIs from the Entry.
-      getCIsCorrs :: EvolutionT m [Map Mutation (IntMap Int)]
-      getCIsCorrs = uses2 doubly typeState corrections
+      getCIsCorr :: EvolutionT m [Map Mutation (IntMap Int)]
+      getCIsCorr = uses2 doubly typeState correction
                     >>= forM cis
       -- | Map over the super-CIs of the CIs of the Entry. CIs are
       -- assumed to be *inside* the type when called.
-      getSuperCIsCorrs :: EvolutionT m [Map Mutation (IntMap Int)]
-      getSuperCIsCorrs = do
+      getSuperCIsCorr :: EvolutionT m [Map Mutation (IntMap Int)]
+      getSuperCIsCorr = do
         dly <- use doubly
         tst <- use typeState
         mapM (TS.superCI dly tst djt) cis
           >>= mapM (maybe (return M.empty)
-                          (corrections dly tst))
+                          (correction dly tst))
 
-  -- ENUMERATE CORRECTIONS AND APPLY MUT
-  ((enabledMuts, expiredMuts), oldCorrs, newCorrs) <- case typeOfMut mut of
-    Add -> do oldCorrs <- getCIsCorrs
+  -- ENUMERATE CORRECTION AND APPLY MUT
+  ((enabledMuts, expiredMuts), oldCorr, newCorr) <- case typeOfMut mut of
+    Add -> do oldCorr <- getCIsCorr
               mutChange <- zoom typeState $ TS.pushMut mut -- APPLY
-              (mutChange, oldCorrs,) <$> getSuperCIsCorrs
+              (mutChange, oldCorr,) <$> getSuperCIsCorr
 
-    Del -> do oldCorrs <- getSuperCIsCorrs
+    Del -> do oldCorr <- getSuperCIsCorr
               mutChange <- zoom typeState $ TS.pushMut mut -- APPLY
-              (mutChange, oldCorrs,) <$> getCIsCorrs
+              (mutChange, oldCorr,) <$> getCIsCorr
 
   -- DELETE EACH EXPIRED MUT
-  zoom books $ forM_ (Set.toList expiredMuts) Books.delete
+  zoom books $ forM_ (Set.toList expiredMuts) MB.delete
 
   -- INSERT NEWLY ENABLED MUTS
   allCIs <- use jointCIs
@@ -233,20 +232,20 @@ pushMut (E mut _ ddns dnm (CIs djt _ bhd _)) = do
   newmutJoints <- sequence $ M.fromSet (TS.jointsOf tst) enabledMuts
   let joints2CIs = mfoldTree . fmap (allCIs M.!)
       newmutCIs = fmap joints2CIs newmutJoints
-  newmutCIsCorrs <- forM newmutCIs $ sequence
+  newmutCIsCorr <- forM newmutCIs $ sequence
                     . toSnd ( fmap unions
-                              . mapM (corrections dly tst)
+                              . mapM (correction dly tst)
                               . CIs.toList )
 
-  let newmutEntries = Entry.fromParamsWith jt str n'Of
+  let newmutEntries = ME.fromParamsWith jt str n'Of
   -- FIXME: TODO
 
-  let corDelta = unions $ zipWith (clean .: union) newCorrs $
-                 negate <<<$>>> oldCorrs
+  let corDelta = unions $ zipWith (clean .: union) newCorr $
+                 negate <<<$>>> oldCorr
 
   -- UPDATE ENTRIES
   (books.byMut %=) $ flip2 (flip2 M.differenceWith) corDelta $
-    \e@(E _ eloss eddns ednm _) cor ->
+    \e@(ME _ eloss eddns ednm _) cor ->
       let dloss = sum $ flip2 IM.intersectionWithKey eddns cor $
             \s eddn d -> let n = ns U.! s
                              dn = fromMaybe 0 $ IM.lookup s dns
@@ -287,7 +286,7 @@ pushMut (E mut _ ddns dnm (CIs djt _ bhd _)) = do
   let affectedOld = oldEntries `M.intersection` affected
   -- zoom books $ sequence_ $
   --   M.intersectionWith undefined ---------- FIXME: TODO -----------
-  --   affectedOld affectedNew -- Books.update
+  --   affectedOld affectedNew -- MutBooks.update
 
   symDeltas %= IM.unionWith (+) ddns -- delta ns
   jointCount += dnm -- delta nm
@@ -320,16 +319,16 @@ init_ m bigN dly ns allCIs (jt, memJointCIs) = do
 
   cisByMut <- joinByMut tst CIs.join $ M.toList allCIs
   corByMut <- fromMaybe M.empty . foldTree union
-              <$> mapM (corrections dly tst) (CIs.toList memCIs)
+              <$> mapM (correction dly tst) (CIs.toList memCIs)
 
   str <- D.toList dly -- TODO: rm
   let es = M.mergeWithKey
-           (Just .:. Entry.fromParamsWith jt str n'Of) -- CIs * cor
-           (M.mapWithKey $ Entry.fromParams jt str n'Of) -- only CIs
+           (Just .:. ME.fromParamsWith jt str n'Of) -- CIs * cor
+           (M.mapWithKey $ ME.fromParams jt str n'Of) -- only CIs
            (fmap $ err' . ("have cor, but CIs missing: " ++) . show) -- only cor
            cisByMut corByMut
 
-  mutBooks <- Books.fromList m $ M.elems es
+  mutBooks <- MB.fromList m $ M.elems es
   return $ EvolutionState { _stringLen  = bigN
                           , _doubly     = dly
                           , _symCounts  = ns
@@ -364,116 +363,6 @@ joinByMut tst f = fmap (M.fromListWith f . concat) . mapM g
   where
     g :: ((Sym,Sym), a) -> m [(Mutation, a)]
     g ((s0,s1), a) = (,a) <<$>> TS.mutsOf tst s0 s1
-
--- | Given the string, a type, and a constructive interval of the joint
--- type, return the set of corrections on the symCounts of each CIs
--- associated with a mutation (add or del) (all at once) required to be
--- added in order for it to match the actual change in symbol counts
--- produced by the mutation. Corrections are signed to be *added* to the
--- CIs.symCounts before they are subtracted (add) or added (del) to the
--- joint type's own CIs.symCounts.
-corrections :: forall m. PrimMonad m => Doubly (PrimState m) ->
-               TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
-corrections dly tst ci = fmap clean $ do
-  traceShowM ci
-
-  -- [DEL]: decompose, treat all delMuts
-  dns <- delCorrections dly tst ci
-  traceM $ "del corrections: " ++ show dns
-
-  -- [ADD]: grab the largest chain possible, if CI is first in the chain
-  res <- flip execStateT dns $ ((prevCI ci >>=) . (. join)) $ \case
-    Nothing -> ((traceM "no CI before" >> nextCIs ci) >>=) $ flip whenJust $
-               \(addMut, nexts) -> do
-                 traceM $ "CIs after: " ++ show (addMut,nexts)
-                 insert addMut $ addCorrections (ci:|nexts)
-
-    Just p@(addMut, prv) -> ((traceM ("prev CI: " ++ show p) >> nextCIs ci) >>=) $ \case
-      Nothing -> do
-        traceM "no CIs after"
-        insert addMut $ addCorrections (prv:|[ci])
-
-      Just p'@(addMut', nexts)
-        | addMut == addMut' -> do
-            traceM $ "CIs after (same mut): " ++ show p'
-            insert addMut $ addCorrections (prv:|ci:nexts)
-
-        | otherwise -> do
-            traceM $ "CIs after: " ++ show p'
-            insert addMut (addCorrections (prv:|[ci]))
-            insert addMut' (addCorrections (ci:|nexts))
-
-  traceM $ "all corrections: " ++ show res
-  traceM ""
-  return res
-
-  where
-    clean = M.filter (not . IM.null) . fmap (IM.filter (/=0))
-
-    prevCI = lift . TS.prevMutCI dly tst
-    nextCIs = lift . TS.nextMutCIs dly tst
-
-    insert :: Mutation -> IntMap Int -> StateT (Map Mutation (IntMap Int)) m ()
-    insert mut im = modify $ M.insertWith (IM.unionWith (+)) mut im
-
--- where --
-
--- | Given a non-empty list of overlapping (connecting) intervals after
--- an add mutation (alternating [in-]add-in-add-etc.), return the
--- appropriate corrections on delta delta symbol counts (ddns)
-addCorrections :: NonEmpty CI -> IntMap Int
-addCorrections cis = L.foldl' (flip f) IM.empty (NE.init cis) &
-  case compare (even newLen) (even oldLen) of
-    LT -> IM.insertWith (+) tailSym 1
-    EQ -> id
-    GT -> IM.insertWith (+) tailSym (-1)
-  where
-    newLen = sum ((^.ciLength) <$> cis) -- constituents lengths
-             - (length cis - 1) -- overlaps
-
-    f (CI _ _ len _ stl) | even len = IM.insertWith (+) stl 1
-                         | otherwise = id
-
-    CI _ _ oldLen _ tailSym = NE.last cis
-
--- | Given a constructive interval of the joint type (in), count all
--- the differences in symbol counts between the symCounts of the CIs
--- for all joints removed by the same del-mutation and and the real
--- difference in symCounts from applying those mutations.
-delCorrections :: forall m. PrimMonad m => Doubly (PrimState m) ->
-  TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
-delCorrections dly tst ci = do
-
-  constr <- flip IS.member . IS.fromList . everyOther . fmap fst
-            <$> CI.extension dly ci
-
-  let go :: Mutation -> Bool -> [CI] -> StateT (Map Mutation (IntMap Int)) m ()
-      go delMut = go_ where
-        go_ _ [] = return ()
-        go_ phase (CI hd shd len tl stl : rest) = do
-          unless (tl == (ci^.tailIndex)) $ dec stl -- tl
-          let outOfPhase = phase /= constr hd
-          -- out of phase with super-CI means prev hd will be constr
-          -- means hd will still be constr. so hd will not be docked
-          when outOfPhase $ dec shd -- hd
-          let phase' = phase /= odd len -- xor
-          go_ phase' rest
-
-        dec :: Sym -> StateT (Map Mutation (IntMap Int)) m ()
-        dec s = modify $ M.insertWith (const $ IM.insertWith (+) s (-1))
-                delMut (IM.singleton s (-1))
-
-  flip execStateT M.empty $
-    mapM_ (uc $ flip go True) -- True == constr
-    . M.toList . M.fromListWith (++)
-    . reverse . ffmap (:[]) -- reverse to maintain order
-    =<< lift (TS.decomposeIn dly tst ci)
-
-  where
-    everyOther :: [a] -> [a]
-    everyOther [] = []
-    everyOther [a] = [a]
-    everyOther (a:_:rest) = a : everyOther rest
 
 err :: String -> a
 err = error . ("Evolution." ++)
