@@ -15,7 +15,6 @@ import qualified Data.IntSet as IS
 import Diagram.String
 import Diagram.Evolution.Mutation (Mutation(..))
 
-
 data SymEntry = SE
   { _isMember   :: !Bool -- ^ True iff self is member of the union type
   , _coSymsIn   :: !IntSet -- ^ Symbols that have a joint with

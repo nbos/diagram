@@ -33,8 +33,10 @@ import qualified Diagram.ConstrInterval as CI
 
 import Diagram.Util
 
--- | All construction sites, as intervals, for fast join\/union but no
--- delete\/subtract.
+-- | Constructive Intervals. Joint concordance\/index. All construction
+-- sites in corpus, as intervals, for fast join\/union but slower
+-- delete\/subtract (have first to resolve each subtracted interval into
+-- its super-interval).
 data CIs = CIs
   { _jointType :: JointType    -- :: (u0, u1)
   , _symCounts :: IntMap Count -- :: s  --> n

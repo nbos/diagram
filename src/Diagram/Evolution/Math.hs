@@ -47,7 +47,7 @@ ddLossComplement m bigN nm vm = nLossC + sLossC + rLossC
 
 -- | Compute the difference in the info delta from changing parameters:
 -- joint type count n_m (before,after), symbol (new) counts ns
--- (before,after), and joint type variety (before,after)
+-- (before,after, i.e. n',n''), and joint type variety (before,after)
 ddInfo :: Int -> Int -> [(Int,Int)] -> (Int,Int) -> (Int,Int) -> Double
 ddInfo m bigN ils' (nm,nm') (vm,vm') = nDeltaDelta
                                        + sDeltaDelta

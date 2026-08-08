@@ -7,7 +7,6 @@ import Prelude hiding (init)
 import Debug.Trace
 
 import Control.Monad
-import Control.Monad.Extra
 import Control.Lens hiding (both,last1,Index,(:>),index)
 import Control.Monad.State.Strict
 
@@ -22,76 +21,82 @@ import qualified Data.IntMap.Strict as IM
 import qualified Data.IntSet as IS
 
 import Diagram.Primitive
-
 import Diagram.String
 import Diagram.ConstrInterval(CI(..), ciLength, tailIndex)
 import qualified Diagram.ConstrInterval as CI
 
 import Diagram.Evolution.Mutation (Mutation(..))
-
 import Diagram.Evolution.TypeState (TypeState)
 import qualified Diagram.Evolution.TypeState as TS
 
 import Diagram.Util
 
+-- Here we compute, for constructive intervals (CIs) and mutations, the
+-- difference between the symbol counts of the union/join of the CIs &
+-- those of the mutation's (i.e. (cis U mut.cis).ns) and the sum of the
+-- symbol counts of the CIs and those of the mutation's (i.e. (cis.ns +
+-- mut.cis.ns)).
+
 -- | Given the string, a type, and a constructive interval of the joint
--- type, return the set of correction on the symCounts of each CIs
--- associated with a mutation (add or del) (all at once) required to be
+-- type, return the set of corrections on the symCounts of each CIs
+-- associated with a mutation (add or del, all at once) required to be
 -- added in order for it to match the actual change in symbol counts
--- produced by the mutation. Correction are signed to be *added* to the
+-- produced by the mutation. Corrections are signed to be *added* to the
 -- CIs.symCounts before they are subtracted (add) or added (del) to the
 -- joint type's own CIs.symCounts.
-correction :: forall m. PrimMonad m => Doubly (PrimState m) ->
-              TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
-correction dly tst ci = fmap clean $ do
+corrsOf :: forall m. PrimMonad m => Doubly (PrimState m) ->
+  TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
+corrsOf dly tst ci = fmap clean $ do
   traceShowM ci
 
   -- [DEL]: decompose, treat all delMuts
-  dns <- delCorrection dly tst ci
-  traceM $ "del correction: " ++ show dns
+  delMutCorrs <- delMutCorrsOf dly tst ci
+  traceM $ "del correction: " ++ show delMutCorrs
 
   -- [ADD]: grab the largest chain possible, if CI is first in the chain
-  res <- flip execStateT dns $ ((prevCI ci >>=) . (. join)) $ \case
-    Nothing -> ((traceM "no CI before" >> nextCIs ci) >>=) $ flip whenJust $
-               \(addMut, nexts) -> do
-                 traceM $ "CIs after: " ++ show (addMut,nexts)
-                 insert addMut $ addCorrection (ci:|nexts)
+  addMutCorrs <- (prevCI ci >>=) $ \case
+    Nothing -> ((traceM "no CI before" >> nextCIs ci) >>=) $ \case
+      Nothing -> return M.empty
+      Just (addMut, nexts) -> do
+        traceM $ "CIs after: " ++ show (addMut,nexts)
+        return $ M.singleton addMut $ addMutCorrOf (ci:|nexts)
 
     Just p@(addMut, prv) -> ((traceM ("prev CI: " ++ show p) >> nextCIs ci) >>=) $ \case
       Nothing -> do
         traceM "no CIs after"
-        insert addMut $ addCorrection (prv:|[ci])
+        return $ M.singleton addMut $ addMutCorrOf (prv:|[ci])
 
       Just p'@(addMut', nexts)
         | addMut == addMut' -> do
             traceM $ "CIs after (same mut): " ++ show p'
-            insert addMut $ addCorrection (prv:|ci:nexts)
+            return $ M.singleton addMut $ addMutCorrOf (prv:|ci:nexts)
 
         | otherwise -> do
             traceM $ "CIs after: " ++ show p'
-            insert addMut (addCorrection (prv:|[ci]))
-            insert addMut' (addCorrection (ci:|nexts))
+            return $ M.fromListWithKey col
+              [ (addMut, addMutCorrOf (prv:|[ci]))
+              , (addMut', addMutCorrOf (ci:|nexts)) ]
 
+  let res = M.unionWithKey col delMutCorrs addMutCorrs
   traceM $ "all correction: " ++ show res
   traceM ""
   return res
 
   where
     clean = M.filter (not . IM.null) . fmap (IM.filter (/=0))
+    err' = err . ("corrsOf: " ++)
+    col = err' . ("collision: " ++) . show .:. (,,)
 
-    prevCI = lift . TS.prevMutCI dly tst
-    nextCIs = lift . TS.nextMutCIs dly tst
-
-    insert :: Mutation -> IntMap Int -> StateT (Map Mutation (IntMap Int)) m ()
-    insert mut im = modify $ M.insertWith (IM.unionWith (+)) mut im
+    prevCI = fmap join . TS.prevMutCI dly tst
+    nextCIs = TS.nextMutCIs dly tst
 
 -- where --
 
 -- | Given a non-empty list of overlapping (connecting) intervals after
 -- an add mutation (alternating [in-]add-in-add-etc.), return the
 -- appropriate correction on delta delta symbol counts (ddns)
-addCorrection :: NonEmpty CI -> IntMap Int
-addCorrection cis = L.foldl' (flip f) IM.empty (NE.init cis) &
+addMutCorrOf :: NonEmpty CI -> IntMap Int
+addMutCorrOf cis = L.foldl' (flip f) IM.empty (NE.init cis) &
   case compare (even newLen) (even oldLen) of
     LT -> IM.insertWith (+) tailSym 1
     EQ -> id
@@ -109,9 +114,9 @@ addCorrection cis = L.foldl' (flip f) IM.empty (NE.init cis) &
 -- the differences in symbol counts between the symCounts of the CIs
 -- for all joints removed by the same del-mutation and and the real
 -- difference in symCounts from applying those mutations.
-delCorrection :: forall m. PrimMonad m => Doubly (PrimState m) ->
+delMutCorrsOf :: forall m. PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
-delCorrection dly tst ci = do
+delMutCorrsOf dly tst ci = do
 
   constr <- flip IS.member . IS.fromList . everyOther . fmap fst
             <$> CI.extension dly ci
@@ -143,3 +148,6 @@ delCorrection dly tst ci = do
     everyOther [] = []
     everyOther [a] = [a]
     everyOther (a:_:rest) = a : everyOther rest
+
+err :: [Char] -> a
+err = error . ("Correction." ++)

@@ -45,9 +45,9 @@ import Diagram.Util
 
 type TypeT m = StateT (TypeState (PrimState m)) m
 data TypeState s = TS
-  { _jointType :: !JointType -- :: (IntSet, IntSet)
-  , _leftSyms  :: !(MV.MVector s SymEntry)
-  , _rightSyms :: !(MV.MVector s SymEntry) }
+  { _jointType :: !JointType -- :: (IntSet, IntSet) :: mem -> sym
+  , _leftSyms  :: !(MV.MVector s SymEntry)   -- :: sym -> mem
+  , _rightSyms :: !(MV.MVector s SymEntry) } -- :: sym -> mem
 makeLenses ''TypeState
 
 -- | m

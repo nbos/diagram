@@ -20,7 +20,7 @@ import Diagram.Evolution.Math (logFact)
 import qualified Diagram.Evolution.Math as Math
 import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
 
-import Diagram.Simple
+import qualified Diagram.Simple as Simple
 import Diagram.JointType (JointType)
 import qualified Diagram.JointType as JT
 
@@ -39,59 +39,64 @@ data MutEntry = ME
   deriving (Show,Eq)
 makeLenses ''MutEntry
 
-fromParams :: JointType -> [Sym] -> (Sym -> Count) -> Mutation -> CIs -> MutEntry
+fromParams :: Monad m => JointType -> [Sym] ->
+              (Sym -> m Count) -> Mutation -> CIs -> m MutEntry
 fromParams = unflip5 fromParamsWith IM.empty
 
 -- | Construct a mutation entry with a count correction
-fromParamsWith :: JointType -> [Sym] -> -- TODO: rm JointType and [Sym] (DEBUG)
-                  (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> MutEntry
-fromParamsWith jt str n'Of mut cis cor = ME mut loss ddns dnm cis
+fromParamsWith :: Monad m => JointType -> [Sym] -> -- TODO: rm JointType and [Sym] (DEBUG)
+                  (Sym -> m Count) -> Mutation -> CIs -> IntMap Int -> m MutEntry
+fromParamsWith jt str n'Of mut cis cor = do
+
+  losses <- sequence $ flip IM.mapWithKey ddns $ \s ddn -> do
+    n' <- n'Of s
+    let n'' = n' + ddn
+        verif_n   = fromMaybe 0 $ IM.lookup s ns
+        verif_n'  = fromMaybe 0 $ IM.lookup s ns'
+        verif_n'' = fromMaybe 0 $ IM.lookup s ns''
+    case () of
+      _ | n' /= verif_n' -> err' $
+          "Count before mut (n') is not what it should be\n"
+          ++ "\nString:\n" ++ pShowStr jt jt' str ++ "\n\n"
+          ++ "  mut: " ++ show mut ++ "\n"
+          ++ "  sym: " ++ show s   ++ "\n"
+          ++ "  n': "  ++ show n'  ++ "\n"
+          ++ "  verif_n': " ++ show verif_n' ++ "\n"
+
+        | n'' /= verif_n'' -> err' $
+          "Count after mut (n'') is not what it should be\n"
+          ++ "\nString:\n" ++ pShowStr jt jt' str ++ "\n\n"
+          ++ "  mut: " ++ show mut ++ "\n"
+          ++ "  sym: " ++ show s   ++ "\n"
+          ++ "  n': "  ++ show n'  ++ "\n"
+          ++ "  n'': " ++ show n''
+          ++ " (cis: " ++ show (IM.lookup s mutSymCounts)
+          ++ ", cor: " ++ show (IM.lookup s cor) ++ ")\n"
+          ++ "  verif_n: "   ++ show verif_n   ++ "\n"
+          ++ "  verif_n': "  ++ show verif_n'  ++ "\n"
+          ++ "  verif_n'': " ++ show verif_n'' ++ "\n"
+
+        | otherwise -> return $ logFact n' - logFact n''
+
+  return $ ME mut (sum losses) ddns dnm cis
+
   where
-    loss = sum $ flip IM.mapWithKey ddns $ \s ddn ->
-      let n = fromMaybe 0 $ IM.lookup s ns
-          n' = n'Of s
-          verif_n' = fromMaybe 0 $ IM.lookup s ns'
-          n'' = n' + ddn
-          verif_n'' = fromMaybe 0 $ IM.lookup s ns''
-      in case () of
-        _ | n' /= verif_n' -> err' $
-            "Count before mut (n') is not what it should be\n"
-            ++ "\nString:\n" ++ pShowStr jt jt' str ++ "\n\n"
-            ++ "  mut: " ++ show mut ++ "\n"
-            ++ "  sym: " ++ show s   ++ "\n"
-            ++ "  n': "  ++ show n'  ++ "\n"
-            ++ "  verif_n': " ++ show verif_n' ++ "\n"
-
-          | n'' /= verif_n'' -> err' $
-            "Count after mut (n'') is not what it should be\n"
-            ++ "\nString:\n" ++ pShowStr jt jt' str ++ "\n\n"
-            ++ "  mut: " ++ show mut ++ "\n"
-            ++ "  sym: " ++ show s   ++ "\n"
-            ++ "  n: "   ++ show n   ++ "\n"
-            ++ "  n': "  ++ show n'  ++ "\n"
-            ++ "  n'': " ++ show n''
-            ++ " (cis: " ++ show (IM.lookup s sns)
-            ++ ", cor: " ++ show (IM.lookup s cor) ++ ")\n"
-            ++ "  verif_n'': " ++ show verif_n'' ++ "\n"
-
-          | otherwise -> logFact n' - logFact n''
-
-    two_dnm = sum ddns
+    two_dnm = negate $ sum ddns
     dnm | odd two_dnm = err' $ "expected even number: " ++ show (two_dnm, ddns)
-        | otherwise = -(two_dnm `div` 2)
-    sns = cis^.CIs.symCounts
-    ssns | typeOfMut mut == Add = negate <$> sns
-         | otherwise = sns
-    ddns = ssns `union` cor
+        | otherwise = two_dnm `div` 2
+    mutSymCounts = cis^.CIs.symCounts
+    signedMutSymCounts | typeOfMut mut == Add = negate <$> mutSymCounts
+                       | otherwise = mutSymCounts
+    ddns = signedMutSymCounts `union` cor
     union = IM.mergeWithKey (const $ nothingIf (==0) .: (+)) id id
 
     -- verif -- TODO: remove
-    ns = symCounts str
-    str' = subst jt 256 str
-    ns' = symCounts str'
-    jt' = JT.appMut mut jt
-    str'' = subst jt' 256 str
-    ns'' = symCounts str''
+    ns    = Simple.symCounts str
+    str'  = Simple.subst jt 256 str
+    ns'   = Simple.symCounts str'
+    jt'   = JT.appMut mut jt
+    str'' = Simple.subst jt' 256 str
+    ns''  = Simple.symCounts str''
 
     err' = err . ("fromParamsWith: " ++)
 
