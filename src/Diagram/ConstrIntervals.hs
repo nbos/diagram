@@ -42,7 +42,7 @@ data CIs = CIs
   , _symCounts :: IntMap Count -- :: s  --> n
   , _byHead    :: IntMap CI    -- :: hd --> (hd, shd, len, tl, stl)
   , _byTail    :: IntMap CI }  -- :: tl --> (hd, shd, len, tl, stl)
-  deriving(Show,Eq)
+  deriving(Show,Eq) -- TODO: joint count?
 
 makeLenses ''CIs
 

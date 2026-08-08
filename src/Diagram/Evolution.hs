@@ -65,14 +65,14 @@ type EvolutionT m = StateT (EvolutionState (PrimState m)) m
 data EvolutionState s = EvolutionState
   -- String state (readonly, only changes accross intros, not evolution)
   { _stringLen :: !Int -- N, bigN
-  , _doubly :: !(Doubly s) -- dly :: underlying string :: [N]Sym
+  , _doubly    :: !(Doubly s) -- dly :: underlying string :: [N]Sym
   , _symCounts :: !(U.Vector Count) -- ns :: symbol counts (TODO: dyn vec)
-  , _jointCIs :: !(Joints CIs) -- allCIs :: (s0,s1) -> CIs
+  , _jointCIs  :: !(Joints CIs) -- allCIs :: (s0,s1) -> CIs
 
   -- curr. Type state (evolves)
-  , _typeState :: !(TypeState s) -- sym entries :: [(mem, coIn, deps, coOut)]
-  , _deltaCounts :: !(MU.MVector s Int) -- dns :: delta symbol counts
-  , _jointCount :: !Count -- nm :: joint count, popCount of constructed
+  , _typeState  :: !(TypeState s) -- sym entries :: [(mem, coIn, deps, coOut)]
+  , _typeCIs    :: !CIs -- joint type CIs
+  , _jointCount :: !Int
 
   -- indexed Mutations
   , _mutBooks :: !(MutBooks s) }
@@ -84,9 +84,12 @@ makeLenses ''EvolutionState
 numSymbols :: Monad m => EvolutionT m Int
 numSymbols = zoom typeState TS.numSymbols
 
+jointType :: Monad m => EvolutionT m JointType
+jointType = use $ typeCIs.CIs.jointType
+
 -- | vm = sz0 * sz1
 variety :: Monad m => EvolutionT m Int
-variety = zoom typeState TS.variety
+variety = JT.variety <$> jointType
 
 -- | Compute the difference in information/code length incurred by the
 -- introduction of the current joint type (i.e. no further mutation)
@@ -100,16 +103,14 @@ getIntroInfo = Math.dInfo <$> numSymbols -- m
 getCountIntervals :: PrimMonad m => EvolutionT m [(Count,Count)]
 getCountIntervals = snd <<$>> getSymCountIntervals
 
-getSymCountIntervals :: PrimMonad m => EvolutionT m [(Sym,(Count,Count))]
+getSymCountIntervals :: Monad m => EvolutionT m [(Sym,(Count,Count))]
 getSymCountIntervals = do
   ns <- use symCounts
-  dns <- use deltaCounts
-  JT (UT _ s0s) (UT _ s1s) <- use $ typeState.TS.jointType
-  forM (IS.toList $ IS.union s0s s1s) $ \s -> do -- for (u0 U u1)
+  CIs _ ndns _ _ <- use typeCIs
+  return $ IM.toList $ flip IM.mapWithKey ndns $ \s ndn ->
     let n = ns U.! s
-    dn <- MU.read dns s
-    let n' = n + dn
-    seq n' $ return (s,(n,n'))
+        n' = n - ndn
+    in seq n' (n,n')
 
 -- EVAL --
 
@@ -118,15 +119,15 @@ evalAll :: Monad m => EvolutionT m [(Double, MutEntry)]
 evalAll = evalAll_ <$> numSymbols -- m
                    <*> use stringLen -- N
                    <*> use jointCount -- nm
-                   <*> use typeState -- TypeState
+                   <*> jointType -- JointType
                    <*> use mutBooks -- Books
 
-evalAll_ :: Int -> Int -> Int -> TypeState s -> MutBooks s ->
+evalAll_ :: Int -> Int -> Int -> JointType -> MutBooks s ->
             [(Double, MutEntry)]
-evalAll_ m bigN nm tst (MutBooks als ars a2s dls drs d2s _ _) =
+evalAll_ m bigN nm jt (MutBooks als ars a2s dls drs d2s _ _) =
   concat $ zipWith (fmap . toFst) lossFns entries
   where
-    (sz0,sz1) = JT.dims $ tst^.TS.jointType
+    (sz0,sz1) = JT.dims jt
     vm = sz0 * sz1
     lossFns :: [MutEntry -> Double]
     lossFns = ME.eval m bigN nm <$> vm's
@@ -152,7 +153,7 @@ hillClimb :: forall m. PrimMonad m =>
   Int -> Int -> Doubly (PrimState m) -> U.Vector Int -> Joints CIs ->
   (JointType, Joints CIs) -> m JointType
 hillClimb = init_ >======> execStateT (whileM step)
-            >.> fmap (^.typeState.TS.jointType)
+            >.> fmap (^.typeCIs.CIs.jointType)
 
 step :: PrimMonad m => EvolutionT m Bool
 step = do
@@ -172,7 +173,7 @@ ddInformation (ME mut _ ddns dnm _) = do
   nm <- use jointCount
 
   vm <- variety
-  (sz0, sz1) <- (typeState.TS.jointType) `uses` JT.dims
+  (sz0, sz1) <- JT.dims <$> jointType
   let vm' = case mut of
         AddLeft _  -> vm + sz1
         AddRight _ -> vm + sz0
@@ -188,13 +189,15 @@ ddInformation (ME mut _ ddns dnm _) = do
 getMutCountIntervals :: PrimMonad m => IntMap Int -> EvolutionT m [(Count,Count)]
 getMutCountIntervals ddns = do
   ns <- use symCounts
-  dns <- use deltaCounts
-  forM (IM.toList ddns) $ \(s,ddn) -> do
-    let n = ns U.! s
-    dn <- MU.read dns s
-    let n' = n + dn
-        n'' = n' + ddn
-    seq n'' $ return (n',n'')
+  CIs _ ndns _ _ <- use typeCIs
+  return $ IM.elems $ IM.mergeWithKey (Just .:. f ns)
+    (const IM.empty) (IM.mapWithKey $ flip (f ns) 0)
+    ndns ddns
+  where
+    f ns s ndn ddn = seq n'' (n',n'')
+      where n = ns U.! s
+            n' = n - ndn
+            n'' = n' + ddn
 
 ------------
 -- UPDATE --
@@ -209,9 +212,8 @@ introMut mut = do
   let mutCIs = mfoldTree $ fmap (allCIs M.!) jts
 
   ns <- use symCounts
-  dns <- use deltaCounts
-  let n'Of s = ((ns U.! s)+) <$> MU.read dns s
-
+  -- dns <- use deltaCounts
+  -- let n'Of s = ((ns U.! s)+) <$> MU.read dns s
   cor <- case typeOfMut mut of
     Add -> do
       undefined
@@ -219,9 +221,9 @@ introMut mut = do
     Del -> do
       undefined
 
-  jt <- use $ typeState.TS.jointType -- debug
-  str <- use doubly >>= D.toList -- debug
-  e <- ME.fromParamsWith jt str n'Of mut mutCIs cor
+  -- jt <- use $ typeState.TS.jointType -- debug
+  -- str <- use doubly >>= D.toList -- debug
+  -- e <- ME.fromParamsWith jt str n'Of mut mutCIs cor
   undefined
 
 
@@ -267,7 +269,8 @@ pushMut (ME mut _ ddns dnm (CIs djt _ bhd _)) = do
   forM_ (Set.toList enabledMuts) introMut
 
   ns <- use symCounts
-  dns <- use deltaCounts
+  CIs jt ndns _ _ <- use typeCIs
+  -- dns <- use deltaCounts
 
   -- UPDATE ENTRIES
   (mutBooks.byMut %=) $ flip2 (flip2 M.differenceWith) corrDelta $
@@ -291,8 +294,8 @@ pushMut (ME mut _ ddns dnm (CIs djt _ bhd _)) = do
   dnsAffected <- fmap (fromMaybe M.empty . foldTree M.union) $
     forM (IM.toList ddns) $ \(s,ddn) -> do
     let n = ns U.! s -- count prior to intro (no change)
-    old_dn <- use deltaCounts >>= flip MU.read s
-    let old_n' = n + old_dn -- old count after intro
+        old_dn = maybe 0 negate $ IM.lookup s ndns
+        old_n' = n + old_dn -- old count after intro
         new_n' = old_n' + ddn -- new count after intro
 
     affected <- readAffected s
@@ -314,7 +317,7 @@ pushMut (ME mut _ ddns dnm (CIs djt _ bhd _)) = do
   --   M.intersectionWith undefined ---------- FIXME: TODO -----------
   --   affectedOld affectedNew -- MutBooks.update
 
-  deltaCounts %= undefined -- IM.unionWith (+) ddns -- delta ns
+  -- deltaCounts %= undefined -- IM.unionWith (+) ddns -- delta ns
   jointCount += dnm -- delta nm
 
   where
@@ -347,40 +350,39 @@ init_ m bigN dly ns allCIs (jt, memJointCIs) = do
   corByMut <- fromMaybe M.empty . foldTree union
               <$> mapM (corrsOf dly tst) (CIs.toList memCIs)
 
-  dns_mv <- MU.replicate m (0 :: Count)
-  forM_ (IM.toList dns) $ uncurry $ MU.write dns_mv
-
-  let n'Of s = ((ns U.! s)+) <$> MU.read dns_mv s
+  -- dns_mv <- MU.replicate m (0 :: Count)
+  -- forM_ (IM.toList dns) $ uncurry $ MU.write dns_mv
+  -- let n'Of s = ((ns U.! s)+) <$> MU.read dns_mv s
 
   str <- D.toList dly -- TODO: rm
-  es <- sequence $ M.mergeWithKey
-        (Just .:. ME.fromParamsWith jt str n'Of) -- CIs * cor
-        (M.mapWithKey $ ME.fromParams jt str n'Of) -- only CIs
+  let es = M.mergeWithKey
+        (Just . runIdentity .:. ME.fromParamsWith jt str n'Of) -- CIs * cor
+        (M.mapWithKey $ runIdentity .: ME.fromParams jt str n'Of) -- only CIs
         (fmap $ err' . ("have cor, but CIs missing: " ++) . show) -- only cor
         cisByMut corByMut
 
   books <- MB.fromList m $ M.elems es
-  return $ EvolutionState { _stringLen   = bigN
-                          , _doubly      = dly
-                          , _symCounts   = ns
-                          , _jointCIs    = allCIs
-                          , _typeState   = tst
-                          , _deltaCounts = dns_mv
-                          , _jointCount  = nm
-                          , _mutBooks       = books }
+  return $ EvolutionState { _stringLen  = bigN
+                          , _doubly     = dly
+                          , _symCounts  = ns
+                          , _jointCIs   = allCIs
+                          , _typeState  = tst
+                          , _typeCIs    = memCIs
+                          , _jointCount = nm
+                          , _mutBooks   = books }
   where
     union = M.unionWith (IM.unionWith (+))
     allJoints = M.keys allCIs
-
-    memCIs = fromMaybe CIs.empty $ foldTree CIs.join $ M.elems memJointCIs
-    ndns = memCIs^.CIs.symCounts -- negative delta symbol counts
+    memCIs@(CIs _ ndns _ _) = mfoldTree $ M.elems memJointCIs
+    n'Of s = pure $ maybe n (n-) $ IM.lookup s ndns
+      where n = ns U.! s
+    err' = err . ("init: " ++)
 
     two_nm = sum ndns
-    nm | odd two_nm = err' $ "expected an even number: " ++ show (two_nm, ndns)
-       | otherwise = two_nm `div` 2
-    dns = negate <$> ndns -- delta symbol counts (intro's)
-
-    err' = err . ("init: " ++)
+    nm | even two_nm = two_nm `div` 2
+       | otherwise =
+           err' $ "expected an even number: " ++ show (two_nm, ndns)
+    -- dns = negate <$> ndns -- delta symbol counts (intro's)
 
 -- WHERE --
 

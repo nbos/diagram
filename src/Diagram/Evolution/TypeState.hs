@@ -45,8 +45,7 @@ import Diagram.Util
 
 type TypeT m = StateT (TypeState (PrimState m)) m
 data TypeState s = TS
-  { _jointType :: !JointType -- :: (IntSet, IntSet) :: mem -> sym
-  , _leftSyms  :: !(MV.MVector s SymEntry)   -- :: sym -> mem
+  { _leftSyms  :: !(MV.MVector s SymEntry)   -- :: sym -> mem
   , _rightSyms :: !(MV.MVector s SymEntry) } -- :: sym -> mem
 makeLenses ''TypeState
 
@@ -54,13 +53,13 @@ makeLenses ''TypeState
 numSymbols :: Monad m => TypeT m Int
 numSymbols = leftSyms `uses` MV.length
 
--- | (sz0, sz1)
-dims :: Monad m => TypeT m (Int, Int)
-dims = jointType `uses` JT.dims
+-- -- | (sz0, sz1)
+-- dims :: Monad m => TypeT m (Int, Int)
+-- dims = jointType `uses` JT.dims
 
--- | vm = sz0 * sz1
-variety :: Monad m => TypeT m Int
-variety = jointType `uses` JT.variety
+-- -- | vm = sz0 * sz1
+-- variety :: Monad m => TypeT m Int
+-- variety = jointType `uses` JT.variety
 
 -- READ/WRITE
 
@@ -93,10 +92,10 @@ modifyRight f s = use rightSyms >>= lift . flip2 MV.modify f s
 -- PREDICATES
 
 leftMember :: PrimMonad m => TypeState (PrimState m) -> Sym -> m Bool
-leftMember (TS _ u0 _) s = _isMember <$> MV.read u0 s
+leftMember (TS u0 _) s = _isMember <$> MV.read u0 s
 
 rightMember :: PrimMonad m => TypeState (PrimState m) -> Sym -> m Bool
-rightMember (TS _ _ u1) s = _isMember <$> MV.read u1 s
+rightMember (TS _ u1) s = _isMember <$> MV.read u1 s
 
 member :: PrimMonad m => TypeState (PrimState m) -> Sym -> Sym -> m Bool
 member ts s0 s1 = liftA2 (&&) (leftMember ts s0) (rightMember ts s1)
@@ -107,21 +106,21 @@ member ts s0 s1 = liftA2 (&&) (leftMember ts s0) (rightMember ts s1)
 -- switch the membership of the given joint in the type
 mutsOf :: PrimMonad m =>
           TypeState (PrimState m) -> Sym -> Sym -> m [Mutation]
-mutsOf (TS _ u0 u1) s0 s1 = Sym.mutsOf <$> sequence (s0, MV.read u0 s0)
+mutsOf (TS u0 u1) s0 s1 = Sym.mutsOf <$> sequence (s0, MV.read u0 s0)
                                        <*> sequence (s1, MV.read u1 s1)
 
 -- | Give the (possibly missing) mutation that would make the given
 -- joint member of the type (assumes it's not)
 addMutOf :: PrimMonad m =>
             TypeState (PrimState m) -> Sym -> Sym -> m (Maybe Mutation)
-addMutOf (TS _ u0 u1) s0 s1 = Sym.addMutOf <$> sequence (s0, MV.read u0 s0)
+addMutOf (TS u0 u1) s0 s1 = Sym.addMutOf <$> sequence (s0, MV.read u0 s0)
                                            <*> sequence (s1, MV.read u1 s1)
 
 -- | Give the (possibly empty) set of available Del mutations that would
 -- take the given joint out of the type (assumes it's in)
 delMutsOf :: PrimMonad m =>
              TypeState (PrimState m) -> Sym -> Sym -> m [Mutation]
-delMutsOf (TS _ u0 u1) s0 s1 = Sym.delMutsOf <$> sequence (s0, MV.read u0 s0)
+delMutsOf (TS u0 u1) s0 s1 = Sym.delMutsOf <$> sequence (s0, MV.read u0 s0)
                                              <*> sequence (s1, MV.read u1 s1)
 
 -- | Assuming the mutation is valid/available, return the set of joints
@@ -151,7 +150,7 @@ jointsOf ts mut = case mut of
 -- return the SymEntries of the left and right unions of the type
 init :: PrimMonad m => Int -> [(Sym,Sym)] -> JointType ->
         m (TypeState (PrimState m))
-init m allJoints jt@(JT u0 u1) = do
+init m allJoints (JT u0 u1) = do
   uLeft  <- MV.replicate m Sym.emptyOut -- uLeft
   uRight <- MV.replicate m Sym.emptyOut -- uRight
   forM_ s0s $ flip (MV.write uLeft ) Sym.emptyIn
@@ -181,7 +180,7 @@ init m allJoints jt@(JT u0 u1) = do
       [s0] -> MV.modify uLeft (dependents %~ IS.insert s1) s0
       _else -> return ()
 
-  return $ TS jt uLeft uRight
+  return $ TS uLeft uRight
   where
     s0s = UT.toList u0 -- left member symbols
     s1s = UT.toList u1 -- right member symbols
@@ -418,7 +417,7 @@ pushMut_ = \case
 
       -- commit membership
       flip modifyLeft s0 $ isMember .~ True
-      jointType %= JT.insertLeftMissing s0
+      -- jointType %= JT.insertLeftMissing s0
 
       ------------------------------------
 
@@ -447,7 +446,7 @@ pushMut_ = \case
 
       -- commit membership
       flip modifyRight s1 $ isMember .~ True
-      jointType %= JT.insertRightMissing s1
+      -- jointType %= JT.insertRightMissing s1
 
       -------------------------------------
 
@@ -477,7 +476,7 @@ pushMut_ = \case
 
       -- commit removal
       flip modifyLeft s0 $ isMember .~ False
-      jointType %= JT.deleteLeftMember s0
+      -- jointType %= JT.deleteLeftMember s0
 
       -----------------------------------
 
@@ -507,7 +506,7 @@ pushMut_ = \case
 
       -- commit removal
       flip modifyRight s1 $ isMember .~ False
-      jointType %= JT.deleteRightMember s1
+      -- jointType %= JT.deleteRightMember s1
 
       ------------------------------------
 
