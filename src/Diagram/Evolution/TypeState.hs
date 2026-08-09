@@ -565,16 +565,19 @@ prevMutCI str tst (CI tl stl _ _ _) = (D.prev str tl >>=) $ \case
           where
             ci = CI hd shd len tl stl
 
--- | For a string, a (joint-)type state, a joint type, and a continuous
--- interval of joints member of the given joint type, but not of the one
--- represented in the state, return the CI strictly greater than the one
--- given---if it exists---which is member of the union of the state's
--- and the given joint type, but only if this super-CI doesn't contain
--- another CI member of the given joint type on the left of the given
--- CI. This way a mapMaybe over a set of CIs will return a set of
--- super-CIs.
+-- | For a string, a type state, a secondary joint type, and a
+-- continuous, maximal interval of joints member of the secondary joint
+-- type---but not of the one represented in the state---return the CI
+-- strictly greater than the one given---if it exists---which is member
+-- of the union of the state's and the given joint type, but only if
+-- this super-CI doesn't contain another CI member of the given joint
+-- type on the left of the given CI---for unique realization. This way a
+-- mapMaybe over a set of CIs will return a set (rather than a multiset)
+-- of super-CIs. Returns `Nothing` if the superCI is canonically
+-- realized by another CI on its left, `Just Nothing` if the superCI is
+-- itself (not strictly super), and `Just (Just _)` otherwise.
 superCI :: forall m. PrimMonad m => Doubly (PrimState m) ->
-           TypeState (PrimState m) -> JointType -> CI -> m (Maybe CI)
+           TypeState (PrimState m) -> JointType -> CI -> m (Maybe (Maybe CI))
 superCI dly tst jt (CI hd0 shd0 len0 tl0 stl0) = do
 
   bwd <- (D.prev dly hd0 >>=) $ \case
@@ -589,27 +592,29 @@ superCI dly tst jt (CI hd0 shd0 len0 tl0 stl0) = do
       False -> return Nothing
       True -> Just <$> goFwd tl0 stl0 2 ntl sntl
 
-  return $ case (bwd,fwd) of
-    (Nothing, Nothing) -> Nothing
-    (Just (CI hd shd lenBwd _ _), Nothing) ->
-      let len = lenBwd + len0 - 1
-      in Just $ CI hd shd len tl0 stl0
+  return $ (<$> bwd) $ \case -- if not cancelled
+    Nothing -> case fwd of
+      Nothing -> Nothing -- same
+      Just (CI _ _ lenFwd tl stl) ->
+        let len = len0 + lenFwd - 1
+        in Just $ CI hd0 shd0 len tl stl
 
-    (Nothing, Just (CI _ _ lenFwd tl stl)) ->
-      let len = len0 + lenFwd - 1
-      in Just $ CI hd0 shd0 len tl stl
-
-    (Just (CI hd shd lenBwd _ _), Just (CI _ _ lenFwd tl stl)) ->
-      let len = lenBwd + len0 + lenFwd - 2
-      in Just $ CI hd shd len tl stl
+    Just (CI hd shd lenBwd _ _) -> case fwd of
+      Nothing ->
+        let len = lenBwd + len0 - 1
+        in Just $ CI hd shd len tl0 stl0
+      Just (CI _ _ lenFwd tl stl) ->
+        let len = lenBwd + len0 + lenFwd - 2
+        in Just $ CI hd shd len tl stl
 
   where
     goBwd tl stl = go
       where
         go hd shd !len = (D.prev dly hd >>=) $ \case
-          Nothing -> return ci -- eos
+          Nothing -> return $ Just ci -- eos
           Just (phd, sphd) -> (member tst sphd shd >>=) $ \case
-            False -> return ci -- end
+            False | JT.member (sphd,shd) jt -> return Nothing -- canceled
+                  | otherwise -> return $ Just ci -- end
             True -> go phd sphd (len+1)
           where ci = CI hd shd len tl stl
 

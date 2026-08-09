@@ -246,9 +246,10 @@ pushMut (ME mut _ ddns dnm (CIs djt _ bhd _)) = do
       getSuperCIsCorr = do
         dly <- use doubly
         tst <- use typeState
-        mapM (TS.superCI dly tst djt) mutCIs
-          >>= mapM (maybe (return M.empty) -- mapMaybeM would unalign
-                          (corrsOf dly tst))
+        -- mapM (TS.superCI dly tst djt) mutCIs
+        --   >>= mapM (maybe (return M.empty) -- mapMaybeM would unalign
+        --                   (corrsOf dly tst))
+        undefined -- TODO --
 
   -- ENUMERATE CORRECTION AND APPLY MUT
   ((enabledMuts, expiredMuts), oldCorr, newCorr) <- case typeOfMut mut of
