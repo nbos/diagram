@@ -8,6 +8,10 @@ import Prelude as P
 import Control.Lens hiding (Index,(:>))
 import qualified Streaming.Prelude as S
 
+import qualified Data.List as L
+import Data.IntMap.Strict (IntMap)
+import qualified Data.IntMap.Strict as IM
+
 import Diagram.Primitive
 import Diagram.String
 import qualified Diagram.Doubly as D
@@ -65,3 +69,11 @@ extension str (CI hd shd len _ _)
   | otherwise = fmap ((hd,shd):) $
                 S.toList_ . S.take (len-1) . D.streamWithKeyFrom str
                 =<< D.unsafeNextKey str hd
+
+symCounts :: PrimMonad m => Doubly (PrimState m) -> CI -> m (IntMap Count)
+symCounts _ (CI _ shd 2 _ stl) =
+  return $ IM.insertWith (+) shd 1 $ IM.singleton stl 1
+symCounts str ci@(CI _ _ len _ _) = (<$> extension str ci) $
+  L.foldl' (flip $ uncurry $ IM.insertWith (+)) IM.empty
+  . fmap (1 <$) -- replace Sym with 1
+  . (if P.even len then id else init) -- don't count last if odd

@@ -20,24 +20,22 @@ import Data.Function
 import qualified Data.List as L
 
 import qualified Data.Set as Set
-import qualified Data.IntSet as IS
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
 
 import qualified Data.Vector.Unboxed as U
-import qualified Data.Vector.Unboxed.Mutable as MU
 import qualified Data.Vector.Mutable as MV
 
 import Diagram.Pretty
 import Diagram.Primitive
 
 import Diagram.Joints (Joints)
-import Diagram.UnionType (UnionType(UT))
-import Diagram.JointType (JointType(JT))
+import Diagram.JointType (JointType)
 import qualified Diagram.JointType as JT
 import Diagram.String
+import qualified Diagram.ConstrInterval as CI
 import Diagram.ConstrIntervals (CIs(CIs))
 import qualified Diagram.ConstrIntervals as CIs
 import qualified Diagram.Doubly as D
@@ -209,23 +207,35 @@ introMut mut = do
   jts <- TS.jointsOf tst mut
 
   allCIs <- use jointCIs
-  let mutCIs = mfoldTree $ fmap (allCIs M.!) jts
+  let mutCIs@(CIs mutJT _ bhd _) = mfoldTree $ fmap (allCIs M.!) jts
 
   ns <- use symCounts
-  -- dns <- use deltaCounts
-  -- let n'Of s = ((ns U.! s)+) <$> MU.read dns s
-  cor <- case typeOfMut mut of
-    Add -> do
-      undefined
+  ndns <- use $ typeCIs.CIs.symCounts
+  let n'Of s = pure $ maybe n (n-) $ IM.lookup s ndns
+        where n = ns U.! s
 
-    Del -> do
-      undefined
+  dly <- use doubly
+  cor <- fmap clean $ case typeOfMut mut of
+    Add -> snd <$> uses typeCIs (CIs.join_ mutCIs)
+    Del -> flip execStateT IM.empty $ forM_ (IM.elems bhd) $ \ci ->
+      (lift (TS.superCI dly tst mutJT ci) >>=) $ \case
+      Just Nothing -> return () -- super is identical, do nothing
+      Nothing -> do -- super doesn't start here, but ci is inside it
+        old <- lift (CI.symCounts dly ci)
+        modify (IM.unionWith (+) (negate <$> old))
+      Just (Just (super, remainder)) -> do -- subtract subs from super
+        olds <- lift $ mapM (CI.symCounts dly) (ci:remainder)
+        new <- lift (CI.symCounts dly super)
+        let delta = IM.unionWith (+) (negate <$> unions olds) new
+        modify (IM.unionWith (+) delta)
 
-  -- jt <- use $ typeState.TS.jointType -- debug
-  -- str <- use doubly >>= D.toList -- debug
-  -- e <- ME.fromParamsWith jt str n'Of mut mutCIs cor
-  undefined
-
+  jt <- use $ typeCIs.CIs.jointType -- (debug)
+  str <- D.toList dly -- (debug)
+  e <- ME.fromParamsWith jt str n'Of mut mutCIs cor
+  zoom mutBooks $ MB.insert e
+  where
+    clean = IM.filter (/= 0)
+    unions = fromMaybe IM.empty . foldTree (IM.unionWith (+))
 
 -- | Apply a mutation, update books
 pushMut :: forall m. PrimMonad m => MutEntry -> EvolutionT m ()
