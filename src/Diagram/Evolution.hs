@@ -201,82 +201,51 @@ getMutCountIntervals ddns = do
 -- UPDATE --
 ------------
 
-introMut :: forall m. PrimMonad m => Mutation -> EvolutionT m ()
-introMut mut = do
-  tst <- use typeState
-  jts <- TS.jointsOf tst mut
-
-  allCIs <- use jointCIs
-  let mutCIs@(CIs mutJT _ bhd _) = mfoldTree $ fmap (allCIs M.!) jts
-
-  ns <- use symCounts
-  ndns <- use $ typeCIs.CIs.symCounts
-  let n'Of s = pure $ maybe n (n-) $ IM.lookup s ndns
-        where n = ns U.! s
-
-  dly <- use doubly
-  cor <- fmap clean $ case typeOfMut mut of
-    Add -> snd <$> uses typeCIs (CIs.join_ mutCIs)
-    Del -> flip execStateT IM.empty $ forM_ (IM.elems bhd) $ \ci ->
-      (lift (TS.superCI dly tst mutJT ci) >>=) $ \case
-      Just Nothing -> return () -- super is identical, do nothing
-      Nothing -> do -- super doesn't start here, but ci is inside it
-        old <- lift (CI.symCounts dly ci)
-        modify (IM.unionWith (+) (negate <$> old))
-      Just (Just (super, remainder)) -> do -- subtract subs from super
-        olds <- lift $ mapM (CI.symCounts dly) (ci:remainder)
-        new <- lift (CI.symCounts dly super)
-        let delta = IM.unionWith (+) (negate <$> unions olds) new
-        modify (IM.unionWith (+) delta)
-
-  jt <- use $ typeCIs.CIs.jointType -- (debug)
-  str <- D.toList dly -- (debug)
-  e <- ME.fromParamsWith jt str n'Of mut mutCIs cor
-  zoom mutBooks $ MB.insert e
-  where
-    clean = IM.filter (/= 0)
-    unions = fromMaybe IM.empty . foldTree (IM.unionWith (+))
-
 -- | Apply a mutation, update books
 pushMut :: forall m. PrimMonad m => MutEntry -> EvolutionT m ()
 pushMut (ME mut _ ddns dnm (CIs djt _ bhd _)) = do
   traceM $ "Pushing mutation: " ++ show mut
 
-  -- info: correction need to be computed on the mut's CIs and their
-  -- super-CIs in different order depending on if it's an add/del
-  -- mutation
-  let mutCIs = IM.elems bhd
-      -- | Map over the CIs from the Entry.
-      getMutCIsCorr :: EvolutionT m [Map Mutation (IntMap Int)]
-      getMutCIsCorr = uses2 doubly typeState corrsOf
-                      >>= forM mutCIs
-      -- | Map over the super-CIs of the CIs of the Entry. CIs are
-      -- assumed to be *inside* the type when called.
-      getSuperCIsCorr :: EvolutionT m [Map Mutation (IntMap Int)]
-      getSuperCIsCorr = do
-        dly <- use doubly
-        tst <- use typeState
-        -- mapM (TS.superCI dly tst djt) mutCIs
-        --   >>= mapM (maybe (return M.empty) -- mapMaybeM would unalign
-        --                   (corrsOf dly tst))
-        undefined -- TODO --
+  let mutCIsL = IM.elems bhd
+  -- ENUMERATE CORRECTION AND APPLY MUT (IN THE RIGHT ORDER)
+  (enabledMuts, expiredMuts, corrsDelta) <- case typeOfMut mut of
+    Add -> do
+      -- APPLY BEFORE
+      (enabled, expired) <- zoom typeState $ TS.pushMut mut
+      -- CORRECTIONS AFTER (FOR mutCIs TO BE <: typCIs)
+      getSuperCI <- uses2 doubly typeState TS.superCI ?? djt
+      getCorrsOf <- uses2 doubly typeState corrsOf
+      corrsDelta <- fmap (unions . catMaybes) $ forM mutCIsL $
+        \ci -> (getSuperCI ci >>=) $ \case
+          Nothing -> Just . ffmap negate <$> getCorrsOf ci
+          Just Nothing -> return Nothing -- same: id
+          Just (Just (super, rems)) -> do
+            old <- sequence $ getCorrsOf ci : (getCorrsOf <$> rems)
+            new <- getCorrsOf super
+            return $ -- will include corrs on enabled muts
+              Just $ unions $ new : (negate <<<$>>> old)
+      return (enabled, expired, corrsDelta `M.withoutKeys` enabled)
 
-  -- ENUMERATE CORRECTION AND APPLY MUT
-  ((enabledMuts, expiredMuts), oldCorr, newCorr) <- case typeOfMut mut of
-    Add -> do oldCorr <- getMutCIsCorr
-              mutChange <- zoom typeState $ TS.pushMut mut -- APPLY
-              (mutChange, oldCorr,) <$> getSuperCIsCorr
-
-    Del -> do oldCorr <- getSuperCIsCorr
-              mutChange <- zoom typeState $ TS.pushMut mut -- APPLY
-              (mutChange, oldCorr,) <$> getMutCIsCorr -- trust
-
-  let corrDelta = unions $ zipWith (clean .: union) newCorr $
-                  negate <<<$>>> oldCorr
+    Del -> do
+      -- CORRECTIONS BEFORE (WHILE mutCIs <: typCIs)
+      getSuperCI <- uses2 doubly typeState TS.superCI ?? djt
+      getCorrsOf <- uses2 doubly typeState corrsOf
+      corrsDelta <- fmap (unions . catMaybes) $ forM mutCIsL $
+        \ci -> (getSuperCI ci >>=) $ \case
+          Nothing -> Just <$> getCorrsOf ci
+          Just Nothing -> return Nothing -- same: id
+          Just (Just (super, rems)) -> do
+            old <- getCorrsOf super
+            new <- sequence $ getCorrsOf ci : (getCorrsOf <$> rems)
+            return $ -- will include corrs on expired muts
+              Just $ unions $ (negate <<$>> old) : new
+      -- APPLY AFTER
+      (enabled, expired) <- zoom typeState $ TS.pushMut mut
+      return (enabled, expired, corrsDelta `M.withoutKeys` expired)
 
   -- DELETE EACH EXPIRED MUT
   zoom mutBooks $ forM_ (Set.toList expiredMuts) MB.delete
-  -- INSERT NEWLY ENABLED MUTS
+  -- INSERT EACH NEWLY ENABLED MUTS
   forM_ (Set.toList enabledMuts) introMut
 
   ns <- use symCounts
@@ -284,7 +253,7 @@ pushMut (ME mut _ ddns dnm (CIs djt _ bhd _)) = do
   -- dns <- use deltaCounts
 
   -- UPDATE ENTRIES
-  (mutBooks.byMut %=) $ flip2 (flip2 M.differenceWith) corrDelta $
+  (mutBooks.byMut %=) $ flip2 (flip2 M.differenceWith) corrsDelta $
     \e@(ME _ eloss eddns ednm _) cor ->
       let dloss = sum $ flip2 IM.intersectionWithKey eddns cor $
             \s eddn d -> let n = ns U.! s
@@ -321,7 +290,7 @@ pushMut (ME mut _ ddns dnm (CIs djt _ bhd _)) = do
     return affected
 
   -- RE-INDEXING (TODO: join corAffected to dnsAffected)
-  let affected = void corrDelta `M.union` dnsAffected
+  let affected = void corrsDelta `M.union` dnsAffected
   affectedNew <- (mutBooks.byMut) `uses` (`M.intersection` affected)
   let affectedOld = oldEntries `M.intersection` affected
   -- zoom mutBooks $ sequence_ $
@@ -336,6 +305,42 @@ pushMut (ME mut _ ddns dnm (CIs djt _ bhd _)) = do
     union = M.unionWith (IM.unionWith (+))
     unions = fromMaybe M.empty . foldTree union
     err' = err . ("pushMut: " ++)
+
+introMut :: forall m. PrimMonad m => Mutation -> EvolutionT m ()
+introMut mut = do
+  tst <- use typeState
+  jts <- TS.jointsOf tst mut
+
+  allCIs <- use jointCIs
+  let mutCIs@(CIs mutJT _ bhd _) = mfoldTree $ fmap (allCIs M.!) jts
+
+  ns <- use symCounts
+  ndns <- use $ typeCIs.CIs.symCounts
+  let n'Of s = pure $ maybe n (n-) $ IM.lookup s ndns
+        where n = ns U.! s
+
+  dly <- use doubly
+  cor <- fmap clean $ case typeOfMut mut of
+    Add -> snd <$> uses typeCIs (CIs.join_ mutCIs)
+    Del -> flip execStateT IM.empty $ forM_ (IM.elems bhd) $ \ci ->
+      (lift (TS.superCI dly tst mutJT ci) >>=) $ \case
+      Just Nothing -> return () -- super is identical, do nothing
+      Nothing -> do -- super doesn't start here, but ci is inside it
+        old <- lift (CI.symCounts dly ci)
+        modify (IM.unionWith (+) (negate <$> old))
+      Just (Just (super, remainder)) -> do -- subtract subs from super
+        olds <- lift $ mapM (CI.symCounts dly) (ci:remainder)
+        new <- lift (CI.symCounts dly super)
+        let delta = IM.unionWith (+) (negate <$> unions olds) new
+        modify (IM.unionWith (+) delta)
+
+  jt <- use $ typeCIs.CIs.jointType -- (debug)
+  str <- D.toList dly -- (debug)
+  e <- ME.fromParamsWith jt str n'Of mut mutCIs cor
+  zoom mutBooks $ MB.insert e
+  where
+    clean = IM.filter (/= 0)
+    unions = fromMaybe IM.empty . foldTree (IM.unionWith (+))
 
 ----------
 -- INIT --
