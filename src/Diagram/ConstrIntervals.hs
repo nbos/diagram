@@ -38,10 +38,10 @@ import Diagram.Util
 -- delete\/subtract (have first to resolve each subtracted interval into
 -- its super-interval).
 data CIs = CIs
-  { _jointType :: JointType    -- :: (u0, u1)
-  , _symCounts :: IntMap Count -- :: s  --> n
-  , _byHead    :: IntMap CI    -- :: hd --> (hd, shd, len, tl, stl)
-  , _byTail    :: IntMap CI }  -- :: tl --> (hd, shd, len, tl, stl)
+  { _jointType :: !JointType      -- :: (u0, u1)
+  , _symCounts :: !(IntMap Count) -- :: s  --> n
+  , _byHead    :: !(IntMap CI)    -- :: hd --> (hd, shd, len, tl, stl)
+  , _byTail    :: !(IntMap CI) }  -- :: tl --> (hd, shd, len, tl, stl)
   deriving(Show,Eq) -- TODO: joint count?
 
 makeLenses ''CIs
@@ -54,6 +54,42 @@ jointCount :: CIs -> Int
 jointCount (CIs _ ns _ _) | odd sum_ns = error ""
                           | otherwise = sum_ns `div` 2
   where sum_ns = sum ns
+
+-- | Delete a CI which is part of set from the set. Symbol counts will
+-- be messed up if the CI is not member of the of set. Doesn't modify
+-- the joint type.
+deleteExisting :: PrimMonad m => Doubly (PrimState m) -> CI -> CIs -> m CIs
+deleteExisting _ (CI hd shd 2 tl stl) (CIs jt ns bhd btl) =
+  pure CIs{ _jointType = jt
+          , _symCounts = IM.update (nothingIf (== 0) . (+(-1))) shd $
+                         IM.update (nothingIf (== 0) . (+(-1))) stl ns
+          , _byHead = IM.delete hd bhd
+          , _byTail = IM.delete tl btl }
+deleteExisting dly ci@(CI hd _ _ tl _) (CIs jt ns bhd btl) = do
+  ndns <- CI.symCounts dly ci
+  return $ CIs{ _jointType = jt
+              , _symCounts = flip2 IM.differenceWith ns ndns $
+                             nothingIf (== 0) .: (-)
+              , _byHead = IM.delete hd bhd
+              , _byTail = IM.delete tl btl }
+
+-- | Insert a CI which is not present, nor overlapping with any interval
+-- (including point contact, or end-to-end-touching) in the
+-- set. Invariants break if the condition doesn't hold. Doesn't modify
+-- the joint type.
+insertDisjoint :: PrimMonad m => Doubly (PrimState m) -> CI -> CIs -> m CIs
+insertDisjoint _ ci@(CI hd shd 2 tl stl) (CIs jt ns bhd btl) =
+  pure CIs{ _jointType = jt
+          , _symCounts = IM.insertWith (+) shd 1 $
+                         IM.insertWith (+) stl 1 ns
+          , _byHead = IM.insert hd ci bhd
+          , _byTail = IM.insert tl ci btl }
+insertDisjoint dly ci@(CI hd _ _ tl _) (CIs jt ns bhd btl) = do
+  dns <- CI.symCounts dly ci
+  return $ CIs{ _jointType = jt
+              , _symCounts = IM.unionWith (+) dns ns
+              , _byHead = IM.insert hd ci bhd
+              , _byTail = IM.insert tl ci btl }
 
 err :: String -> a
 err = error . ("ConstrIntervals." ++)

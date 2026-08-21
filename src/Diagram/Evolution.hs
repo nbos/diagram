@@ -26,7 +26,6 @@ import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
 
 import qualified Data.Vector.Unboxed as U
-import qualified Data.Vector.Mutable as MV
 
 import Diagram.Pretty
 import Diagram.Primitive
@@ -47,9 +46,9 @@ import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
 import Diagram.Evolution.Correction (corrsOf)
 import Diagram.Evolution.TypeState (TypeState)
 import qualified Diagram.Evolution.TypeState as TS
-import Diagram.Evolution.MutEntry (MutEntry(..), ddSymCounts, ddSymCountsLoss)
+import Diagram.Evolution.MutEntry (MutEntry(..))
 import qualified Diagram.Evolution.MutEntry as ME
-import Diagram.Evolution.MutBooks (MutBooks(MutBooks), byAffected, byMut)
+import Diagram.Evolution.MutBooks (MutBooks(MutBooks), byMut)
 import qualified Diagram.Evolution.MutBooks as MB
 
 import Diagram.Util
@@ -61,16 +60,16 @@ import Diagram.Util
 type EvolutionT m = StateT (EvolutionState (PrimState m)) m
 -- | Evolution state of a JointType in a given string
 data EvolutionState s = EvolutionState
-  -- String state (readonly, only changes accross intros, not evolution)
+  -- String state (static/readonly, only changes accross intros, not evolution)
   { _stringLen :: !Int -- N, bigN
   , _doubly    :: !(Doubly s) -- dly :: underlying string :: [N]Sym
   , _symCounts :: !(U.Vector Count) -- ns :: symbol counts (TODO: dyn vec)
   , _jointCIs  :: !(Joints CIs) -- allCIs :: (s0,s1) -> CIs
 
-  -- curr. Type state (evolves)
+  -- current Type state (evolves/mutates)
   , _typeState  :: !(TypeState s) -- sym entries :: [(mem, coIn, deps, coOut)]
   , _typeCIs    :: !CIs -- joint type CIs
-  , _jointCount :: !Int
+  , _jointCount :: !Int -- nm (dnm)
 
   -- indexed Mutations
   , _mutBooks :: !(MutBooks s) }
@@ -203,17 +202,19 @@ getMutCountIntervals ddns = do
 
 -- | Apply a mutation, update books
 pushMut :: forall m. PrimMonad m => MutEntry -> EvolutionT m ()
-pushMut (ME mut _ ddns dnm (CIs djt _ bhd _)) = do
+pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
   traceM $ "Pushing mutation: " ++ show mut
+  CIs _ typNdns _ _ <- use typeCIs -- before we update it
+  dly <- use doubly
 
-  let mutCIsL = IM.elems bhd
+  let mutCIsL = IM.elems mutCIsBhd
   -- ENUMERATE CORRECTION AND APPLY MUT (IN THE RIGHT ORDER)
-  (enabledMuts, expiredMuts, corrsDelta) <- case typeOfMut mut of
+  (enabledMuts, expiredMuts, mutCorDelta) <- case typeOfMut mut of
     Add -> do
-      -- APPLY BEFORE
+      -- APPLY BEFORE PASS
       (enabled, expired) <- zoom typeState $ TS.pushMut mut
       -- CORRECTIONS AFTER (FOR mutCIs TO BE <: typCIs)
-      getSuperCI <- uses2 doubly typeState TS.superCI ?? djt
+      getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
       getCorrsOf <- uses2 doubly typeState corrsOf
       corrsDelta <- fmap (unions . catMaybes) $ forM mutCIsL $
         \ci -> (getSuperCI ci >>=) $ \case
@@ -222,89 +223,116 @@ pushMut (ME mut _ ddns dnm (CIs djt _ bhd _)) = do
           Just (Just (super, rems)) -> do
             old <- sequence $ getCorrsOf ci : (getCorrsOf <$> rems)
             new <- getCorrsOf super
-            return $ -- will include corrs on enabled muts
+            return $ -- note: will include corrs on enabled muts too
               Just $ unions $ new : (negate <<<$>>> old)
-      return (enabled, expired, corrsDelta `M.withoutKeys` enabled)
+      -- UPDATE TYPE CIs (join)
+      typeCIs %= CIs.join mutCIs
+
+      return ( enabled, expired
+             , corrsDelta `M.withoutKeys` enabled )
 
     Del -> do
       -- CORRECTIONS BEFORE (WHILE mutCIs <: typCIs)
-      getSuperCI <- uses2 doubly typeState TS.superCI ?? djt
+      getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
       getCorrsOf <- uses2 doubly typeState corrsOf
       corrsDelta <- fmap (unions . catMaybes) $ forM mutCIsL $
         \ci -> (getSuperCI ci >>=) $ \case
           Nothing -> Just <$> getCorrsOf ci
           Just Nothing -> return Nothing -- same: id
           Just (Just (super, rems)) -> do
+            -- UPDATE TYPE CIs (delete super, insert remainder)
+            typeCIs %== ( L.foldl' (>=>) (CIs.deleteExisting dly super) $
+                          CIs.insertDisjoint dly <$> rems )
             old <- getCorrsOf super
             new <- sequence $ getCorrsOf ci : (getCorrsOf <$> rems)
-            return $ -- will include corrs on expired muts
+            return $ -- note: will include corrs on expired muts too
               Just $ unions $ (negate <<$>> old) : new
-      -- APPLY AFTER
+      -- APPLY AFTER PASS
       (enabled, expired) <- zoom typeState $ TS.pushMut mut
-      return (enabled, expired, corrsDelta `M.withoutKeys` expired)
+      -- UPDATE TYPE CIs JOINT TYPE
+      typeCIs.CIs.jointType %= case mut of
+        DelLeft s0  -> JT.deleteLeftMember s0
+        DelRight s1 -> JT.deleteRightMember s1
+        Del2 s0 s1  -> JT.deleteLeftMember s0 . JT.deleteRightMember s1
+        _else -> error "impossible"
+
+      return ( enabled, expired
+             , corrsDelta `M.withoutKeys` expired )
 
   -- DELETE EACH EXPIRED MUT
-  zoom mutBooks $ forM_ (Set.toList expiredMuts) MB.delete
+  zoom mutBooks $ mapM_ MB.delete $ Set.toList expiredMuts
   -- INSERT EACH NEWLY ENABLED MUTS
-  forM_ (Set.toList enabledMuts) introMut
+  mapM_ introMut $ Set.toList enabledMuts
 
+  -- UPDATE MUT BOOKS
   ns <- use symCounts
-  CIs jt ndns _ _ <- use typeCIs
-  -- dns <- use deltaCounts
+  let countUpdateIntervals = IM.mergeWithKey
+        ( \s ndn ddn ->
+           let n = ns U.! s
+               old_n' = n - ndn
+               new_n' = old_n' + ddn
+               dLoss = logFact new_n' - logFact old_n'
+           in seq dLoss $ Just (old_n', new_n', dLoss) )
+        ( const IM.empty ) -- ndns only
+        ( IM.mapWithKey $ \s ddn ->
+            let n = ns U.! s
+                old_n' = n -- dn == 0 by abstentia
+                new_n' = old_n' + ddn
+                dLoss = logFact new_n' - logFact old_n'
+            in seq dLoss (old_n', new_n', dLoss) )
+        typNdns mutDdns
 
-  -- UPDATE ENTRIES
-  (mutBooks.byMut %=) $ flip2 (flip2 M.differenceWith) corrsDelta $
-    \e@(ME _ eloss eddns ednm _) cor ->
-      let dloss = sum $ flip2 IM.intersectionWithKey eddns cor $
-            \s eddn d -> let n = ns U.! s
-                             dn = undefined -- fromMaybe 0 $ IM.lookup s dns
-                             n' = n + dn
-                             old_n'' = n' + eddn
-                             new_n'' = old_n'' + d
-                         in logFact old_n'' - logFact new_n''
-          sum_cor = sum cor & \r -> if even r then r
+  getAffectedMuts <- mutBooks `uses` MB.affectedMuts
+  countUpdateIlsByAffected <-
+    let unionIl = M.unionWith
+                  (err' . ("duplicate sym count intervals: " ++) . show .: (,))
+    in fmap (fromMaybe M.empty . foldTree unionIl) $
+       forM (IM.toList countUpdateIntervals) $
+       \(s,ddn) -> M.fromSet (const $ IM.singleton s ddn) <$> getAffectedMuts s
+
+  -- mutEntryUpdate :: COUNT_UPDATE * CORR_UPDATE
+  let mutEntryUpdates = M.mergeWithKey (\_ -> Just .: (,))
+                        ((,IM.empty) <$>) ((IM.empty,) <$>)
+                        countUpdateIlsByAffected mutCorDelta
+
+  mutEntries <- use $ mutBooks.byMut
+  sequence_ $ flip2 M.intersectionWith
+    mutEntries mutEntryUpdates $
+    \e@(ME _ eDnsLoss eDdns eDnm _) (nsIls, cor) -> do
+      let sumCor = sum cor & \r -> if even r then r
             else err' $ "expected even number: " ++ show (r,cor)
-      in Just $ e{ _ddSymCountsLoss = eloss + dloss
-                 , _ddSymCounts     = IM.unionWith (+) eddns cor
-                 , _dJointCount     = ednm + sum_cor }
+          eDdnsIls = -- zip eDdns eDdns'
+            IM.mergeWithKey (\_ ddn c -> Just (ddn, ddn + c))
+            (const IM.empty) ((0,) <$>) eDdns cor
+          deDnsLoss = sum $ IM.mergeWithKey
+                ( \_ (old_n', new_n', dLoss) (eDdn, eDdn') -> Just $
+                    let old_n'' = old_n' + eDdn
+                        -- old_loss = logFact old_n' - logFact old_n''
+                        new_n'' = new_n' + eDdn'
+                        -- new_loss = logFact new_n' - logFact new_n''
+                    in dLoss - logFact new_n'' + logFact old_n'' )
+                ( const IM.empty ) -- no eDdn, no cor ==> no dnsLoss
+                ( IM.mapWithKey $ \s (eDdn, eDdn') -> -- cor only
+                    let n = ns U.! s
+                        ndn = typNdns IM.! s -- have to look-up
+                        n' = n - ndn -- old == new
+                        old_n'' = n' + eDdn
+                        new_n'' = n' + eDdn'
+                    in logFact old_n'' - logFact new_n'' )
+                nsIls eDdnsIls
+      zoom mutBooks $ -- update state
+        MB.update $ e{ _ddSymCountsLoss = eDnsLoss + deDnsLoss
+                     , _ddSymCounts     = IM.union (snd <$> eDdnsIls) eDdns
+                     , _dJointCount     = eDnm + (sumCor `div` 2) }
 
-  -- UPDATE LOSSES
-  oldEntries <- use (mutBooks.byMut) -- before we modify
-  readAffected <- (mutBooks.byAffected) `uses` MV.read
-  dnsAffected <- fmap (fromMaybe M.empty . foldTree M.union) $
-    forM (IM.toList ddns) $ \(s,ddn) -> do
-    let n = ns U.! s -- count prior to intro (no change)
-        old_dn = maybe 0 negate $ IM.lookup s ndns
-        old_n' = n + old_dn -- old count after intro
-        new_n' = old_n' + ddn -- new count after intro
-
-    affected <- readAffected s
-    (mutBooks.byMut %=) $ flip2 (flip2 M.differenceWith) affected $
-      \e _ ->
-        let eddn = (e^.ddSymCounts) IM.! s -- entry's mut's delta (no change)
-            old_n'' = old_n' + eddn -- old count after intro after mut
-            oldContrib = logFact old_n' - logFact old_n''
-            new_n'' = new_n' + eddn -- new count after intro after mut
-            newContrib = logFact new_n' - logFact new_n''
-        in Just $ e & ddSymCountsLoss %~ (+newContrib) . (+(-oldContrib))
-    return affected
-
-  -- RE-INDEXING (TODO: join corAffected to dnsAffected)
-  let affected = void corrsDelta `M.union` dnsAffected
-  affectedNew <- (mutBooks.byMut) `uses` (`M.intersection` affected)
-  let affectedOld = oldEntries `M.intersection` affected
-  -- zoom mutBooks $ sequence_ $
-  --   M.intersectionWith undefined ---------- FIXME: TODO -----------
-  --   affectedOld affectedNew -- MutBooks.update
-
-  -- deltaCounts %= undefined -- IM.unionWith (+) ddns -- delta ns
-  jointCount += dnm -- delta nm
+  jointCount += mutDnm -- delta nm
 
   where
-    clean = M.filter (not . IM.null) . fmap (IM.filter (/= 0))
     union = M.unionWith (IM.unionWith (+))
     unions = fromMaybe M.empty . foldTree union
     err' = err . ("pushMut: " ++)
+
+-- WHERE --
 
 introMut :: forall m. PrimMonad m => Mutation -> EvolutionT m ()
 introMut mut = do

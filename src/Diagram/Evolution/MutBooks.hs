@@ -10,12 +10,15 @@ import Control.Monad.State.Strict
 
 import Data.Tuple.Extra
 import Data.Maybe
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Vector.Mutable as MV
 
+import Diagram.String
 import Diagram.Primitive
 
 import Diagram.Evolution.Mutation (Mutation(..))
@@ -37,12 +40,15 @@ data MutBooks s = MutBooks
   , _ixDelRight :: !(IntMap (Map Double (Map Mutation MutEntry)))
   , _ixDel2     :: !(IntMap (Map Double (Map Mutation MutEntry)))
   , _byMut      :: !(Map Mutation MutEntry) -- by mutation
-  , _byAffected :: !(MV.MVector s (Map Mutation ())) } -- by each sym in ddns
+  , _byAffected :: !(MV.MVector s (Set Mutation)) } -- by each sym in ddns
 makeLenses ''MutBooks
+
+affectedMuts :: PrimMonad m => MutBooks (PrimState m) -> Sym -> m (Set Mutation)
+affectedMuts mb = MV.read (mb^.byAffected)
 
 empty :: PrimMonad m => Int -> m (MutBooks (PrimState m))
 empty m = MutBooks IM.empty IM.empty IM.empty IM.empty IM.empty IM.empty
-                   M.empty <$> MV.replicate m M.empty
+                   M.empty <$> MV.replicate m Set.empty
 
 fromList :: PrimMonad m => Int -> [MutEntry] -> m (MutBooks (PrimState m))
 fromList m es = empty m >>= execStateT (mapM_ insert es)
@@ -56,7 +62,7 @@ insert e@(ME mut loss ddns dnm _) = do
   byMut %= M.insert mut e
 
   affected <- use byAffected
-  forM_ (IM.keys ddns) $ MV.modify affected $ M.insert mut ()
+  forM_ (IM.keys ddns) $ MV.modify affected $ Set.insert mut
   where
     singleton0 = M.singleton mut e
     singleton1 = M.singleton loss singleton0
@@ -82,7 +88,7 @@ delete_ (ME mut loss ddns dnm _) = do
   modify $ mutLens %~ IM.update f dnm
 
   affected <- use byAffected
-  forM_ (IM.keys ddns) $ MV.modify affected $ M.delete mut
+  forM_ (IM.keys ddns) $ MV.modify affected $ Set.delete mut
   where
     mutLens = case mut of
       AddLeft _  -> ixAddLeft

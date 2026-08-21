@@ -31,11 +31,11 @@ import Diagram.Util
 --------------------
 
 data MutEntry = ME
-  { _mutation        :: !Mutation
-  , _ddSymCountsLoss :: !Double
-  , _ddSymCounts     :: !(IntMap Int)
-  , _dJointCount     :: !Int
-  , _sites           :: !CIs }
+  { _mutation        :: !Mutation     -- mut
+  , _ddSymCountsLoss :: !Double       -- ddnsLoss
+  , _ddSymCounts     :: !(IntMap Int) -- ddns
+  , _dJointCount     :: !Int          -- dnm (ddnm)
+  , _sites           :: !CIs }        -- cis
   deriving (Show,Eq)
 makeLenses ''MutEntry
 
