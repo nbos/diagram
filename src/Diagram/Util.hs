@@ -3,6 +3,7 @@
 module Diagram.Util where
 
 import Control.Monad
+import Control.Applicative
 import Control.Lens hiding (Index,(:>))
 import Control.Monad.State.Strict
 import Control.Exception
@@ -13,7 +14,6 @@ import Data.Maybe
 import Data.Tuple.Extra
 import qualified Data.Bits as B
 import qualified Data.List.Extra as L
-
 import qualified Data.Vector as V
 
 --------------
@@ -390,7 +390,7 @@ cartesianProduct = foldr (\xs ls -> [ x:l | l <- ls, x <- xs]) [[]]
 
 sorted :: Ord a => [a] -> Bool
 sorted [] = True
-sorted xs = and $ zipWith (<=) xs (tail xs)
+sorted xs = and $ zipWith (<=) xs (drop 1 xs)
 {-# INLINE sorted #-}
 
 segment :: [Int] -> [a] -> [[a]]
@@ -433,14 +433,6 @@ fillGaps (i:rest) ixss@((j,ixs):rest') =
         GT -> error "Util.fillGaps: unprototyped element"
 fillGaps is js = error $ "Util.fillGaps: more elements than prototypes:\n"
                        ++ show is ++ "\n" ++ show js
-
-factorPrefix :: Eq a => [[a]] -> ([a],[[a]])
-factorPrefix [] = ([],[])
-factorPrefix l
-  | any L.null l = ([],l)
-  | L.allSame (head <$> l) = mapFst (head (head l) :) $
-                             factorPrefix $ fmap tail l
-  | otherwise = ([],l)
 
 -- | Given a list of `n` elements, return `n` lists of `n-1` elements,
 -- each missing a different element of the original list
@@ -496,7 +488,7 @@ catPairs ((x,y):xys) = x:y:catPairs xys
 -- results. Output length is `n` so e.g. `nest f 0 a` returns `[]`,
 -- `nest f 1 a` returns `[f a]`, etc.
 iterateN :: (a -> a) -> Int -> a -> [a]
-iterateN f n = take n . tail . L.iterate f
+iterateN f n = take n . (drop 1) . L.iterate f
 {-# INLINE iterateN #-}
 
 -- | Compose f a >>= f >>= ... >>= f, `n` times, collecting the
@@ -762,6 +754,10 @@ numLoop start end f = when (start <= end) $ go start
               | otherwise = f x >> go (x+1)
 {-# INLINE numLoop #-}
 
+----------
+-- LENS --
+----------
+
 -- | Use the target of two lenses in the current state with a function
 uses2 :: MonadState s m => Lens' s a -> Lens' s b -> (a -> b -> c) -> m c
 uses2 a b = uses a >=> uses b
@@ -772,3 +768,15 @@ uses3 :: MonadState s m =>
   Lens' s a -> Lens' s b -> Lens' s c -> (a -> b -> c -> d) -> m d
 uses3 a b c = uses a >=> uses b >=> uses c
 {-# INLINE uses3 #-}
+
+-- | Monadic version of (%=)
+-- Modifies the target(s) of a Traversal in MonadState using a monadic function.
+--
+-- (%==) :: (MonadState s m, Traversable t)
+--       => Traversal' s a -> (a -> m a) -> m ()
+(%==) :: (MonadState s m) => LensLike (WrappedMonad m) s s a b -> (a -> m b) -> m ()
+l %== f = do
+  s  <- get
+  s' <- unwrapMonad (l (WrapMonad . f) s)
+  put s'
+infixr 4 %==
