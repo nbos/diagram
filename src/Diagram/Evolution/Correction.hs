@@ -118,15 +118,15 @@ delMutCorrsOf :: forall m. PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
 delMutCorrsOf dly tst ci = do
 
-  constr <- flip IS.member . IS.fromList . everyOther . fmap fst
-            <$> CI.extension dly ci
+  isConstr <- flip IS.member . IS.fromList . everyOther . fmap fst
+              <$> CI.symExtension dly ci
 
   let go :: Mutation -> Bool -> [CI] -> StateT (Map Mutation (IntMap Int)) m ()
       go delMut = go_ where
         go_ _ [] = return ()
         go_ phase (CI hd shd len tl stl : rest) = do
           unless (tl == (ci^.tailIndex)) $ dec stl -- tl
-          let outOfPhase = phase /= constr hd
+          let outOfPhase = phase /= isConstr hd
           -- out of phase with super-CI means prev hd will be constr
           -- means hd will still be constr. so hd will not be docked
           when outOfPhase $ dec shd -- hd

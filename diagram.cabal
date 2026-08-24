@@ -92,6 +92,7 @@ executable diagram
 
     -- Other library packages from which modules are imported.
     build-depends:    base
+                    , ghc
                     , mtl
                     , lens
                     , text

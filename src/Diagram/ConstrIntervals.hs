@@ -4,6 +4,9 @@
 {-# LANGUAGE InstanceSigs #-}
 module Diagram.ConstrIntervals (module Diagram.ConstrIntervals) where
 
+import Debug.Trace
+import GHC.Utils.Monad
+
 import Control.Monad hiding (join)
 import Control.Lens hiding (Index,(:>))
 import Control.Monad.State.Strict
@@ -15,15 +18,12 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
-import Data.IntSet (IntSet)
-import qualified Data.IntSet as IS
 
 import Streaming (Of(..), Stream)
 import qualified Streaming.Prelude as S
 
 import Diagram.Primitive (PrimMonad(..))
 import Diagram.String (Index, Count, Doubly, Sym)
-import qualified Diagram.Doubly as D
 import Diagram.JointType (JointType(..))
 import qualified Diagram.JointType as JT
 import qualified Diagram.UnionType as UT
@@ -265,26 +265,66 @@ deleteLookup :: Sym -> IntMap a -> (Maybe a, IntMap a)
 deleteLookup = IM.updateLookupWithKey (\_ _ -> Nothing)
 {-# INLINE deleteLookup #-}
 
-----------------
--- CONVERSION --
-----------------
+-----------
+-- DEBUG --
+-----------
 
--- | Intervals are great for join-ing but differences (subtracting
--- sites) and tracking delta delta deleta (d3) counts requires a more
--- explicit representation. Sites contain all constructive indexes (s0's
--- specifically) of a set of joints.
-type Sites = IntSet
-
--- | (TODO: DELETE (OLD LOGIC)) Given the reference string (read only),
--- convert the constr. intervals to the explicit set of constructive
--- indexes.
-toSites :: PrimMonad m => Doubly (PrimState m) -> CIs -> m Sites
-toSites str cis = fmap (IS.fromList . concat) $
-  forM (toList cis) $ \(CI hd _ len _ _) ->
-    if len < 4 then return [hd]
-    else fmap everyOther $ S.toList_ $
-         S.take len $ D.streamKeysFrom str hd
+checkIntegrity :: PrimMonad m => Doubly (PrimState m) -> CIs -> m ()
+checkIntegrity dly (CIs jt ns bhd btl)
+  | odd (sum ns) = err' $ "sum of counts is odd: " ++ show ns
+  | bhdCIs /= btlCIs =
+      err' $ "byHead and byTail don't contain the same CI's: " ++ show (bhd,btl)
+  | otherwise = do
+      ijts <- concat <$> mapM (CI.jointExtension dly) cisL
+      let (s0s, s1s) = unzip $ snd <$> ijts
+          jt_verif = JT.fromLists s0s s1s
+      when (jt /= jt_verif) $
+        err' $ "type doesn't correspond to member joints: " ++ show (jt, cisL)
+      --
+      ns_verif <- IM.unionsWith (+) <$> mapM (CI.symCounts dly) cisL
+      when (ns /= ns_verif) $
+        err' $ "sym counts don't match extension's: " ++ show (ns, ns_verif)
   where
-    everyOther [] = []
-    everyOther [a] = [a]
-    everyOther (a:_:rest) = a:everyOther rest
+    err' = err . ("checkIntegrity: " ++)
+    bhdCIs = L.sort $ IM.elems bhd
+    btlCIs = L.sort $ IM.elems btl
+    cisL = bhdCIs
+
+-- | Errorless version of @checkIntegrity@
+valid :: PrimMonad m => Doubly (PrimState m) -> CIs -> m Bool
+valid dly (CIs jt ns bhd btl) = do
+  ijts <- concat <$> mapM (CI.jointExtension dly) cisL
+  let (s0s, s1s) = unzip $ snd <$> ijts
+      jt_verif = JT.fromLists s0s s1s
+  ns_verif <- unions <$> mapM (CI.symCounts dly) cisL
+  return $ even (sum ns)
+    && bhdCIs == btlCIs && jt == jt_verif && ns == ns_verif
+  where
+    bhdCIs = L.sort $ IM.elems bhd
+    btlCIs = L.sort $ IM.elems btl
+    cisL = bhdCIs
+    unions = fromMaybe IM.empty . foldTree (IM.unionWith (+))
+
+debug_join :: PrimMonad m => Doubly (PrimState m) -> CIs -> CIs -> m CIs
+debug_join = fmap fst .:. debug_join_
+
+debug_join_ :: PrimMonad m => Doubly (PrimState m) ->
+               CIs -> CIs -> m (CIs, IntMap Int)
+debug_join_ dly cisA cisB = do
+  unlessM (valid dly cisA) $ do
+    traceM' $ "supplied CIs not valid (left): \n" ++ show cisA
+    checkIntegrity dly cisA
+  unlessM (valid dly cisB) $ do
+    traceM' $ "supplied CIs not valid (right): \n" ++ show cisB
+    checkIntegrity dly cisB
+  unlessM (valid dly cisC) $ do
+    traceM' $ "join CIs not valid. \n\n"
+      ++ "left: " ++ show cisA ++ "\n\n"
+      ++ "right: " ++ show cisB ++ "\n\n"
+      ++ "join: " ++ show cisC ++ "\n"
+    checkIntegrity dly cisC
+  traceM' $ "CIs join OK: " ++ show (toList cisC)
+  return res
+  where
+    res@(cisC,_) = join_ cisA cisB
+    traceM' = traceM . ("ConstrIntervals.debug_join_: " ++)

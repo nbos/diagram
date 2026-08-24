@@ -10,7 +10,7 @@ import Data.Maybe
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
 
-import Diagram.Pretty (pShowStr)
+import Diagram.Pretty
 
 import Diagram.String
 import Diagram.ConstrIntervals (CIs(..))
@@ -57,7 +57,10 @@ fromParamsWith jt str n'Of mut cis cor = do
     case () of
       _ | n' /= verif_n' -> err' $
           "Count before mut (n') is not what it should be\n"
-          ++ "\nString:\n" ++ pShowStr jt jt' str ++ "\n\n"
+          ++ "\nString (before):\n" ++ pShowStr mark False jt str ++ "\n\n"
+          ++ "String (delta):\n"
+          ++ pShowStr mark mutJtSign (cis^.CIs.jointType) str ++ "\n\n"
+          ++ "String (after):\n" ++ pShowStr mark False jt' str ++ "\n\n"
           ++ "  mut: " ++ show mut ++ "\n"
           ++ "  sym: " ++ show s   ++ "\n"
           ++ "  n': "  ++ show n'  ++ "\n"
@@ -65,16 +68,21 @@ fromParamsWith jt str n'Of mut cis cor = do
 
         | n'' /= verif_n'' -> err' $
           "Count after mut (n'') is not what it should be\n"
-          ++ "\nString:\n" ++ pShowStr jt jt' str ++ "\n\n"
+          ++ "\nString (before):\n" ++ pShowStr mark False jt str ++ "\n\n"
+          ++ "String (delta):\n"
+          ++ pShowStr mark mutJtSign (cis^.CIs.jointType) str ++ "\n\n"
+          ++ "String (after):\n" ++ pShowStr mark False jt' str ++ "\n\n"
           ++ "  mut: " ++ show mut ++ "\n"
           ++ "  sym: " ++ show s   ++ "\n"
           ++ "  n': "  ++ show n'  ++ "\n"
           ++ "  n'': " ++ show n''
-          ++ " (cis: " ++ show (IM.lookup s mutSymCounts)
+          ++ " (n': " ++ show n'
+          ++ ", cis: " ++ show (IM.lookup s mutSymCounts)
           ++ ", cor: " ++ show (IM.lookup s cor) ++ ")\n"
           ++ "  verif_n: "   ++ show verif_n   ++ "\n"
           ++ "  verif_n': "  ++ show verif_n'  ++ "\n"
           ++ "  verif_n'': " ++ show verif_n'' ++ "\n"
+          ++ "  cis: " ++ show cis ++ "\n"
 
         | otherwise -> return $ logFact n' - logFact n''
 
@@ -85,7 +93,8 @@ fromParamsWith jt str n'Of mut cis cor = do
     dnm | odd two_dnm = err' $ "expected even number: " ++ show (two_dnm, ddns)
         | otherwise = two_dnm `div` 2
     mutSymCounts = cis^.CIs.symCounts
-    signedMutSymCounts | typeOfMut mut == Add = negate <$> mutSymCounts
+    mutType = typeOfMut mut
+    signedMutSymCounts | mutType == Add = negate <$> mutSymCounts
                        | otherwise = mutSymCounts
     ddns = signedMutSymCounts `union` cor
     union = IM.mergeWithKey (const $ nothingIf (==0) .: (+)) id id
@@ -97,6 +106,14 @@ fromParamsWith jt str n'Of mut cis cor = do
     jt'   = JT.appMut mut jt
     str'' = Simple.subst jt' 256 str
     ns''  = Simple.symCounts str''
+    mutJtSign = mutType == Del
+    mark = case mut of
+      AddLeft s0  -> (== s0)
+      AddRight s1 -> (== s1)
+      Add2 s0 s1  -> (\s -> s == s0 || s == s1)
+      DelLeft s0  -> (== s0)
+      DelRight s1 -> (== s1)
+      Del2 s0 s1  -> (\s -> s == s0 || s == s1)
 
     err' = err . ("fromParamsWith: " ++)
 

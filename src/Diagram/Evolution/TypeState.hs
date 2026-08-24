@@ -526,7 +526,7 @@ decomposeIn :: forall m. PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m [(Mutation, CI)]
 decomposeIn str tst ci@(CI hd shd len tl _)
   | len == 2  = (,ci) <<$>> delMutsOf tst hd tl
-  | otherwise = go [] hd shd . drop 1 =<< CI.extension str ci
+  | otherwise = go [] hd shd . drop 1 =<< CI.symExtension str ci
   where
     go mcis _ _ [] = return mcis
     go mcis i0 s0 ((i1,s1):rest) = do

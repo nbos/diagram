@@ -390,13 +390,10 @@ init_ :: forall m. PrimMonad m =>
 init_ m bigN dly ns allCIs (jt, memJointCIs) = do
   tst <- TS.init m allJoints jt
 
-  cisByMut <- joinByMut tst CIs.join $ M.toList allCIs
+  -- TODO: switch back to non-debug CIs.join --
+  cisByMut <- joinByMutM tst (CIs.debug_join dly) $ M.toList allCIs
   corByMut <- fromMaybe M.empty . foldTree union
               <$> mapM (corrsOf dly tst) (CIs.toList memCIs)
-
-  -- dns_mv <- MU.replicate m (0 :: Count)
-  -- forM_ (IM.toList dns) $ uncurry $ MU.write dns_mv
-  -- let n'Of s = ((ns U.! s)+) <$> MU.read dns_mv s
 
   str <- D.toList dly -- TODO: rm
   let es = M.mergeWithKey
@@ -424,9 +421,7 @@ init_ m bigN dly ns allCIs (jt, memJointCIs) = do
 
     two_nm = sum ndns
     nm | even two_nm = two_nm `div` 2
-       | otherwise =
-           err' $ "expected an even number: " ++ show (two_nm, ndns)
-    -- dns = negate <$> ndns -- delta symbol counts (intro's)
+       | otherwise = err' $ "expected an even number: " ++ show (two_nm, ndns)
 
 -- WHERE --
 
@@ -438,6 +433,22 @@ joinByMut tst f = fmap (M.fromListWith f . concat) . mapM g
   where
     g :: ((Sym,Sym), a) -> m [(Mutation, a)]
     g ((s0,s1), a) = (,a) <<$>> TS.mutsOf tst s0 s1
+
+-- | joinByMut, but monadic
+joinByMutM :: forall m a. PrimMonad m => TypeState (PrimState m) ->
+  (a -> a -> m a) -> [((Sym,Sym), a)] -> m (Map Mutation a)
+joinByMutM tst f = (fromListWithM f . concat) <=< mapM g
+  where
+    g :: ((Sym,Sym), a) -> m [(Mutation, a)]
+    g ((s0,s1), a) = (,a) <<$>> TS.mutsOf tst s0 s1
+
+-- | Data.Map.fromListWith, but monadic
+fromListWithM :: (Ord k, Monad m) => (a -> a -> m a) -> [(k, a)] -> m (Map k a)
+fromListWithM f = foldM g M.empty
+  where
+    g m (k,v) = M.alterF (comb v) k m
+    comb new Nothing    = pure (Just new)
+    comb new (Just old) = Just <$> f new old
 
 err :: String -> a
 err = error . ("Evolution." ++)

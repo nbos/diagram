@@ -7,8 +7,6 @@ import Diagram.String
 import Diagram.JointType (JointType)
 import qualified Diagram.JointType as JT
 
-import Diagram.Util
-
 pShow :: Show a => a -> [Char]
 pShow = unpack . pShowOpt defaultOutputOptionsDarkBg
   { outputOptionsCompact       = True
@@ -16,28 +14,37 @@ pShow = unpack . pShowOpt defaultOutputOptionsDarkBg
   , outputOptionsIndentAmount  = 2
   }
 
-pShowStr :: JointType -> JointType -> [Sym] -> [Char]
-pShowStr jt jt' = go
+pShowStr :: (Sym -> Bool) -> Bool -> JointType -> [Sym] -> [Char]
+pShowStr _ _ _ [] = []
+pShowStr mark sign jt (hd:tl) = goOut hd tl
   where
-    go [] = normal
-    go [s] = red ++ show s ++ normal
-    go (s0:s1:ss)
-      | mem s0 s1 =
-          (if not (mem' s0 s1) then normal ++ "***" else "") -- del i0
-          ++ normal ++ "(" ++ green ++ show s0 ++ " "
-          ++ (case ss of s2:_ | not (mem s1 s2)
-                              , mem' s1 s2 -> normal ++ "***" ++ green -- add i1
-                         _else -> "")
-          ++ show s1 ++ normal ++ ") "
-          ++ go ss
+    mem = JT.member
 
-      | mem' s0 s1 = normal ++ "***" ++ red ++ show s0 ++ " " ++ go (s1:ss) -- add i0
-      | otherwise = red ++ show s0 ++ " "
-                    ++ go (s1:ss)
-      where
-        mem = (`JT.member` jt) .: (,)
-        mem' = (`JT.member` jt') .: (,)
+    -- s0 not yet printed
+    goOut s0 [] = show' red s0 -- end
+    goOut s0 (s1:ss)
+      | (s0,s1) `mem` jt =
+          "[" ++ show' green s0 ++ " " ++ show' green s1 ++ goInEven s1 ss
+      | otherwise = show' red s0 ++ " " ++ goOut s1 ss
 
-    red = "\ESC[91m"
-    green = "\ESC[32m"
-    normal = "\ESC[0m"
+    -- s0 already printed
+    goInEven _ [] = "]" -- end
+    goInEven s0 (s1:ss)
+      | (s0,s1) `mem` jt = " " ++ goInOdd s1 ss
+      | otherwise = "] " ++ goOut s1 ss
+
+    -- s0 not yet printed
+    goInOdd s0 [] = show' yellow s0 ++ "]" -- end
+    goInOdd s0 (s1:ss)
+      | (s0,s1) `mem` jt =
+          show' green s0 ++ " " ++ show' green s1 ++ goInEven s1 ss
+      | otherwise = show' yellow s0 ++ "] " ++ goOut s1 ss
+
+    show' color s = (if mark s then "*" else "")
+                    ++ color ++ show s ++ reset
+    -- ansi
+    reset  = "\ESC[0m"
+    (green, red)
+      | sign      = ("\ESC[32m", "\ESC[91m")
+      | otherwise = ("\ESC[91m", "\ESC[32m")
+    yellow = "\ESC[93m"
