@@ -131,21 +131,21 @@ delMutCorrsOf dly tst supCI@(CI _ _ supLen _ supStl) = do
           -- will still be constr after del mut; means hd will still be
           -- constr. so shd's count will not get docked by the mut
           when outOfPhase $ dec shd -- hd
-          case () of
-            _ | next:rest' <- rest -> do -- nothing follows
-                  when lenEven $ dec stl
-                  go_ nextRemPhase $ next :| rest'
+          case rest of
+            next:rest' ->
+              when lenEven (dec stl)
+              >> go_ nextRemPhase (next:|rest')
 
-              | stl == supStl -> do -- weakened tl == supTl
-                   let d = fromEnum lenEven - fromEnum supLenEven
-                   when (d /= 0) $ inc_ d stl
+            _ | stl == supStl -> do -- weakened (tl == supTl)
+                  let d = fromEnum supLenEven - fromEnum lenEven
+                  when (d /= 0) $ inc_ d stl
 
               | otherwise -> do -- a rem follows
-                   when lenEven $ dec stl
-                   let supTlSwitchedPhase = nextRemPhase
-                   when supTlSwitchedPhase $
-                     if supLenEven then inc supStl -- constr. -> non
-                     else dec supStl -- non-constr. -> constr.
+                  when lenEven $ dec stl
+                  let supTlSwitchedPhase = nextRemPhase
+                  when supTlSwitchedPhase $
+                    if supLenEven then inc supStl -- constr. -> non
+                    else dec supStl -- non-constr. -> constr.
           where
             lenEven = even len -- means tl is constr.
             nextRemPhase =  -- | even len   = not hp

@@ -57,10 +57,10 @@ fromParamsWith jt str n'Of mut cis cor = do
     case () of
       _ | n' /= verif_n' -> err' $
           "Count before mut (n') is not what it should be\n"
-          ++ "\nString (before):\n" ++ pShowStr mark False jt str ++ "\n\n"
+          ++ "\nString (before):\n" ++ pShowStr mark t jt str ++ "\n\n"
           ++ "String (delta):\n"
-          ++ pShowStr mark mutJtSign (cis^.CIs.jointType) str ++ "\n\n"
-          ++ "String (after):\n" ++ pShowStr mark False jt' str ++ "\n\n"
+          ++ pShowStr mark t (cis^.CIs.jointType) str ++ "\n\n"
+          ++ "String (after):\n" ++ pShowStr mark t jt' str ++ "\n\n"
           ++ "  mut: " ++ show mut ++ "\n"
           ++ "  sym: " ++ show s   ++ "\n"
           ++ "  n': "  ++ show n'  ++ "\n"
@@ -68,10 +68,10 @@ fromParamsWith jt str n'Of mut cis cor = do
 
         | n'' /= verif_n'' -> err' $
           "Count after mut (n'') is not what it should be\n"
-          ++ "\nString (before):\n" ++ pShowStr mark False jt str ++ "\n\n"
+          ++ "\nString (before):\n" ++ pShowStr mark t jt str ++ "\n\n"
           ++ "String (delta):\n"
-          ++ pShowStr mark mutJtSign (cis^.CIs.jointType) str ++ "\n\n"
-          ++ "String (after):\n" ++ pShowStr mark False jt' str ++ "\n\n"
+          ++ pShowStr mark t (cis^.CIs.jointType) str ++ "\n\n"
+          ++ "String (after):\n" ++ pShowStr mark t jt' str ++ "\n\n"
           ++ "  mut: " ++ show mut ++ "\n"
           ++ "  sym: " ++ show s   ++ "\n"
           ++ "  n': "  ++ show n'  ++ "\n"
@@ -89,6 +89,7 @@ fromParamsWith jt str n'Of mut cis cor = do
   return $ ME mut (sum losses) ddns dnm cis
 
   where
+    t = True
     two_dnm = negate $ sum ddns
     dnm | odd two_dnm = err' $ "expected even number: " ++ show (two_dnm, ddns)
         | otherwise = two_dnm `div` 2
@@ -106,7 +107,7 @@ fromParamsWith jt str n'Of mut cis cor = do
     jt'   = JT.appMut mut jt
     str'' = Simple.subst jt' 256 str
     ns''  = Simple.symCounts str''
-    mutJtSign = mutType == Del
+    -- mutJtSign = mutType == Del
     mark = case mut of
       AddLeft s0  -> (== s0)
       AddRight s1 -> (== s1)
