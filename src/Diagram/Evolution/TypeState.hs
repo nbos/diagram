@@ -521,24 +521,28 @@ trySingleton is | [s] <- IS.toList is = Just s
 --------------------------
 
 -- | Break a constructive interval of the joint type (in) into an
--- ordered (by tail) list of its segments by mutation.
+-- ordered (by tail) list of its segments by mutation. Only made for
+-- `Correction.delMutCorrsOf`. For each CI also returns phase (binary)
+-- of the head w.r.t. the begining of the given CI, i.e. 0\/False is
+-- even\/constr., 1\/True is odd\/non-constr.
 decomposeIn :: forall m. PrimMonad m => Doubly (PrimState m) ->
-  TypeState (PrimState m) -> CI -> m [(Mutation, CI)]
+  TypeState (PrimState m) -> CI -> m [(Mutation, (Bool, CI))]
 decomposeIn str tst ci@(CI hd shd len tl _)
-  | len == 2  = (,ci) <<$>> delMutsOf tst hd tl
-  | otherwise = go [] hd shd . drop 1 =<< CI.symExtension str ci
+  | len == 2  = (,(False,ci)) <<$>> delMutsOf tst hd tl
+  | otherwise = go [] False hd shd . drop 1 =<< CI.symExtension str ci
   where
-    go mcis _ _ [] = return mcis
-    go mcis i0 s0 ((i1,s1):rest) = do
+    go mcis _ _ _ [] = return mcis
+    go mcis p i0 s0 ((i1,s1):rest) = do
       muts <- delMutsOf tst s0 s1
+      -- traceShowM (s0,s1,muts)
       let (alive, ended) = L.partition (flip elem muts . fst) mcis
-          started = (, CI i0 s0 2 i1 s1) <$>
-                    filter (`notElem` (fst <$> mcis)) muts
-          mcis' = (++ started) $ (<<$>> alive) $ \c ->
-            c{ _ciLength = _ciLength c + 1
+          started = (, (p, CI i0 s0 2 i1 s1))
+                    <$> filter (`notElem` (fst <$> mcis)) muts
+          mcis' = (++ started) $ (<<<$>>> alive) $ \c ->
+            c{ _ciLength = _ciLength c + 1 -- extend
              , _tailIndex = i1
              , _tailSymbol = s1 }
-      (ended ++) <$> go mcis' i1 s1 rest
+      (ended ++) <$> go mcis' (not p) i1 s1 rest
 
 -- | Return the out-interval (and the add-mutation that would switch its
 -- membership) immediately preceding the given in-interval but only if

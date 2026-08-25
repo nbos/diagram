@@ -1,4 +1,5 @@
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
+{-# OPTIONS_GHC -Wno-x-partial #-}
 module Diagram.Joints (module Diagram.Joints, Sym) where
 
 import Control.Monad

@@ -1,5 +1,5 @@
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE LambdaCase, TupleSections #-}
 
 module Diagram.Evolution.Correction (module Diagram.Evolution.Correction) where
 
@@ -18,12 +18,10 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
-import qualified Data.IntSet as IS
 
 import Diagram.Primitive
 import Diagram.String
-import Diagram.ConstrInterval(CI(..), ciLength, tailIndex)
-import qualified Diagram.ConstrInterval as CI
+import Diagram.ConstrInterval(CI(..), ciLength)
 
 import Diagram.Evolution.Mutation (Mutation(..))
 import Diagram.Evolution.TypeState (TypeState)
@@ -46,7 +44,7 @@ import Diagram.Util
 -- joint type's own CIs.symCounts.
 corrsOf :: forall m. PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
-corrsOf dly tst ci = fmap clean $ do
+corrsOf dly tst ci = do
   traceShowM ci
 
   -- [DEL]: decompose, treat all delMuts
@@ -61,7 +59,8 @@ corrsOf dly tst ci = fmap clean $ do
         traceM $ "CIs after: " ++ show (addMut,nexts)
         return $ M.singleton addMut $ addMutCorrOf (ci:|nexts)
 
-    Just p@(addMut, prv) -> ((traceM ("prev CI: " ++ show p) >> nextCIs ci) >>=) $ \case
+    Just p@(addMut, prv) -> ((traceM ("prev CI: " ++ show p)
+                              >> nextCIs ci) >>=) $ \case
       Nothing -> do
         traceM "no CIs after"
         return $ M.singleton addMut $ addMutCorrOf (prv:|[ci])
@@ -77,7 +76,7 @@ corrsOf dly tst ci = fmap clean $ do
               [ (addMut, addMutCorrOf (prv:|[ci]))
               , (addMut', addMutCorrOf (ci:|nexts)) ]
 
-  let res = M.unionWithKey col delMutCorrs addMutCorrs
+  let res = clean $ M.unionWithKey col delMutCorrs addMutCorrs
   traceM $ "all correction: " ++ show res
   traceM ""
   return res
@@ -116,38 +115,52 @@ addMutCorrOf cis = L.foldl' (flip f) IM.empty (NE.init cis) &
 -- difference in symCounts from applying those mutations.
 delMutCorrsOf :: forall m. PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
-delMutCorrsOf dly tst ci = do
-
-  isConstr <- flip IS.member . IS.fromList . everyOther . fmap fst
-              <$> CI.symExtension dly ci
-
-  let go :: Mutation -> Bool -> [CI] -> StateT (Map Mutation (IntMap Int)) m ()
-      go delMut = go_ where
-        go_ _ [] = return ()
-        go_ phase (CI hd shd len tl stl : rest) = do
-          unless (tl == (ci^.tailIndex)) $ dec stl -- tl
-          let outOfPhase = phase /= isConstr hd
-          -- out of phase with super-CI means prev hd will be constr
-          -- means hd will still be constr. so hd will not be docked
-          when outOfPhase $ dec shd -- hd
-          let phase' = phase /= odd len -- xor
-          go_ phase' rest
-
-        dec :: Sym -> StateT (Map Mutation (IntMap Int)) m ()
-        dec s = modify $ M.insertWith (const $ IM.insertWith (+) s (-1))
-                delMut (IM.singleton s (-1))
-
-  flip execStateT M.empty $
-    mapM_ (uc $ flip go True) -- True == constr
-    . M.toList . M.fromListWith (++)
-    . reverse . ffmap (:[]) -- reverse to maintain order
-    =<< lift (TS.decomposeIn dly tst ci)
-
+delMutCorrsOf dly tst supCI@(CI _ _ supLen _ supStl) = do
+  fmap go . M.fromListWith (<>)
+    . reverse -- preserve order through (<>)
+    . ffmap NE.singleton <$> TS.decomposeIn dly tst supCI
   where
-    everyOther :: [a] -> [a]
-    everyOther [] = []
-    everyOther [a] = [a]
-    everyOther (a:_:rest) = a : everyOther rest
+    supLenEven = even supLen
+    go :: NonEmpty (Bool, CI) -> IntMap Int
+    go = flip execState IM.empty . go_ False
+      where -- False == aligned with supCI
+        go_ :: Bool -> NonEmpty (Bool, CI) -> State (IntMap Int) ()
+        go_ prevRemPhase ((hp, CI _ shd len _ stl) :| rest) = do
+          let outOfPhase = prevRemPhase /= hp
+          -- out of phase with rem means (phd,hd) (which is in phase)
+          -- will still be constr after del mut; means hd will still be
+          -- constr. so shd's count will not get docked by the mut
+          when outOfPhase $ dec shd -- hd
+          case () of
+            _ | next:rest' <- rest -> do -- nothing follows
+                  when lenEven $ dec stl
+                  go_ nextRemPhase $ next :| rest'
+
+              | stl == supStl -> do -- weakened tl == supTl
+                   let d = fromEnum lenEven - fromEnum supLenEven
+                   when (d /= 0) $ inc_ d stl
+
+              | otherwise -> do -- a rem follows
+                   when lenEven $ dec stl
+                   let supTlSwitchedPhase = nextRemPhase
+                   when supTlSwitchedPhase $
+                     if supLenEven then inc supStl -- constr. -> non
+                     else dec supStl -- non-constr. -> constr.
+          where
+            lenEven = even len -- means tl is constr.
+            nextRemPhase =  -- | even len   = not hp
+              lenEven /= hp -- | othwerwise = hp
+
+        -- decrement: every symbol that is counted in the del CI, but will
+        -- still be constr. in the remainder CI
+        dec :: Sym -> State (IntMap Int) ()
+        dec = inc_ (-1)
+        -- increment: every symbol that is not counted in the del CI,
+        -- but still gets its count reduced in the remainder CI
+        inc :: Sym -> State (IntMap Int) ()
+        inc = inc_ 1
+        inc_ :: Int -> Sym -> State (IntMap Int) ()
+        inc_ d s = modify $ IM.insertWith (+) s d
 
 err :: [Char] -> a
 err = error . ("Correction." ++)
