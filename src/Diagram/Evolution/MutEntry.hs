@@ -91,14 +91,23 @@ fromParamsWith jt str n'Of mut cis cor = do
   where
     t = True
     two_dnm = negate $ sum ddns
-    dnm | odd two_dnm = err' $ "expected even number: " ++ show (two_dnm, ddns)
-        | otherwise = two_dnm `div` 2
     mutSymCounts = cis^.CIs.symCounts
     mutType = typeOfMut mut
     signedMutSymCounts | mutType == Add = negate <$> mutSymCounts
                        | otherwise = mutSymCounts
     ddns = signedMutSymCounts `union` cor
     union = IM.mergeWithKey (const $ nothingIf (==0) .: (+)) id id
+
+    dnm | even two_dnm = two_dnm `div` 2
+        | otherwise = err' $
+          "Expected even number: " ++ show (two_dnm, ddns) ++ "\n"
+          ++ "\nString (before):\n" ++ pShowStr mark t jt str ++ "\n\n"
+          ++ "String (delta):\n"
+          ++ pShowStr mark t (cis^.CIs.jointType) str ++ "\n\n"
+          ++ "String (after):\n" ++ pShowStr mark t jt' str ++ "\n\n"
+          ++ "  mut: " ++ show mut ++ "\n"
+          ++ "  cis: " ++ show cis ++ "\n"
+          ++ "  cor: " ++ show cor ++ "\n"
 
     -- verif -- TODO: remove
     ns    = Simple.symCounts str

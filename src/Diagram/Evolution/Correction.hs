@@ -91,6 +91,8 @@ corrsOf dly tst ci = do
 
 -- where --
 
+-- TODO: guards before returning asserting: even (sum res)? (dnm)
+
 -- | Given a non-empty list of overlapping (connecting) intervals after
 -- an add mutation (alternating [in-]add-in-add-etc.), return the
 -- appropriate correction on delta delta symbol counts (ddns)
@@ -115,7 +117,7 @@ addMutCorrOf cis = L.foldl' (flip f) IM.empty (NE.init cis) &
 -- difference in symCounts from applying those mutations.
 delMutCorrsOf :: forall m. PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
-delMutCorrsOf dly tst supCI@(CI _ _ supLen _ supStl) = do
+delMutCorrsOf dly tst supCI@(CI _ _ supLen supTl supStl) = do
   fmap go . M.fromListWith (<>)
     . reverse -- preserve order through (<>)
     . ffmap NE.singleton <$> TS.decomposeIn dly tst supCI
@@ -125,7 +127,7 @@ delMutCorrsOf dly tst supCI@(CI _ _ supLen _ supStl) = do
     go = flip execState IM.empty . go_ False
       where -- False == aligned with supCI
         go_ :: Bool -> NonEmpty (Bool, CI) -> State (IntMap Int) ()
-        go_ prevRemPhase ((hp, CI _ shd len _ stl) :| rest) = do
+        go_ prevRemPhase ((hp, CI _ shd len tl stl) :| rest) = do
           let outOfPhase = prevRemPhase /= hp
           -- out of phase with rem means (phd,hd) (which is in phase)
           -- will still be constr after del mut; means hd will still be
@@ -136,9 +138,9 @@ delMutCorrsOf dly tst supCI@(CI _ _ supLen _ supStl) = do
               when lenEven (dec stl)
               >> go_ nextRemPhase (next:|rest')
 
-            _ | stl == supStl -> do -- weakened (tl == supTl)
+            _ | tl == supTl ->
                   let d = fromEnum supLenEven - fromEnum lenEven
-                  when (d /= 0) $ inc_ d stl
+                  in when (d /= 0) $ inc_ d stl
 
               | otherwise -> do -- a rem follows
                   when lenEven $ dec stl
