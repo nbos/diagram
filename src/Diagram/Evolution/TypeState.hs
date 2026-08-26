@@ -681,7 +681,7 @@ jointsOf ts mut = case mut of
       SE _ coIn _ _ <- readLeft_ ts s0
       return $ (s0,) <$> IS.toAscList coIn
     goRight s1 = do
-      SE _ coIn _ _ <- readLeft_ ts s1
+      SE _ coIn _ _ <- readRight_ ts s1
       return $ (,s1) <$> IS.toAscList coIn
 
 -----------

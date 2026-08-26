@@ -338,9 +338,9 @@ introMut mut = do
   tst <- use typeState
   jts <- TS.jointsOf tst mut
   traceM $ "Mut joints: " ++ pShow jts -- (debug)
-  TS.pShowTrace tst -- (debug)
+  -- TS.pShowTrace tst -- (debug)
   allCIs <- use jointCIs
-  traceM . pShow $ allCIs -- (debug)
+  -- traceM . pShow $ allCIs -- (debug)
   let mutCIs@(CIs mutJT _ bhd _) = mfoldTree $ fmap (allCIs M.!) jts
 
   ns <- use symCounts
