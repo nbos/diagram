@@ -155,8 +155,6 @@ hillClimb = init_ >======> execStateT (whileM step)
 step :: PrimMonad m => EvolutionT m Bool
 step = do
   es <- evalAll
-  traceM "\nEntries:"
-  mapM_ (traceM . pShow) es
   let (_, e) = L.minimumBy (compare `on` fst) es
   ddInfo <- ddInformation e
   if ddInfo > 0 then return False else
@@ -336,10 +334,13 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
 
 introMut :: forall m. PrimMonad m => Mutation -> EvolutionT m ()
 introMut mut = do
+  traceM $ "Introducing mut: " ++ show mut
   tst <- use typeState
   jts <- TS.jointsOf tst mut
-
+  traceM $ "Mut joints: " ++ pShow jts -- (debug)
+  TS.pShowTrace tst -- (debug)
   allCIs <- use jointCIs
+  traceM . pShow $ allCIs -- (debug)
   let mutCIs@(CIs mutJT _ bhd _) = mfoldTree $ fmap (allCIs M.!) jts
 
   ns <- use symCounts

@@ -3,8 +3,9 @@
 {-# LANGUAGE TypeApplications, TypeOperators #-}
 {-# LANGUAGE BangPatterns, LambdaCase, TupleSections #-}
 {-# LANGUAGE InstanceSigs #-}
-
 module Diagram.Evolution.TypeState (module Diagram.Evolution.TypeState) where
+
+import Debug.Trace
 
 import Control.Monad
 import Control.Monad.Extra
@@ -20,8 +21,10 @@ import qualified Data.Set as Set
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IS
 import qualified Data.IntMap.Strict as IM
+import qualified Data.Vector as V
 import qualified Data.Vector.Mutable as MV
 
+import Diagram.Pretty
 import Diagram.Primitive
 
 import qualified Diagram.UnionType as UT
@@ -35,7 +38,7 @@ import qualified Diagram.ConstrInterval as CI
 import Diagram.Evolution.Mutation (Mutation(..))
 import Diagram.Evolution.SymEntry ( SymEntry(SE, _isMember, _coSymsIn),
                                     coSymsIn, coSymsOut, dependents, isMember )
-import qualified Diagram.Evolution.SymEntry as Sym
+import qualified Diagram.Evolution.SymEntry as SE
 
 import Diagram.Util
 
@@ -53,95 +56,6 @@ makeLenses ''TypeState
 numSymbols :: Monad m => TypeT m Int
 numSymbols = leftSyms `uses` MV.length
 
--- -- | (sz0, sz1)
--- dims :: Monad m => TypeT m (Int, Int)
--- dims = jointType `uses` JT.dims
-
--- -- | vm = sz0 * sz1
--- variety :: Monad m => TypeT m Int
--- variety = jointType `uses` JT.variety
-
--- READ/WRITE
-
-readLeft :: PrimMonad m => Sym -> TypeT m SymEntry
-readLeft s = use leftSyms >>= lift . flip MV.read s
-
-readLeft_ :: PrimMonad m => TypeState (PrimState m) -> Sym -> m SymEntry
-readLeft_ = MV.read . _leftSyms
-
-readRight :: PrimMonad m => Sym -> TypeT m SymEntry
-readRight s = use rightSyms >>= lift . flip MV.read s
-
-readRight_ :: PrimMonad m => TypeState (PrimState m) -> Sym -> m SymEntry
-readRight_ = MV.read . _rightSyms
-
-writeLeft :: PrimMonad m => Sym -> SymEntry -> TypeT m ()
-writeLeft s e = use leftSyms >>= lift . flip2 MV.write s e
-
-writeRight :: PrimMonad m => Sym -> SymEntry -> TypeT m ()
-writeRight s e = use rightSyms >>= lift . flip2 MV.write s e
-
-modifyLeft :: PrimMonad m => (SymEntry -> SymEntry) ->
-              Sym -> TypeT m ()
-modifyLeft f s = use leftSyms >>= lift . flip2 MV.modify f s
-
-modifyRight :: PrimMonad m => (SymEntry -> SymEntry) ->
-               Sym -> TypeT m ()
-modifyRight f s = use rightSyms >>= lift . flip2 MV.modify f s
-
--- PREDICATES
-
-leftMember :: PrimMonad m => TypeState (PrimState m) -> Sym -> m Bool
-leftMember (TS u0 _) s = _isMember <$> MV.read u0 s
-
-rightMember :: PrimMonad m => TypeState (PrimState m) -> Sym -> m Bool
-rightMember (TS _ u1) s = _isMember <$> MV.read u1 s
-
-member :: PrimMonad m => TypeState (PrimState m) -> Sym -> Sym -> m Bool
-member ts s0 s1 = liftA2 (&&) (leftMember ts s0) (rightMember ts s1)
-
--- RELATIONS
-
--- | Give the (possibly empty) set of available mutations that would
--- switch the membership of the given joint in the type
-mutsOf :: PrimMonad m =>
-          TypeState (PrimState m) -> Sym -> Sym -> m [Mutation]
-mutsOf (TS u0 u1) s0 s1 = Sym.mutsOf <$> sequence (s0, MV.read u0 s0)
-                                       <*> sequence (s1, MV.read u1 s1)
-
--- | Give the (possibly missing) mutation that would make the given
--- joint member of the type (assumes it's not)
-addMutOf :: PrimMonad m =>
-            TypeState (PrimState m) -> Sym -> Sym -> m (Maybe Mutation)
-addMutOf (TS u0 u1) s0 s1 = Sym.addMutOf <$> sequence (s0, MV.read u0 s0)
-                                           <*> sequence (s1, MV.read u1 s1)
-
--- | Give the (possibly empty) set of available Del mutations that would
--- take the given joint out of the type (assumes it's in)
-delMutsOf :: PrimMonad m =>
-             TypeState (PrimState m) -> Sym -> Sym -> m [Mutation]
-delMutsOf (TS u0 u1) s0 s1 = Sym.delMutsOf <$> sequence (s0, MV.read u0 s0)
-                                             <*> sequence (s1, MV.read u1 s1)
-
--- | Assuming the mutation is valid/available, return the set of joints
--- that will flip membership upon its application. Returned list is in
--- order.
-jointsOf :: PrimMonad m => TypeState (PrimState m) -> Mutation -> m [(Sym,Sym)]
-jointsOf ts mut = case mut of
-  AddLeft s0  -> goLeft s0
-  AddRight s1 -> goRight s1
-  Add2 s0 s1  -> return [(s0,s1)]
-  DelLeft s0  -> goLeft s0
-  DelRight s1 -> goRight s1
-  Del2 s0 s1  -> return [(s0,s1)]
-  where
-    goLeft s0 = do
-      SE _ coIn _ _ <- readLeft_ ts s0
-      return $ (s0,) <$> IS.toAscList coIn
-    goRight s1 = do
-      SE _ coIn _ _ <- readLeft_ ts s1
-      return $ (,s1) <$> IS.toAscList coIn
-
 ----------
 -- INIT --
 ----------
@@ -151,10 +65,10 @@ jointsOf ts mut = case mut of
 init :: PrimMonad m => Int -> [(Sym,Sym)] -> JointType ->
         m (TypeState (PrimState m))
 init m allJoints (JT u0 u1) = do
-  uLeft  <- MV.replicate m Sym.emptyOut -- uLeft
-  uRight <- MV.replicate m Sym.emptyOut -- uRight
-  forM_ s0s $ flip (MV.write uLeft ) Sym.emptyIn
-  forM_ s1s $ flip (MV.write uRight) Sym.emptyIn
+  uLeft  <- MV.replicate m SE.emptyOut -- uLeft
+  uRight <- MV.replicate m SE.emptyOut -- uRight
+  forM_ s0s $ flip (MV.write uLeft ) SE.emptyIn
+  forM_ s1s $ flip (MV.write uRight) SE.emptyIn
 
   -- cosyms (in/out)
   forM_ allJoints $ \(s0,s1) -> do
@@ -684,3 +598,106 @@ nextMutCIs str tst (CI _ _ _ i0 s0) = (D.next str i0 >>=) $ \case
               _else -> return $ reverse acc' -- end of intervals
           where
             acc' = mkCI len tl stl : acc
+
+-----------------
+-- BOILERPLATE --
+-----------------
+
+-- READ/WRITE
+
+readLeft :: PrimMonad m => Sym -> TypeT m SymEntry
+readLeft s = use leftSyms >>= lift . flip MV.read s
+
+readLeft_ :: PrimMonad m => TypeState (PrimState m) -> Sym -> m SymEntry
+readLeft_ = MV.read . _leftSyms
+
+readRight :: PrimMonad m => Sym -> TypeT m SymEntry
+readRight s = use rightSyms >>= lift . flip MV.read s
+
+readRight_ :: PrimMonad m => TypeState (PrimState m) -> Sym -> m SymEntry
+readRight_ = MV.read . _rightSyms
+
+writeLeft :: PrimMonad m => Sym -> SymEntry -> TypeT m ()
+writeLeft s e = use leftSyms >>= lift . flip2 MV.write s e
+
+writeRight :: PrimMonad m => Sym -> SymEntry -> TypeT m ()
+writeRight s e = use rightSyms >>= lift . flip2 MV.write s e
+
+modifyLeft :: PrimMonad m => (SymEntry -> SymEntry) ->
+              Sym -> TypeT m ()
+modifyLeft f s = use leftSyms >>= lift . flip2 MV.modify f s
+
+modifyRight :: PrimMonad m => (SymEntry -> SymEntry) ->
+               Sym -> TypeT m ()
+modifyRight f s = use rightSyms >>= lift . flip2 MV.modify f s
+
+-- PREDICATES
+
+leftMember :: PrimMonad m => TypeState (PrimState m) -> Sym -> m Bool
+leftMember (TS u0 _) s = _isMember <$> MV.read u0 s
+
+rightMember :: PrimMonad m => TypeState (PrimState m) -> Sym -> m Bool
+rightMember (TS _ u1) s = _isMember <$> MV.read u1 s
+
+member :: PrimMonad m => TypeState (PrimState m) -> Sym -> Sym -> m Bool
+member ts s0 s1 = liftA2 (&&) (leftMember ts s0) (rightMember ts s1)
+
+-- RELATIONS
+
+-- | Give the (possibly empty) set of available mutations that would
+-- switch the membership of the given joint in the type
+mutsOf :: PrimMonad m =>
+          TypeState (PrimState m) -> Sym -> Sym -> m [Mutation]
+mutsOf (TS u0 u1) s0 s1 = SE.mutsOf <$> sequence (s0, MV.read u0 s0)
+                                    <*> sequence (s1, MV.read u1 s1)
+
+-- | Give the (possibly missing) mutation that would make the given
+-- joint member of the type (assumes it's not)
+addMutOf :: PrimMonad m =>
+            TypeState (PrimState m) -> Sym -> Sym -> m (Maybe Mutation)
+addMutOf (TS u0 u1) s0 s1 = SE.addMutOf <$> sequence (s0, MV.read u0 s0)
+                                        <*> sequence (s1, MV.read u1 s1)
+
+-- | Give the (possibly empty) set of available Del mutations that would
+-- take the given joint out of the type (assumes it's in)
+delMutsOf :: PrimMonad m =>
+             TypeState (PrimState m) -> Sym -> Sym -> m [Mutation]
+delMutsOf (TS u0 u1) s0 s1 = SE.delMutsOf <$> sequence (s0, MV.read u0 s0)
+                                          <*> sequence (s1, MV.read u1 s1)
+
+-- | Assuming the mutation is valid/available, return the set of joints
+-- that will flip membership upon its application. Returned list is in
+-- order.
+jointsOf :: PrimMonad m => TypeState (PrimState m) -> Mutation -> m [(Sym,Sym)]
+jointsOf ts mut = case mut of
+  AddLeft s0  -> goLeft s0
+  AddRight s1 -> goRight s1
+  Add2 s0 s1  -> return [(s0,s1)]
+  DelLeft s0  -> goLeft s0
+  DelRight s1 -> goRight s1
+  Del2 s0 s1  -> return [(s0,s1)]
+  where
+    goLeft s0 = do
+      SE _ coIn _ _ <- readLeft_ ts s0
+      return $ (s0,) <$> IS.toAscList coIn
+    goRight s1 = do
+      SE _ coIn _ _ <- readLeft_ ts s1
+      return $ (,s1) <$> IS.toAscList coIn
+
+-----------
+-- DEBUG --
+-----------
+
+pShowTrace :: PrimMonad m => TypeState (PrimState m) -> m ()
+pShowTrace (TS u0 u1) = do
+  traceM "Printing TypeState:"
+  traceM "Left symbols:"
+  V.freeze u0 >>= show'
+  traceM "\nRight symbols:"
+  V.freeze u1 >>= show'
+  traceM "\n"
+  where
+    show' = traceM . pShow
+            . filter ((SE.emptyOut /=) . snd)
+            . zip [(0::Int)..]
+            . V.toList
