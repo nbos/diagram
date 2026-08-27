@@ -536,26 +536,28 @@ superCI dly tst jt (CI hd0 shd0 len0 tl0 stl0) = do
                  | otherwise -> go phd sphd (len+1) -- continue
           where ci = CI hd shd len tl stl
 
-    expandFwd hd shd = goST [] 0 hd shd
-      where
-        goST cis len hd' shd' = go
-          where
-            go !len' tl stl = (D.next dly tl >>=) $ \case
-              Nothing -> return (super, reverse cis') -- eos
+    expandFwd hd shd = goRem [] 1 hd shd -- (len+remLen-1) overlap logic
+      where                              -- requires we start with len 1
+        goRem rems len remHd remShd = go
+          where -- a remainder is inside TypeState but outside jt
+            go !remLen tl stl = (D.next dly tl >>=) $ \case
+              Nothing -> return (super, reverse rems') -- eos
               Just (ntl, sntl) -> (member tst stl sntl >>=) $ \case
                 True | JT.member (stl,sntl) jt ->
-                         goJT cis' (len+len') ntl sntl -- switch
-                     | otherwise -> go (len'+1) ntl sntl -- cont.
-                False -> return (super, reverse cis') -- end
-              where super = CI hd shd (len+len'-1) tl stl
-                    cis' = (CI hd' shd' len' tl stl):cis
+                         goJT rems' (len+remLen-1) ntl sntl -- switch
+                     | otherwise -> go (remLen+1) ntl sntl -- cont.
+                False -> return (super, reverse rems') -- end
+              where super = CI hd shd (len+remLen-1) tl stl
+                    rems' = (CI remHd remShd remLen tl stl):rems
 
-        goJT cis !len tl stl = (D.next dly tl >>=) $ \case
-          Nothing -> return (super, reverse cis) -- eos
+        goJT rems !len tl stl = (D.next dly tl >>=) $ \case
+          Nothing -> return (super, reverse rems) -- eos
           Just (ntl, sntl) -> (member tst stl sntl >>=) $ \case
-            True | JT.member (stl,sntl) jt -> goJT cis (len+1) ntl sntl -- cont.
-                 | otherwise -> goST cis len tl stl 2 ntl sntl -- switch
-            False -> return (super, reverse cis) -- end
+            True | JT.member (stl,sntl) jt ->
+                     goJT rems (len+1) ntl sntl -- cont.
+                 | otherwise ->
+                     goRem rems len tl stl 2 ntl sntl -- switch
+            False -> return (super, reverse rems) -- end
           where super = CI hd shd len tl stl
 
 -- | Given the string, joint type and a constructive interval of the
