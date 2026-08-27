@@ -337,36 +337,36 @@ introMut mut = do
   traceM $ "Introducing mut: " ++ show mut
   tst <- use typeState
   jts <- TS.jointsOf tst mut
-  traceM $ "Mut joints: " ++ pShow jts -- (debug)
+  traceM $ "Mut joints: " ++ pShow jts ++ "\n" -- (debug)
   allCIs <- use jointCIs
   let mutCIs@(CIs mutJT _ bhd _) = mfoldTree $ fmap (allCIs M.!) jts
       mutCIsL = IM.elems bhd
 
+  typCIs@(CIs jt ndns _ _) <- use typeCIs
   cor <- fmap clean $ case typeOfMut mut of
-    Add -> snd <$> uses typeCIs (CIs.join_ mutCIs)
+    Add -> return $ snd $ CIs.join_ typCIs mutCIs
     Del -> do
       dly <- use doubly
       flip execStateT IM.empty $ forM_ mutCIsL $ \ci ->
-        (lift (TS.superCI dly tst mutJT ci) >>=) $ \case
+        (lift (TS.superCI dly tst mutJT (traceShowId ci)) >>=) $ \case
         Just Nothing -> return () -- super is identical, do nothing
         Nothing -> do -- super doesn't start here, but ci is inside it
-          old <- lift (CI.symCounts dly ci)
-          traceM $ "old: " ++ pShow (ci,old) -- (debug)
-          modify (IM.unionWith (+) (negate <$> old))
+          ciCounts <- lift (CI.symCounts dly ci)
+          traceM $ "sub: " ++ pShow (ci,ciCounts) -- (debug)
+          modify (IM.unionWith (+) (negate <$> ciCounts))
         Just (Just (super, remainder)) -> do -- subtract subs from super
-          olds <- lift $ mapM (CI.symCounts dly) (ci:remainder)
-          traceM $ "olds: " ++ pShow (ci:remainder,olds)
-          new <- lift (CI.symCounts dly super)
-          traceM $ "new: " ++ pShow (super,new)
-          let delta = IM.unionWith (+) (negate <$> unions olds) new
-          traceM $ "delta: " ++ pShow delta
+          subCounts <- lift $ mapM (CI.symCounts dly) (ci:remainder)
+          traceM $ "subs: " ++ pShow (ci:remainder, subCounts)
+          supCounts <- lift (CI.symCounts dly super)
+          traceM $ "super: " ++ pShow (super,supCounts)
+          let delta = IM.unionWith (+) supCounts $ negate <$> unions subCounts
           modify (IM.unionWith (+) delta)
-  traceM $ "\ncor: " ++ pShow cor
 
-  jt <- use $ typeCIs.CIs.jointType -- (debug)
-  str <- use doubly >>= D.toList -- (debug)
+  traceM $ "\ncor: " ++ pShow cor
+  traceM "\n\n"
+
+  str <- D.toList =<< use doubly -- (debug)
   ns <- use symCounts
-  ndns <- use $ typeCIs.CIs.symCounts
   zoom mutBooks $ MB.insert $
     ME.fromParamsWith jt str (n'Of ns ndns) mut mutCIs cor
 

@@ -500,19 +500,19 @@ superCI :: forall m. PrimMonad m => Doubly (PrimState m) ->
 superCI dly tst jt (CI hd0 shd0 len0 tl0 stl0) = do
 
   bwd <- (D.prev dly hd0 >>=) $ \case
-    Nothing -> return Nothing
+    Nothing -> return $ Just Nothing -- same
     Just (phd, sphd) -> (member tst sphd shd0 >>=) $ \case
-      False -> return Nothing
-      True -> Just <$> expandBwd hd0 shd0 phd sphd 2 -- tl first
+      False -> return $ Just Nothing -- same
+      True -> expandBwd hd0 shd0 phd sphd 2 -- tl first
 
   case bwd of
-    Nothing -> return Nothing -- canceled
+    Nothing -> return Nothing -- canceled (escaladed from expandBwd)
     Just bwd' -> do
       fwd <- (D.next dly tl0 >>=) $ \case
-        Nothing -> return Nothing
+        Nothing -> return Nothing -- same
         Just (ntl, sntl) -> (member tst stl0 sntl >>=) $ \case
-          False -> return Nothing
-          True -> Just <$> expandFwd tl0 stl0 2 ntl sntl
+          False -> return Nothing -- same
+          True -> Just <$> expandFwd tl0 stl0 2 ntl sntl -- GT
 
       return $ Just $ case (bwd', fwd) of
         (Nothing, Nothing) -> Nothing -- same: Just Nothing
@@ -529,9 +529,9 @@ superCI dly tst jt (CI hd0 shd0 len0 tl0 stl0) = do
     expandBwd tl stl = go
       where
         go hd shd !len = (D.prev dly hd >>=) $ \case
-          Nothing -> return $ Just ci -- eos
+          Nothing -> return $ Just $ Just ci -- eos
           Just (phd, sphd) -> (member tst sphd shd >>=) $ \case
-            False -> return $ Just ci -- end
+            False -> return $ Just $ Just ci -- end
             True | JT.member (sphd,shd) jt -> return Nothing -- canceled
                  | otherwise -> go phd sphd (len+1) -- continue
           where ci = CI hd shd len tl stl
