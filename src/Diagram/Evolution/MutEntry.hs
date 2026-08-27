@@ -39,94 +39,6 @@ data MutEntry = ME
   deriving (Show,Eq)
 makeLenses ''MutEntry
 
-fromParams :: Monad m => JointType -> [Sym] ->
-              (Sym -> m Count) -> Mutation -> CIs -> m MutEntry
-fromParams = unflip5 fromParamsWith IM.empty
-
--- | Construct a mutation entry with a count correction
-fromParamsWith :: Monad m => JointType -> [Sym] -> -- TODO: rm JointType and [Sym] (DEBUG)
-                  (Sym -> m Count) -> Mutation -> CIs -> IntMap Int -> m MutEntry
-fromParamsWith jt str n'Of mut cis cor = do
-
-  losses <- sequence $ flip IM.mapWithKey ddns $ \s ddn -> do
-    n' <- n'Of s
-    let n'' = n' + ddn
-        verif_n   = fromMaybe 0 $ IM.lookup s ns
-        verif_n'  = fromMaybe 0 $ IM.lookup s ns'
-        verif_n'' = fromMaybe 0 $ IM.lookup s ns''
-    case () of
-      _ | n' /= verif_n' -> err' $
-          "Count before mut (n') is not what it should be\n"
-          ++ "\nString (before):\n" ++ pShowStr mark t jt str ++ "\n\n"
-          ++ "String (delta):\n"
-          ++ pShowStr mark t (cis^.CIs.jointType) str ++ "\n\n"
-          ++ "String (after):\n" ++ pShowStr mark t jt' str ++ "\n\n"
-          ++ "  mut: " ++ show mut ++ "\n"
-          ++ "  sym: " ++ show s   ++ "\n"
-          ++ "  n': "  ++ show n'  ++ "\n"
-          ++ "  verif_n': " ++ show verif_n' ++ "\n"
-
-        | n'' /= verif_n'' -> err' $
-          "Count after mut (n'') is not what it should be\n"
-          ++ "\nString (before):\n" ++ pShowStr mark t jt str ++ "\n\n"
-          ++ "String (delta):\n"
-          ++ pShowStr mark t (cis^.CIs.jointType) str ++ "\n\n"
-          ++ "String (after):\n" ++ pShowStr mark t jt' str ++ "\n\n"
-          ++ "  mut: " ++ show mut ++ "\n"
-          ++ "  sym: " ++ show s   ++ "\n"
-          ++ "  n': "  ++ show n'  ++ "\n"
-          ++ "  n'': " ++ show n''
-          ++ " (n': " ++ show n'
-          ++ ", cis: " ++ show (IM.lookup s mutSymCounts)
-          ++ ", cor: " ++ show (IM.lookup s cor) ++ ")\n"
-          ++ "  verif_n: "   ++ show verif_n   ++ "\n"
-          ++ "  verif_n': "  ++ show verif_n'  ++ "\n"
-          ++ "  verif_n'': " ++ show verif_n'' ++ "\n"
-          ++ "  cis: " ++ show cis ++ "\n"
-
-        | otherwise -> return $ logFact n' - logFact n''
-
-  return $ ME mut (sum losses) ddns dnm cis
-
-  where
-    t = True
-    two_dnm = negate $ sum ddns
-    mutSymCounts = cis^.CIs.symCounts
-    mutType = typeOfMut mut
-    signedMutSymCounts | mutType == Add = negate <$> mutSymCounts
-                       | otherwise = mutSymCounts
-    ddns = signedMutSymCounts `union` cor
-    union = IM.mergeWithKey (const $ nothingIf (==0) .: (+)) id id
-
-    dnm | even two_dnm = two_dnm `div` 2
-        | otherwise = err' $
-          "Expected even number: " ++ show (two_dnm, ddns) ++ "\n"
-          ++ "\nString (before):\n" ++ pShowStr mark t jt str ++ "\n\n"
-          ++ "String (delta):\n"
-          ++ pShowStr mark t (cis^.CIs.jointType) str ++ "\n\n"
-          ++ "String (after):\n" ++ pShowStr mark t jt' str ++ "\n\n"
-          ++ "  mut: " ++ show mut ++ "\n"
-          ++ "  cis: " ++ show cis ++ "\n"
-          ++ "  cor: " ++ show cor ++ "\n"
-
-    -- verif -- TODO: remove
-    ns    = Simple.symCounts str
-    str'  = Simple.subst jt 256 str
-    ns'   = Simple.symCounts str'
-    jt'   = JT.appMut mut jt
-    str'' = Simple.subst jt' 256 str
-    ns''  = Simple.symCounts str''
-    -- mutJtSign = mutType == Del
-    mark = case mut of
-      AddLeft s0  -> (== s0)
-      AddRight s1 -> (== s1)
-      Add2 s0 s1  -> (\s -> s == s0 || s == s1)
-      DelLeft s0  -> (== s0)
-      DelRight s1 -> (== s1)
-      Del2 s0 s1  -> (\s -> s == s0 || s == s1)
-
-    err' = err . ("fromParamsWith: " ++)
-
 -- | Evaluate full loss given parameters
 eval :: Int -> Int -> Int -> Int -> MutEntry -> Double
 eval m bigN nm vm' (ME mut dnsLoss _ dnm _)
@@ -144,6 +56,108 @@ eval m bigN nm vm' (ME mut dnsLoss _ dnm _)
     res = dnsLoss + dnmLoss
     dnmLoss = Math.dnmLoss m bigN nm vm' dnm
     err' = err . ("eval: " ++)
+
+------------------
+-- CONSTRUCTION --
+------------------
+
+-- | Construct a mutation entry that needs no count correction.
+fromParams :: JointType -> [Sym] -> -- (debug args) TODO: rm
+              (Sym -> Count) -> Mutation -> CIs -> MutEntry
+fromParams jt str n'Of mut cis = fromParamsWith_ jt str n'Of mut cis ddns
+  where mutSymCounts = cis^.CIs.symCounts
+        ddns = case typeOfMut mut of
+          Add -> negate <$> mutSymCounts
+          Del -> mutSymCounts
+
+-- | Construct a mutation entry with a count correction.
+fromParamsWith :: JointType -> [Sym] -> -- (debug args) TODO: rm
+                  (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> MutEntry
+fromParamsWith jt str n'Of mut cis cor = fromParamsWith_ jt str n'Of mut cis ddns
+  where
+    ddns = signedMutSymCounts `union` cor
+    union = IM.mergeWithKey (const $ nothingIf (==0) .: (+)) id id
+    mutSymCounts = cis^.CIs.symCounts
+    signedMutSymCounts = case typeOfMut mut of
+      Add -> negate <$> mutSymCounts
+      Del -> mutSymCounts
+
+-- | Construct a mutation entry given the delta delta sym count (ddns).
+fromParamsWith_ :: JointType -> [Sym] -> -- (debug args) TODO: rm
+                  (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> MutEntry
+fromParamsWith_ jt str n'Of mut cis ddns = ME mut loss ddns dnm cis
+  where
+    t = True
+    two_dnm = negate $ sum ddns
+    mutSymCounts = cis^.CIs.symCounts
+
+    dnm | even two_dnm = two_dnm `div` 2
+        | otherwise = err' $
+          "Expected even number: " ++ show (two_dnm, ddns) ++ "\n"
+          ++ "\nString (before):\n" ++ pShowStr mark t jt str ++ "\n\n"
+          ++ "String (delta):\n"
+          ++ pShowStr mark t (cis^.CIs.jointType) str ++ "\n\n"
+          ++ "String (after):\n" ++ pShowStr mark t jt' str ++ "\n\n"
+          ++ "  mut: " ++ show mut ++ "\n"
+          ++ "  cis: " ++ show cis ++ "\n"
+          ++ "  ddns (cis + cor): " ++ show ddns ++ "\n"
+
+    loss = sum losses
+    losses = flip IM.mapWithKey ddns $ \s ddn -> do
+      let n' = n'Of s
+          n'' = n' + ddn
+          verif_n   = fromMaybe 0 $ IM.lookup s ns
+          verif_n'  = fromMaybe 0 $ IM.lookup s ns'
+          verif_n'' = fromMaybe 0 $ IM.lookup s ns''
+      case () of
+        _ | n' /= verif_n' -> err' $
+            "Count before mut (n') is not what it should be\n"
+            ++ "\nString (before):\n" ++ pShowStr mark t jt str ++ "\n\n"
+            ++ "String (delta):\n"
+            ++ pShowStr mark t (cis^.CIs.jointType) str ++ "\n\n"
+            ++ "String (after):\n" ++ pShowStr mark t jt' str ++ "\n\n"
+            ++ "  mut: " ++ show mut ++ "\n"
+            ++ "  sym: " ++ show s   ++ "\n"
+            ++ "  n': "  ++ show n'  ++ "\n"
+            ++ "  verif_n': " ++ show verif_n' ++ "\n"
+          | n'' /= verif_n'' -> err' $
+            "Count after mut (n'') is not what it should be\n"
+            ++ "\nString (before):\n" ++ pShowStr mark t jt str ++ "\n\n"
+            ++ "String (delta):\n"
+            ++ pShowStr mark t (cis^.CIs.jointType) str ++ "\n\n"
+            ++ "String (after):\n" ++ pShowStr mark t jt' str ++ "\n\n"
+            ++ "  mut: " ++ show mut ++ "\n"
+            ++ "  sym: " ++ show s   ++ "\n"
+            ++ "  n': "  ++ show n'  ++ "\n"
+            ++ "  n'': " ++ show n''
+            ++ " (n': " ++ show n'
+            ++ ", ddns: " ++ show ddn
+            ++ " (cis: " ++ show (IM.lookup s mutSymCounts)
+            ++ ", cor: "
+            ++ show (ddn - fromMaybe 0 (IM.lookup s mutSymCounts)) ++ "))\n"
+            ++ "  verif_n: "   ++ show verif_n   ++ "\n"
+            ++ "  verif_n': "  ++ show verif_n'  ++ "\n"
+            ++ "  verif_n'': " ++ show verif_n'' ++ "\n"
+            ++ "  cis: " ++ show cis ++ "\n"
+          | otherwise -> logFact n' - logFact n''
+
+    -- verif -- TODO: remove
+    ns    = Simple.symCounts str
+    str'  = Simple.subst jt 256 str
+    ns'   = Simple.symCounts str'
+    jt'   = JT.appMut mut jt
+    str'' = Simple.subst jt' 256 str
+    ns''  = Simple.symCounts str''
+    -- mutJtSign = mutType == Del
+    mark = case mut of
+      AddLeft s0  -> (== s0)
+      AddRight s1 -> (== s1)
+      Add2 s0 s1  -> (\s -> s == s0 || s == s1)
+      DelLeft s0  -> (== s0)
+      DelRight s1 -> (== s1)
+      Del2 s0 s1  -> (\s -> s == s0 || s == s1)
+
+    err' = err . ("fromParamsWith_: " ++)
 
 err :: String -> a
 err = error . ("MutEntry." ++)

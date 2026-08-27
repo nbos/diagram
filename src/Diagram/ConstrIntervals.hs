@@ -203,7 +203,9 @@ join_ ciAs ciBs = runIdentity $ flip evalStateT (JoinState ciAs ciBs IM.empty) $
   dns <- use delta
   bhd <- uses2 (_A.byHead) (_B.byHead) $ IM.unionWithKey err'
   btl <- uses2 (_A.byTail) (_B.byTail) $ IM.unionWithKey err'
-  let ns' = L.foldl' (flip $ uc alter) ns (IM.toList dns)
+  let ns' = -- L.foldl' (flip $ uc alter) ns (IM.toList dns)
+        IM.mergeWithKey (\_ n dn -> nothingIf (==0) (n + dn))
+        id id ns dns
 
   return (CIs jt ns' bhd btl, dns)
 

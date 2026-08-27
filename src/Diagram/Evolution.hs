@@ -210,7 +210,7 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
   (enabledMuts, expiredMuts, mutCorDelta) <- case typeOfMut mut of
     Add -> do
       -- APPLY BEFORE PASS
-      (enabled, expired) <- zoom typeState $ TS.pushMut mut
+      (enabled, expired) <- zoom typeState $ TS.pushMut mut -- APPLY
       -- CORRECTIONS AFTER (FOR mutCIs TO BE <: typCIs)
       getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
       getCorrsOf <- uses2 doubly typeState corrsOf
@@ -246,7 +246,7 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
             return $ -- note: will include corrs on expired muts too
               Just $ unions $ (negate <<$>> old) : new
       -- APPLY AFTER PASS
-      (enabled, expired) <- zoom typeState $ TS.pushMut mut
+      (enabled, expired) <- zoom typeState $ TS.pushMut mut -- APPLY
       -- UPDATE TYPE CIs JOINT TYPE
       typeCIs.CIs.jointType %= case mut of
         DelLeft s0  -> JT.deleteLeftMember s0
@@ -338,38 +338,43 @@ introMut mut = do
   tst <- use typeState
   jts <- TS.jointsOf tst mut
   traceM $ "Mut joints: " ++ pShow jts -- (debug)
-  -- TS.pShowTrace tst -- (debug)
   allCIs <- use jointCIs
-  -- traceM . pShow $ allCIs -- (debug)
   let mutCIs@(CIs mutJT _ bhd _) = mfoldTree $ fmap (allCIs M.!) jts
+      mutCIsL = IM.elems bhd
 
-  ns <- use symCounts
-  ndns <- use $ typeCIs.CIs.symCounts
-  let n'Of s = pure $ maybe n (n-) $ IM.lookup s ndns
-        where n = ns U.! s
-
-  dly <- use doubly
   cor <- fmap clean $ case typeOfMut mut of
     Add -> snd <$> uses typeCIs (CIs.join_ mutCIs)
-    Del -> flip execStateT IM.empty $ forM_ (IM.elems bhd) $ \ci ->
-      (lift (TS.superCI dly tst mutJT ci) >>=) $ \case
-      Just Nothing -> return () -- super is identical, do nothing
-      Nothing -> do -- super doesn't start here, but ci is inside it
-        old <- lift (CI.symCounts dly ci)
-        modify (IM.unionWith (+) (negate <$> old))
-      Just (Just (super, remainder)) -> do -- subtract subs from super
-        olds <- lift $ mapM (CI.symCounts dly) (ci:remainder)
-        new <- lift (CI.symCounts dly super)
-        let delta = IM.unionWith (+) (negate <$> unions olds) new
-        modify (IM.unionWith (+) delta)
+    Del -> do
+      dly <- use doubly
+      flip execStateT IM.empty $ forM_ mutCIsL $ \ci ->
+        (lift (TS.superCI dly tst mutJT ci) >>=) $ \case
+        Just Nothing -> return () -- super is identical, do nothing
+        Nothing -> do -- super doesn't start here, but ci is inside it
+          old <- lift (CI.symCounts dly ci)
+          traceM $ "old: " ++ pShow (ci,old) -- (debug)
+          modify (IM.unionWith (+) (negate <$> old))
+        Just (Just (super, remainder)) -> do -- subtract subs from super
+          olds <- lift $ mapM (CI.symCounts dly) (ci:remainder)
+          traceM $ "olds: " ++ pShow (ci:remainder,olds)
+          new <- lift (CI.symCounts dly super)
+          traceM $ "new: " ++ pShow (super,new)
+          let delta = IM.unionWith (+) (negate <$> unions olds) new
+          traceM $ "delta: " ++ pShow delta
+          modify (IM.unionWith (+) delta)
+  traceM $ "\ncor: " ++ pShow cor
 
   jt <- use $ typeCIs.CIs.jointType -- (debug)
-  str <- D.toList dly -- (debug)
-  e <- ME.fromParamsWith jt str n'Of mut mutCIs cor
-  zoom mutBooks $ MB.insert e
+  str <- use doubly >>= D.toList -- (debug)
+  ns <- use symCounts
+  ndns <- use $ typeCIs.CIs.symCounts
+  zoom mutBooks $ MB.insert $
+    ME.fromParamsWith jt str (n'Of ns ndns) mut mutCIs cor
+
   where
     clean = IM.filter (/= 0)
     unions = fromMaybe IM.empty . foldTree (IM.unionWith (+))
+    n'Of ns ndns s = maybe n (n-) $ IM.lookup s ndns
+      where n = ns U.! s
 
 ----------
 -- INIT --
@@ -398,8 +403,8 @@ init_ m bigN dly ns allCIs (jt, memJointCIs) = do
 
   str <- D.toList dly -- TODO: rm
   let es = M.mergeWithKey
-        (Just . runIdentity .:. ME.fromParamsWith jt str n'Of) -- CIs * cor
-        (M.mapWithKey $ runIdentity .: ME.fromParams jt str n'Of) -- only CIs
+        (Just .:. ME.fromParamsWith jt str n'Of) -- CIs * cor
+        (M.mapWithKey $ ME.fromParams jt str n'Of) -- only CIs
         (fmap $ err' . ("have cor, but CIs missing: " ++) . show) -- only cor
         cisByMut corByMut
 
@@ -416,7 +421,7 @@ init_ m bigN dly ns allCIs (jt, memJointCIs) = do
     union = M.unionWith (IM.unionWith (+))
     allJoints = M.keys allCIs
     memCIs@(CIs _ ndns _ _) = mfoldTree $ M.elems memJointCIs
-    n'Of s = pure $ maybe n (n-) $ IM.lookup s ndns
+    n'Of s = maybe n (n-) $ IM.lookup s ndns
       where n = ns U.! s
     err' = err . ("init: " ++)
 
