@@ -516,15 +516,15 @@ superCI dly tst jt (CI hd0 shd0 len0 tl0 stl0) = do
 
       return $ Just $ case (bwd', fwd) of
         (Nothing, Nothing) -> Nothing -- same: Just Nothing
-        (Nothing, Just (CI _ _ lenFwd tl stl, inter)) ->
+        (Nothing, Just (CI _ _ lenFwd tl stl, rems)) ->
           let len = len0 + lenFwd - 1
-          in Just (CI hd0 shd0 len tl stl, inter)
-        (Just (CI hd shd lenBwd _ _), Nothing) ->
+          in Just (CI hd0 shd0 len tl stl, rems)
+        (Just lrem@(CI hd shd lenBwd _ _), Nothing) ->
           let len = lenBwd + len0 - 1
-          in Just (CI hd shd len tl0 stl0, [])
-        (Just (CI hd shd lenBwd _ _), Just (CI _ _ lenFwd tl stl, inter)) ->
+          in Just (CI hd shd len tl0 stl0, [lrem])
+        (Just lrem@(CI hd shd lenBwd _ _), Just (CI _ _ lenFwd tl stl, rems)) ->
           let len = lenBwd + len0 + lenFwd - 2
-          in Just (CI hd shd len tl stl, inter)
+          in Just (CI hd shd len tl stl, lrem:rems)
   where
     expandBwd tl stl = go
       where
