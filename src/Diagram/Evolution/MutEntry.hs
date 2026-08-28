@@ -97,10 +97,10 @@ fromParamsWith_ jt str n'Of mut cis ddns = ME mut loss ddns dnm cis
     dnm | even two_dnm = two_dnm `div` 2
         | otherwise = err' $
           "Expected even number: " ++ show (two_dnm, ddns) ++ "\n"
-          ++ "\nString (before):\n" ++ pShowStr mark t jt str ++ "\n\n"
+          ++ "\nString (before):\n" ++ pShowStr (const False) t jt str ++ "\n\n"
           ++ "String (delta):\n"
-          ++ pShowStr mark t (cis^.CIs.jointType) str ++ "\n\n"
-          ++ "String (after):\n" ++ pShowStr mark t jt' str ++ "\n\n"
+          ++ pShowStr (const False) t (cis^.CIs.jointType) str ++ "\n\n"
+          ++ "String (after):\n" ++ pShowStr (const False) t jt' str ++ "\n\n"
           ++ "  mut: " ++ show mut ++ "\n"
           ++ "  cis: " ++ show cis ++ "\n"
           ++ "  ddns (cis + cor): " ++ show ddns ++ "\n"
@@ -112,6 +112,7 @@ fromParamsWith_ jt str n'Of mut cis ddns = ME mut loss ddns dnm cis
           verif_n   = fromMaybe 0 $ IM.lookup s ns
           verif_n'  = fromMaybe 0 $ IM.lookup s ns'
           verif_n'' = fromMaybe 0 $ IM.lookup s ns''
+          mark = (==s)
 
       case () of
         _ | n' /= verif_n' -> err' $
@@ -155,13 +156,13 @@ fromParamsWith_ jt str n'Of mut cis ddns = ME mut loss ddns dnm cis
     str'' = Simple.subst jt' 256 str
     ns''  = Simple.symCounts str''
     -- mutJtSign = mutType == Del
-    mark = case mut of
-      AddLeft s0  -> (== s0)
-      AddRight s1 -> (== s1)
-      Add2 s0 s1  -> (\s -> s == s0 || s == s1)
-      DelLeft s0  -> (== s0)
-      DelRight s1 -> (== s1)
-      Del2 s0 s1  -> (\s -> s == s0 || s == s1)
+    -- mark = case mut of
+    --   AddLeft s0  -> (== s0)
+    --   AddRight s1 -> (== s1)
+    --   Add2 s0 s1  -> (\s -> s == s0 || s == s1)
+    --   DelLeft s0  -> (== s0)
+    --   DelRight s1 -> (== s1)
+    --   Del2 s0 s1  -> (\s -> s == s0 || s == s1)
 
     err' = err . ("fromParamsWith_: " ++)
 

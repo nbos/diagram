@@ -40,8 +40,8 @@ import Diagram.Util
 -- associated with a mutation (add or del, all at once) required to be
 -- added in order for it to match the actual change in symbol counts
 -- produced by the mutation. Corrections are signed to be *added* to the
--- CIs.symCounts before they are subtracted (add) or added (del) to the
--- joint type's own CIs.symCounts.
+-- CIs.symCounts before they are subtracted/negated (Add) or added (Del)
+-- to the joint type's own CIs.symCounts.
 corrsOf :: forall m. PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
 corrsOf dly tst ci = do
@@ -95,18 +95,18 @@ corrsOf dly tst ci = do
 
 -- | Given a non-empty list of overlapping (connecting) intervals after
 -- an add mutation (alternating [in-]add-in-add-etc.), return the
--- appropriate correction on delta delta symbol counts (ddns)
+-- appropriate correction on the mut's CIs' sym counts.
 addMutCorrOf :: NonEmpty CI -> IntMap Int
 addMutCorrOf cis = L.foldl' (flip f) IM.empty (NE.init cis) &
   case compare (even newLen) (even oldLen) of
-    LT -> IM.insertWith (+) tailSym 1
+    LT -> IM.insertWith (+) tailSym (-1)
     EQ -> id
-    GT -> IM.insertWith (+) tailSym (-1)
+    GT -> IM.insertWith (+) tailSym 1
   where
-    newLen = sum ((^.ciLength) <$> cis) -- constituents lengths
+    newLen = sum (_ciLength <$> cis) -- constituents lengths
              - (length cis - 1) -- overlaps
 
-    f (CI _ _ len _ stl) | even len = IM.insertWith (+) stl 1
+    f (CI _ _ len _ stl) | even len = IM.insertWith (+) stl (-1)
                          | otherwise = id
 
     CI _ _ oldLen _ tailSym = NE.last cis
