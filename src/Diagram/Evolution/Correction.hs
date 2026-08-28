@@ -4,13 +4,10 @@
 module Diagram.Evolution.Correction (module Diagram.Evolution.Correction) where
 
 import Prelude hiding (init)
-import Debug.Trace
 
 import Control.Monad
-import Control.Lens hiding (both,last1,Index,(:>),index)
 import Control.Monad.State.Strict
 
-import qualified Data.List as L
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NE
 
@@ -21,7 +18,7 @@ import qualified Data.IntMap.Strict as IM
 
 import Diagram.Primitive
 import Diagram.String
-import Diagram.ConstrInterval(CI(..), ciLength)
+import Diagram.ConstrInterval(CI(..))
 
 import Diagram.Evolution.Mutation (Mutation(..))
 import Diagram.Evolution.TypeState (TypeState)
@@ -45,40 +42,41 @@ import Diagram.Util
 corrsOf :: forall m. PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
 corrsOf dly tst ci = do
-  traceShowM ci
+  -- traceShowM ci
 
   -- [DEL]: decompose, treat all delMuts
   delMutCorrs <- delMutCorrsOf dly tst ci
-  traceM $ "del correction: " ++ show delMutCorrs
+  -- traceM $ "del correction: " ++ show delMutCorrs
 
   -- [ADD]: grab the largest chain possible, if CI is first in the chain
   addMutCorrs <- (prevCI ci >>=) $ \case
-    Nothing -> ((traceM "no CI before" >> nextCIs ci) >>=) $ \case
+    Nothing -> ((-- traceM "no CI before" >>
+                 nextCIs ci) >>=) $ \case
       Nothing -> return M.empty
       Just (addMut, nexts) -> do
-        traceM $ "CIs after: " ++ show (addMut,nexts)
+        -- traceM $ "CIs after: " ++ show (addMut,nexts)
         return $ M.singleton addMut $ addMutCorrOf (ci:|nexts)
 
-    Just p@(addMut, prv) -> ((traceM ("prev CI: " ++ show p)
-                              >> nextCIs ci) >>=) $ \case
+    Just (addMut, prv) -> ((-- traceM ("prev CI: " ++ show p) >>
+                              nextCIs ci) >>=) $ \case
       Nothing -> do
-        traceM "no CIs after"
+        -- traceM "no CIs after"
         return $ M.singleton addMut $ addMutCorrOf (prv:|[ci])
 
-      Just p'@(addMut', nexts)
+      Just (addMut', nexts)
         | addMut == addMut' -> do
-            traceM $ "CIs after (same mut): " ++ show p'
+            -- traceM $ "CIs after (same mut): " ++ show p'
             return $ M.singleton addMut $ addMutCorrOf (prv:|ci:nexts)
 
         | otherwise -> do
-            traceM $ "CIs after: " ++ show p'
+            -- traceM $ "CIs after: " ++ show p'
             return $ M.fromListWithKey col
               [ (addMut, addMutCorrOf (prv:|[ci]))
               , (addMut', addMutCorrOf (ci:|nexts)) ]
 
   let res = clean $ M.unionWithKey col delMutCorrs addMutCorrs
-  traceM $ "all correction: " ++ show res
-  traceM ""
+  -- traceM $ "all correction: " ++ show res
+  -- traceM ""
   return res
 
   where

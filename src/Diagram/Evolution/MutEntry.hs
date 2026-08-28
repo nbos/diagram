@@ -4,7 +4,6 @@
 {-# LANGUAGE TupleSections, LambdaCase, BangPatterns #-}
 module Diagram.Evolution.MutEntry (module Diagram.Evolution.MutEntry) where
 
-import Debug.Trace
 import Control.Lens hiding (both,last1,Index,(:>),index)
 
 import Data.Maybe
@@ -75,8 +74,6 @@ fromParams jt str n'Of mut cis = fromParamsWith_ jt str n'Of mut cis ddns
 fromParamsWith :: JointType -> [Sym] -> -- (debug args) TODO: rm
                   (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> MutEntry
 fromParamsWith jt str n'Of mut cis@(CIs _ mutSymCounts _ _) cor =
-  trace ("mut: " ++ show mut) $
-  trace ("cor: " ++ show cor) $
   fromParamsWith_ jt str n'Of mut cis ddns
   where
     ddns = case typeOfMut mut of

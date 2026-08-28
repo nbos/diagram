@@ -27,7 +27,6 @@ import qualified Data.IntMap.Strict as IM
 
 import qualified Data.Vector.Unboxed as U
 
-import Diagram.Pretty
 import Diagram.Primitive
 
 import Diagram.Joints (Joints)
@@ -315,7 +314,8 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
                 ( const IM.empty ) -- no eDdn, no cor ==> no dnsLoss
                 ( IM.mapWithKey $ \s (eDdn, eDdn') -> -- cor only
                     let n = ns U.! s
-                        ndn = typNdns IM.! s -- have to look-up
+                        ndn = fromMaybe 0 $
+                              IM.lookup s typNdns -- have to look-up
                         n' = n - ndn -- old == new
                         old_n'' = n' + eDdn
                         new_n'' = n' + eDdn'
@@ -340,7 +340,6 @@ introMut mut = do
   traceM $ "Introducing mut: " ++ show mut
   tst <- use typeState
   jts <- TS.jointsOf tst mut
-  traceM $ "Mut joints: " ++ pShow jts ++ "\n" -- (debug)
   allCIs <- use jointCIs
   let mutCIs@(CIs mutJT _ bhd _) = mfoldTree $ fmap (allCIs M.!) jts
       mutCIsL = IM.elems bhd
@@ -351,22 +350,19 @@ introMut mut = do
     Del -> do
       dly <- use doubly
       flip execStateT IM.empty $ forM_ mutCIsL $ \ci ->
-        (lift (TS.superCI dly tst mutJT (traceShowId ci)) >>=) $ \case
+        (lift (TS.superCI dly tst mutJT ci) >>=) $ \case
         Just Nothing -> return () -- super is identical, do nothing
         Nothing -> do -- super doesn't start here, but ci is inside it
           ciCounts <- lift (CI.symCounts dly ci)
-          traceM $ "sub: " ++ pShow (ci,ciCounts) -- (debug)
+          -- traceM $ "sub: " ++ pShow (ci,ciCounts) -- (debug)
           modify (IM.unionWith (+) (negate <$> ciCounts))
         Just (Just (super, remainder)) -> do -- subtract subs from super
           subCounts <- lift $ mapM (CI.symCounts dly) (ci:remainder)
-          traceM $ "subs: " ++ pShow (ci:remainder, subCounts)
+          -- traceM $ "subs: " ++ pShow (ci:remainder, subCounts)
           supCounts <- lift (CI.symCounts dly super)
-          traceM $ "super: " ++ pShow (super,supCounts)
+          -- traceM $ "super: " ++ pShow (super,supCounts)
           let delta = IM.unionWith (+) supCounts $ negate <$> unions subCounts
           modify (IM.unionWith (+) delta)
-
-  traceM $ "\ncor: " ++ pShow cor
-  traceM "\n\n"
 
   str <- D.toList =<< use doubly -- (debug)
   ns <- use symCounts

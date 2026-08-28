@@ -448,7 +448,6 @@ decomposeIn str tst ci@(CI hd shd len tl _)
     go mcis _ _ _ [] = return mcis
     go mcis p i0 s0 ((i1,s1):rest) = do
       muts <- delMutsOf tst s0 s1
-      -- traceShowM (s0,s1,muts)
       let (alive, ended) = L.partition (flip elem muts . fst) mcis
           started = (, (p, CI i0 s0 2 i1 s1))
                     <$> filter (`notElem` (fst <$> mcis)) muts
