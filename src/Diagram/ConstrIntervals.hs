@@ -222,7 +222,9 @@ join_ ciAs ciBs = runIdentity $ flip evalStateT (JoinState ciAs ciBs IM.empty) $
     -- inc = inc_ 1
     dec = inc_ (-1)
     inc_ :: Int -> Sym -> StateT JoinState Identity ()
-    inc_ d s = delta %= alter s d
+    inc_ d s = do
+      traceM $ "inc_ " ++ show d ++ " " ++ show s
+      delta %= alter s d
 
     -- | Given a constructive interval from 'B' whose head collides with
     -- the tail of an interval of the other set 'A', join together, fix

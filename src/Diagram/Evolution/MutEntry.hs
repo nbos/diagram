@@ -4,6 +4,7 @@
 {-# LANGUAGE TupleSections, LambdaCase, BangPatterns #-}
 module Diagram.Evolution.MutEntry (module Diagram.Evolution.MutEntry) where
 
+import Debug.Trace
 import Control.Lens hiding (both,last1,Index,(:>),index)
 
 import Data.Maybe
@@ -73,14 +74,16 @@ fromParams jt str n'Of mut cis = fromParamsWith_ jt str n'Of mut cis ddns
 -- | Construct a mutation entry with a count correction.
 fromParamsWith :: JointType -> [Sym] -> -- (debug args) TODO: rm
                   (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> MutEntry
-fromParamsWith jt str n'Of mut cis cor = fromParamsWith_ jt str n'Of mut cis ddns
+fromParamsWith jt str n'Of mut cis@(CIs _ mutSymCounts _ _) cor =
+  trace ("mut: " ++ show mut) $
+  trace ("cor: " ++ show cor) $
+  fromParamsWith_ jt str n'Of mut cis ddns
   where
-    ddns = signedMutSymCounts `union` cor
+    ddns = case typeOfMut mut of
+      Add -> negate <$> corMutSymCounts
+      Del -> corMutSymCounts -- signedMutSymCounts `union` cor
+    corMutSymCounts = mutSymCounts `union` cor
     union = IM.mergeWithKey (const $ nothingIf (==0) .: (+)) id id
-    mutSymCounts = cis^.CIs.symCounts
-    signedMutSymCounts = case typeOfMut mut of
-      Add -> negate <$> mutSymCounts
-      Del -> mutSymCounts
 
 -- | Construct a mutation entry given the delta delta sym count (ddns).
 fromParamsWith_ :: JointType -> [Sym] -> -- (debug args) TODO: rm
@@ -109,6 +112,7 @@ fromParamsWith_ jt str n'Of mut cis ddns = ME mut loss ddns dnm cis
           verif_n   = fromMaybe 0 $ IM.lookup s ns
           verif_n'  = fromMaybe 0 $ IM.lookup s ns'
           verif_n'' = fromMaybe 0 $ IM.lookup s ns''
+
       case () of
         _ | n' /= verif_n' -> err' $
             "Count before mut (n') is not what it should be\n"
@@ -120,6 +124,7 @@ fromParamsWith_ jt str n'Of mut cis ddns = ME mut loss ddns dnm cis
             ++ "  sym: " ++ show s   ++ "\n"
             ++ "  n': "  ++ show n'  ++ "\n"
             ++ "  verif_n': " ++ show verif_n' ++ "\n"
+
           | n'' /= verif_n'' -> err' $
             "Count after mut (n'') is not what it should be\n"
             ++ "\nString (before):\n" ++ pShowStr mark t jt str ++ "\n\n"
@@ -139,6 +144,7 @@ fromParamsWith_ jt str n'Of mut cis ddns = ME mut loss ddns dnm cis
             ++ "  verif_n': "  ++ show verif_n'  ++ "\n"
             ++ "  verif_n'': " ++ show verif_n'' ++ "\n"
             ++ "  cis: " ++ show cis ++ "\n"
+
           | otherwise -> logFact n' - logFact n''
 
     -- verif -- TODO: remove
