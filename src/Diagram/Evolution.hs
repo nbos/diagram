@@ -261,6 +261,8 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
   zoom mutBooks $ mapM_ MB.delete $ Set.toList expiredMuts
   -- INSERT EACH NEWLY ENABLED MUTS
   mapM_ introMut $ Set.toList enabledMuts
+  -- TODO: fish out recip of mut from enabledMuts and intro it directly
+  -- without going through introMut?
 
   -- UPDATE MUT BOOKS
   ns <- use symCounts
@@ -281,12 +283,13 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
         typNdns mutDdns
 
   getAffectedMuts <- mutBooks `uses` MB.affectedMuts
-  countUpdateIlsByAffected <-
-    let unionIl = M.unionWith
-                  (err' . ("duplicate sym count intervals: " ++) . show .: (,))
-    in fmap (fromMaybe M.empty . foldTree unionIl) $
-       forM (IM.toList countUpdateIntervals) $
-       \(s,ddn) -> M.fromSet (const $ IM.singleton s ddn) <$> getAffectedMuts s
+  let unionIl = M.unionWithKey $
+                const $ IM.unionWithKey
+                (err' . ("duplicate sym count intervals: " ++) . show .:. (,,))
+  countUpdateIlsByAffected <- fmap (fromMaybe M.empty . foldTree unionIl) $
+                              forM (IM.toList countUpdateIntervals) $
+                              \(s,ddn) -> M.fromSet (const $ IM.singleton s ddn)
+                                          <$> getAffectedMuts s
 
   -- mutEntryUpdate :: COUNT_UPDATE * CORR_UPDATE
   let mutEntryUpdates = M.mergeWithKey (\_ -> Just .: (,))
