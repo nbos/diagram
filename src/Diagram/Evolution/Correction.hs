@@ -97,19 +97,14 @@ corrsOf dly tst ci = do
 -- an add mutation (alternating [in-]add-in-add-etc.), return the
 -- appropriate correction on the mut's CIs' sym counts.
 addMutCorrOf :: NonEmpty CI -> IntMap Int
-addMutCorrOf cis = L.foldl' (flip f) IM.empty (NE.init cis) &
-  case compare (even newLen) (even oldLen) of
-    LT -> IM.insertWith (+) tailSym (-1)
-    EQ -> id
-    GT -> IM.insertWith (+) tailSym 1
-  where
-    newLen = sum (_ciLength <$> cis) -- constituents lengths
-             - (length cis - 1) -- overlaps
-
-    f (CI _ _ len _ stl) | even len = IM.insertWith (+) stl (-1)
-                         | otherwise = id
-
-    CI _ _ oldLen _ tailSym = NE.last cis
+addMutCorrOf cis = flip execState IM.empty $ do
+  forM_ (NE.init cis) $ \(CI _ _ len _ stl) ->
+    when (even len) $ modify $ IM.insertWith (+) stl (-1)
+  let CI _ _ oldLen _ tailSym = NE.last cis
+      newLen = sum (_ciLength <$> cis) -- constituents lengths
+               - (length cis - 1) -- overlaps
+      d = fromEnum (even newLen) - fromEnum (even oldLen)
+  when (d /= 0) $ modify $ IM.insertWith (+) tailSym d
 
 -- | Given a constructive interval of the joint type (in), count all
 -- the differences in symbol counts between the symCounts of the CIs
