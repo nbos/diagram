@@ -36,9 +36,9 @@ import Diagram.Util
 -- type, return the set of corrections on the symCounts of each CIs
 -- associated with a mutation (add or del, all at once) required to be
 -- added in order for it to match the actual change in symbol counts
--- produced by the mutation. Corrections are signed to be *added* to the
--- CIs.symCounts before they are subtracted/negated (Add) or added (Del)
--- to the joint type's own CIs.symCounts.
+-- produced by the mutation. Corrections are signed to be added to the
+-- CIs.symCounts *before* they are subtracted/negated (Add) or added
+-- (Del) to the joint type's own CIs.symCounts.
 corrsOf :: forall m. PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
 corrsOf dly tst ci = do

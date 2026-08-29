@@ -237,16 +237,21 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
       getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
       getCorrsOf <- uses2 doubly typeState corrsOf
       corrsDelta <- fmap (unions . catMaybes) $ forM mutCIsL $
-        \ci -> (getSuperCI ci >>=) $ \case
-          Nothing -> Just . ffmap negate <$> getCorrsOf ci
-          Just Nothing -> return Nothing -- same: id
-          Just (Just (super, rems)) -> do
-            old <- sequence $ getCorrsOf ci : (getCorrsOf <$> rems)
+        \ci -> (getSuperCI (traceShowId ci) >>=) $ \case
+          Just (Just (super, adjacent)) -> do
+            traceShowM ("super", super)
+            traceShowM ("adjacents", adjacent)
+            old <- sequence $ getCorrsOf <$> adjacent
+            traceShowM ("old", old)
             new <- getCorrsOf super
+            traceShowM ("new", new)
+            traceM "delta:"
             return $ -- note: will include corrs on enabled muts too
-              Just $ unions $ new : (negate <<<$>>> old)
+              Just $ traceShowId $ unions $ new : (negate <<<$>>> old)
+          _else -> return Nothing
       -- UPDATE TYPE CIs (join)
       typeCIs %= CIs.join mutCIs
+      -- TODO: couldn't CIs.join give us adjacent for free?
 
       return ( enabled, expired
              , corrsDelta `M.withoutKeys` enabled )
@@ -257,17 +262,21 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
       getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
       getCorrsOf <- uses2 doubly typeState corrsOf
       corrsDelta <- fmap (unions . catMaybes) $ forM mutCIsL $
-        \ci -> (getSuperCI ci >>=) $ \case
-          Nothing -> Just <$> getCorrsOf ci
-          Just Nothing -> return Nothing -- same: id
+        \ci -> (getSuperCI (traceShowId ci) >>=) $ \case
           Just (Just (super, rems)) -> do
+            traceShowM ("super", super)
+            traceShowM ("rems", rems)
             -- UPDATE TYPE CIs (delete super, insert remainder)
             typeCIs %== ( L.foldl' (>=>) (CIs.deleteExisting dly super) $
                           CIs.insertDisjoint dly <$> rems )
             old <- getCorrsOf super
-            new <- sequence $ getCorrsOf ci : (getCorrsOf <$> rems)
+            traceShowM ("old", old)
+            new <- sequence $ getCorrsOf <$> rems
+            traceShowM ("new", new)
+            traceM "delta:"
             return $ -- note: will include corrs on expired muts too
-              Just $ unions $ (negate <<$>> old) : new
+              Just $ traceShowId $ unions $ (negate <<$>> old) : new
+          _else -> return Nothing
       -- APPLY AFTER PASS
       (enabled, expired) <- zoom typeState $ TS.pushMut mut -- APPLY
       -- UPDATE TYPE CIs JOINT TYPE
@@ -322,33 +331,35 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
   mutEntries <- use $ mutBooks.byMut
   sequence_ $ flip2 M.intersectionWith
     mutEntries mutEntryUpdates $
-    \e@(ME _ eDnsLoss eDdns eDnm _) (nsIls, cor) -> do
-      let sumCor = sum cor & \r -> if even r then r
-            else err' $ "expected even number: " ++ show (r,cor)
+    \e@(ME eMut eDnsLoss eDdns eDnm _) (nsIls, deltaCor) -> do
+      let signedDeltaCor = case typeOfMut eMut of
+            Add -> negate <$> deltaCor
+            Del -> deltaCor
+          sumSignedDeltaCor = sum signedDeltaCor & \r -> if even r then r
+            else err' $ "expected even number: " ++ show (r,signedDeltaCor)
           eDdnsIls = -- zip eDdns eDdns'
             IM.mergeWithKey (\_ ddn c -> Just (ddn, ddn + c))
-            (const IM.empty) ((0,) <$>) eDdns cor
+            (const IM.empty) ((0,) <$>) eDdns signedDeltaCor
           deDnsLoss = sum $ IM.mergeWithKey
-                ( \_ (old_n', new_n', dLoss) (eDdn, eDdn') -> Just $
-                    let old_n'' = old_n' + eDdn
-                        -- old_loss = logFact old_n' - logFact old_n''
-                        new_n'' = new_n' + eDdn'
-                        -- new_loss = logFact new_n' - logFact new_n''
-                    in dLoss - logFact new_n'' + logFact old_n'' )
-                ( const IM.empty ) -- no eDdn, no cor ==> no dnsLoss
-                ( IM.mapWithKey $ \s (eDdn, eDdn') -> -- cor only
-                    let n = ns U.! s
-                        ndn = fromMaybe 0 $
-                              IM.lookup s typNdns -- have to look-up
-                        n' = n - ndn -- old == new
-                        old_n'' = n' + eDdn
-                        new_n'' = n' + eDdn'
-                    in logFact old_n'' - logFact new_n'' )
+            ( \_ (old_n', new_n', dLoss) (eDdn, eDdn') -> Just $
+              let old_n'' = old_n' + eDdn
+                  -- old_loss = logFact old_n' - logFact old_n''
+                  new_n'' = new_n' + eDdn'
+                  -- new_loss = logFact new_n' - logFact new_n''
+              in dLoss - logFact new_n'' + logFact old_n'' )
+            ( const IM.empty ) -- no eDdn, no cor ==> no dnsLoss
+            ( IM.mapWithKey $ \s (eDdn, eDdn') -> -- cor only
+                let n       = ns U.! s
+                    ndn     = fromMaybe 0 $ IM.lookup s typNdns
+                    n'      = n - ndn -- old == new
+                    old_n'' = n' + eDdn
+                    new_n'' = n' + eDdn'
+                in logFact old_n'' - logFact new_n'' )
                 nsIls eDdnsIls
       zoom mutBooks $ -- update state
         MB.update $ e{ _ddSymCountsLoss = eDnsLoss + deDnsLoss
                      , _ddSymCounts     = IM.union (snd <$> eDdnsIls) eDdns
-                     , _dJointCount     = eDnm + (sumCor `div` 2) }
+                     , _dJointCount     = eDnm + (sumSignedDeltaCor `div` 2) }
 
   jointCount += mutDnm -- delta nm
 

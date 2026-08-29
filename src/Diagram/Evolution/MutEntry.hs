@@ -78,7 +78,7 @@ fromParamsWith jt str n'Of mut cis@(CIs _ mutSymCounts _ _) cor =
   where
     ddns = case typeOfMut mut of
       Add -> negate <$> corMutSymCounts
-      Del -> corMutSymCounts -- signedMutSymCounts `union` cor
+      Del -> corMutSymCounts
     corMutSymCounts = mutSymCounts `union` cor
     union = IM.mergeWithKey (const $ nothingIf (==0) .: (+)) id id
 
