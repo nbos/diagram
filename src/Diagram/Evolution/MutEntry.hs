@@ -85,21 +85,17 @@ fromParamsWith jt str n'Of mut cis@(CIs _ mutSymCounts _ _) cor =
 -- | Construct a mutation entry given the delta delta sym count (ddns).
 fromParamsWith_ :: JointType -> [Sym] -> -- (debug args) TODO: rm
                   (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> MutEntry
-fromParamsWith_ jt str n'Of mut cis ddns = ME mut loss ddns dnm cis
+fromParamsWith_ jt str n'Of mut cis@(CIs mutJT mutCounts _ _) ddns =
+  ME mut loss ddns dnm cis
   where
-    t = True
     two_dnm = negate $ sum ddns
-    mutSymCounts = cis^.CIs.symCounts
-
     dnm | even two_dnm = two_dnm `div` 2
         | otherwise = err' $
           "Expected even number: " ++ show (two_dnm, ddns) ++ "\n"
-          ++ "\nString (before):\n" ++ pShowStr (const False) t jt str ++ "\n\n"
-          ++ "String (delta):\n"
-          ++ pShowStr (const False) t (cis^.CIs.jointType) str ++ "\n\n"
-          ++ "String (after):\n" ++ pShowStr (const False) t jt' str ++ "\n\n"
+          ++ "\nString (before):\n" ++ pShowStr jt    str ++ "\n\n"
+          ++ "String (delta):\n"    ++ pShowStr mutJT str ++ "\n\n"
+          ++ "String (after):\n"    ++ pShowStr jt'   str ++ "\n\n"
           ++ "  mut: " ++ show mut ++ "\n"
-          ++ "  cis: " ++ show cis ++ "\n"
           ++ "  ddns (cis + cor): " ++ show ddns ++ "\n"
 
     loss = sum losses
@@ -109,15 +105,13 @@ fromParamsWith_ jt str n'Of mut cis ddns = ME mut loss ddns dnm cis
           verif_n   = fromMaybe 0 $ IM.lookup s ns
           verif_n'  = fromMaybe 0 $ IM.lookup s ns'
           verif_n'' = fromMaybe 0 $ IM.lookup s ns''
-          mark = (==s)
 
       case () of
         _ | n' /= verif_n' -> err' $
             "Count before mut (n') is not what it should be\n"
-            ++ "\nString (before):\n" ++ pShowStr mark t jt str ++ "\n\n"
-            ++ "String (delta):\n"
-            ++ pShowStr mark t (cis^.CIs.jointType) str ++ "\n\n"
-            ++ "String (after):\n" ++ pShowStr mark t jt' str ++ "\n\n"
+            ++ "\nString (before):\n" ++ pShowStrMark (==s) jt    str ++ "\n\n"
+            ++ "String (delta):\n"    ++ pShowStrMark (==s) mutJT str ++ "\n\n"
+            ++ "String (after):\n"    ++ pShowStrMark (==s) jt'   str ++ "\n\n"
             ++ "  mut: " ++ show mut ++ "\n"
             ++ "  sym: " ++ show s   ++ "\n"
             ++ "  n': "  ++ show n'  ++ "\n"
@@ -125,23 +119,19 @@ fromParamsWith_ jt str n'Of mut cis ddns = ME mut loss ddns dnm cis
 
           | n'' /= verif_n'' -> err' $
             "Count after mut (n'') is not what it should be\n"
-            ++ "\nString (before):\n" ++ pShowStr mark t jt str ++ "\n\n"
-            ++ "String (delta):\n"
-            ++ pShowStr mark t (cis^.CIs.jointType) str ++ "\n\n"
-            ++ "String (after):\n" ++ pShowStr mark t jt' str ++ "\n\n"
+            ++ "\nString (before):\n" ++ pShowStrMark (==s) jt    str ++ "\n\n"
+            ++ "String (delta):\n"    ++ pShowStrMark (==s) mutJT str ++ "\n\n"
+            ++ "String (after):\n"    ++ pShowStrMark (==s) jt'   str ++ "\n\n"
             ++ "  mut: " ++ show mut ++ "\n"
             ++ "  sym: " ++ show s   ++ "\n"
             ++ "  n': "  ++ show n'  ++ "\n"
             ++ "  n'': " ++ show n''
-            ++ " (n': " ++ show n'
-            ++ ", ddns: " ++ show ddn
-            ++ " (cis: " ++ show (IM.lookup s mutSymCounts)
-            ++ ", cor: "
-            ++ show (ddn - fromMaybe 0 (IM.lookup s mutSymCounts)) ++ "))\n"
+            ++ " (n': " ++ show n' ++ ", ddns: " ++ show ddn
+            ++ " (cis: " ++ show (IM.lookup s mutCounts)
+            ++ ", cor: " ++ show (ddn - fromMaybe 0 (mutCounts IM.!? s)) ++ "))\n"
             ++ "  verif_n: "   ++ show verif_n   ++ "\n"
             ++ "  verif_n': "  ++ show verif_n'  ++ "\n"
             ++ "  verif_n'': " ++ show verif_n'' ++ "\n"
-            ++ "  cis: " ++ show cis ++ "\n"
 
           | otherwise -> logFact n' - logFact n''
 
@@ -160,7 +150,6 @@ fromParamsWith_ jt str n'Of mut cis ddns = ME mut loss ddns dnm cis
     --   DelLeft s0  -> (== s0)
     --   DelRight s1 -> (== s1)
     --   Del2 s0 s1  -> (\s -> s == s0 || s == s1)
-
     err' = err . ("fromParamsWith_: " ++)
 
 err :: String -> a

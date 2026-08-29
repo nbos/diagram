@@ -42,41 +42,27 @@ import Diagram.Util
 corrsOf :: forall m. PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
 corrsOf dly tst ci = do
-  -- traceShowM ci
 
   -- [DEL]: decompose, treat all delMuts
   delMutCorrs <- delMutCorrsOf dly tst ci
-  -- traceM $ "del correction: " ++ show delMutCorrs
 
   -- [ADD]: grab the largest chain possible, if CI is first in the chain
   addMutCorrs <- (prevCI ci >>=) $ \case
-    Nothing -> ((-- traceM "no CI before" >>
-                 nextCIs ci) >>=) $ \case
-      Nothing -> return M.empty
-      Just (addMut, nexts) -> do
-        -- traceM $ "CIs after: " ++ show (addMut,nexts)
-        return $ M.singleton addMut $ addMutCorrOf (ci:|nexts)
+    Nothing -> (<$> nextCIs ci) $ \case
+      Nothing -> M.empty
+      Just (addMut, nexts) -> M.singleton addMut $
+                              addMutCorrOf (ci:|nexts)
 
-    Just (addMut, prv) -> ((-- traceM ("prev CI: " ++ show p) >>
-                              nextCIs ci) >>=) $ \case
-      Nothing -> do
-        -- traceM "no CIs after"
-        return $ M.singleton addMut $ addMutCorrOf (prv:|[ci])
-
+    Just (addMut, prv) -> (<$> nextCIs ci) $ \case
+      Nothing -> M.singleton addMut $ addMutCorrOf (prv:|[ci])
       Just (addMut', nexts)
-        | addMut == addMut' -> do
-            -- traceM $ "CIs after (same mut): " ++ show p'
-            return $ M.singleton addMut $ addMutCorrOf (prv:|ci:nexts)
-
-        | otherwise -> do
-            -- traceM $ "CIs after: " ++ show p'
-            return $ M.fromListWithKey col
-              [ (addMut, addMutCorrOf (prv:|[ci]))
-              , (addMut', addMutCorrOf (ci:|nexts)) ]
+        | addMut == addMut' -> M.singleton addMut $
+                               addMutCorrOf (prv:|ci:nexts)
+        | otherwise -> M.fromListWithKey col
+                       [ (addMut, addMutCorrOf (prv:|[ci]))
+                       , (addMut', addMutCorrOf (ci:|nexts)) ]
 
   let res = clean $ M.unionWithKey col delMutCorrs addMutCorrs
-  -- traceM $ "all correction: " ++ show res
-  -- traceM ""
   return res
 
   where

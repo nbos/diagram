@@ -14,9 +14,12 @@ pShow = unpack . pShowOpt defaultOutputOptionsDarkBg
   , outputOptionsIndentAmount  = 2
   }
 
-pShowStr :: (Sym -> Bool) -> Bool -> JointType -> [Sym] -> [Char]
-pShowStr _ _ _ [] = []
-pShowStr mark sign jt (hd:tl) = goOut hd tl
+pShowStr :: JointType -> [Sym] -> [Char]
+pShowStr = pShowStrMark $ const False
+
+pShowStrMark :: (Sym -> Bool) -> JointType -> [Sym] -> [Char]
+pShowStrMark _ _ [] = []
+pShowStrMark mark jt (hd:tl) = goOut hd tl
   where
     mem = JT.member
 
@@ -44,7 +47,6 @@ pShowStr mark sign jt (hd:tl) = goOut hd tl
                     ++ color ++ show s ++ reset
     -- ansi
     reset  = "\ESC[0m"
-    (green, red)
-      | sign      = ("\ESC[32m", "\ESC[91m")
-      | otherwise = ("\ESC[91m", "\ESC[32m")
+    green = "\ESC[32m"
+    red = "\ESC[91m"
     yellow = "\ESC[93m"

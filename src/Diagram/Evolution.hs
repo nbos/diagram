@@ -27,6 +27,7 @@ import qualified Data.IntMap.Strict as IM
 
 import qualified Data.Vector.Unboxed as U
 
+import Diagram.Pretty
 import Diagram.Primitive
 
 import Diagram.Joints (Joints)
@@ -155,9 +156,33 @@ step :: PrimMonad m => EvolutionT m Bool
 step = do
   es <- evalAll
   let (_, e) = L.minimumBy (compare `on` fst) es
+      ME mut loss ddns dnm (CIs jt _ _ _) = e
+
+  traceM ""
+  traceM $ "  Mutation: " ++ pShow mut
+  traceM $ "  ddnsLoss: " ++ pShow loss
+  traceM $ "  ddns: "     ++ pShow ddns
+  traceM $ "  dnm: "      ++ pShow dnm
+
   ddInfo <- ddInformation e
-  if ddInfo > 0 then return False else
-    pushMut e >> return True
+  traceM $ "  ddInfo: "      ++ pShow ddInfo
+  traceM ""
+
+  str <- D.toList =<< use doubly -- (debug)
+  CIs typJT _ _ _ <- use typeCIs
+  let typJT' = JT.appMut mut typJT
+  traceM $ "Constructions before:\n" ++ pShowStr typJT str ++ "\n\n"
+    ++ "Delta:\n" ++ pShowStr jt str ++ "\n\n"
+    ++ "Constructions after:\n" ++ pShowStr typJT' str ++ "\n"
+
+  if ddInfo > 0
+    then do
+    return False
+
+    else do
+    pushMut e
+    traceM "----------------------------------------------------------"
+    return True
 
 ddInformation :: PrimMonad m => MutEntry -> EvolutionT m Double
 ddInformation (ME mut _ ddns dnm _) = do
@@ -200,9 +225,7 @@ getMutCountIntervals ddns = do
 -- | Apply a mutation, update books
 pushMut :: forall m. PrimMonad m => MutEntry -> EvolutionT m ()
 pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
-  traceM $ "Pushing mutation: " ++ show mut
   CIs _ typNdns _ _ <- use typeCIs -- before we update it
-  dly <- use doubly
 
   let mutCIsL = IM.elems mutCIsBhd
   -- ENUMERATE CORRECTION AND APPLY MUT (IN THE RIGHT ORDER)
@@ -230,6 +253,7 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
 
     Del -> do
       -- CORRECTIONS BEFORE (WHILE mutCIs <: typCIs)
+      dly <- use doubly
       getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
       getCorrsOf <- uses2 doubly typeState corrsOf
       corrsDelta <- fmap (unions . catMaybes) $ forM mutCIsL $
@@ -337,7 +361,6 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
 
 introMut :: forall m. PrimMonad m => Mutation -> EvolutionT m ()
 introMut mut = do
-  traceM $ "Introducing mut: " ++ show mut
   tst <- use typeState
   jts <- TS.jointsOf tst mut
   allCIs <- use jointCIs
@@ -354,13 +377,10 @@ introMut mut = do
         Just Nothing -> return () -- super is identical, do nothing
         Nothing -> do -- super doesn't start here, but ci is inside it
           ciCounts <- lift (CI.symCounts dly ci)
-          -- traceM $ "sub: " ++ pShow (ci,ciCounts) -- (debug)
           modify (IM.unionWith (+) (negate <$> ciCounts))
         Just (Just (super, remainder)) -> do -- subtract subs from super
           subCounts <- lift $ mapM (CI.symCounts dly) (ci:remainder)
-          -- traceM $ "subs: " ++ pShow (ci:remainder, subCounts)
           supCounts <- lift (CI.symCounts dly super)
-          -- traceM $ "super: " ++ pShow (super,supCounts)
           let delta = IM.unionWith (+) supCounts $ negate <$> unions subCounts
           modify (IM.unionWith (+) delta)
 
