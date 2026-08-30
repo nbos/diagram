@@ -104,7 +104,7 @@ validate jt str n'Of e@(ME mut loss ddns dnm (CIs mutJT mutCounts _ _))
     ++ "  ddns (cis + cor): " ++ show ddns ++ "\n"
   | dnm /= (two_dnm `div` 2) = err' $
     "Delta joint count doesn't match with sum of delta symbol counts: "
-    ++ show (dnm, two_dnm) ++ "\n"
+    ++ show (dnm, two_dnm `div` 2) ++ "\n"
     ++ "\nString (before):\n" ++ pShowStr jt    str ++ "\n\n"
     ++ "String (delta):\n"    ++ pShowStr mutJT str ++ "\n\n"
     ++ "String (after):\n"    ++ pShowStr jt'   str ++ "\n\n"

@@ -180,6 +180,7 @@ step = do
     return False
 
     else do
+    traceM $ "Pushing mut " ++ pShow mut ++ "\n"
     pushMut e
     traceM "----------------------------------------------------------"
     return True
@@ -237,18 +238,19 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
       getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
       getCorrsOf <- uses2 doubly typeState corrsOf
       corrsDelta <- flip execStateT M.empty $ forM mutCIsL $
-        \ci -> (getSuperCI (traceShowId ci) >>=) $
-        flip whenJust $ flip whenJust $ \(super, adjacent) -> do
-          traceShowM ("super", super)
-          traceShowM ("adjacents", adjacent)
-          old <- sequence $ getCorrsOf <$> adjacent
-          traceShowM ("old", old)
-          new <- getCorrsOf super
-          traceShowM ("new", new)
-          let delta = -- note: will include corrs on enabled muts too
-                L.foldl' union new $ negate <<<$>>> old
-          traceShowM ("delta", delta)
-          modify (union delta)
+        \ci -> (getSuperCI (traceShowId ci) >>=) $ flip whenJust $ \case
+          Nothing -> modify . union =<< getCorrsOf ci -- no adjacents
+          Just (super, adjacent) -> do
+            traceShowM ("super", super)
+            traceShowM ("adjacents", adjacent)
+            adjCorrs <- sequence $ getCorrsOf <$> adjacent
+            traceShowM ("adjCorrs", adjCorrs)
+            superCorr <- getCorrsOf super
+            traceShowM ("superCorr", superCorr)
+            let delta = -- note: will include corrs on enabled muts too
+                  L.foldl' union superCorr $ negate <<<$>>> adjCorrs
+            traceShowM ("delta", delta)
+            modify (union delta)
 
       -- UPDATE TYPE CIs (join)
       typeCIs %= CIs.join mutCIs
@@ -263,21 +265,22 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
       getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
       getCorrsOf <- uses2 doubly typeState corrsOf
       corrsDelta <- flip execStateT M.empty $ forM_ mutCIsL $
-        \ci -> (getSuperCI (traceShowId ci) >>=) $
-        flip whenJust $ flip whenJust $ \(super, rems) -> do
-          traceShowM ("super", super) --
-          traceShowM ("rems", rems) --
-          -- UPDATE TYPE CIs (delete super, insert remainder)
-          lift $ typeCIs %== ( L.foldl' (>=>) (CIs.deleteExisting dly super) $
-                               CIs.insertDisjoint dly <$> rems )
-          old <- getCorrsOf super
-          traceShowM ("old", old) --
-          new <- sequence $ getCorrsOf <$> rems
-          traceShowM ("new", new) --
-          let delta = -- note: will include corrs on expired muts too
-                L.foldl' union (negate <<$>> old) new
-          traceShowM ("delta", delta) --
-          modify (union delta)
+        \ci -> (getSuperCI (traceShowId ci) >>=) $ flip whenJust $ \case
+          Nothing -> modify . union . ffmap negate =<< getCorrsOf ci -- no rem
+          Just (super, rems) -> do
+            traceShowM ("super", super) --
+            traceShowM ("rems", rems) --
+            -- UPDATE TYPE CIs (delete super, insert remainder)
+            lift $ typeCIs %== ( L.foldl' (>=>) (CIs.deleteExisting dly super) $
+                                 CIs.insertDisjoint dly <$> rems )
+            old <- getCorrsOf super
+            traceShowM ("old", old) --
+            new <- sequence $ getCorrsOf <$> rems
+            traceShowM ("new", new) --
+            let delta = -- note: will include corrs on expired muts too
+                  L.foldl' union (negate <<$>> old) new
+            traceShowM ("delta", delta) --
+            modify (union delta)
 
       -- APPLY AFTER PASS
       (enabled, expired) <- zoom typeState $ TS.pushMut mut -- APPLY
@@ -330,6 +333,13 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
                         ((,IM.empty) <$>) ((IM.empty,) <$>)
                         countUpdateIlsByAffected mutCorDelta
 
+  -- (debug)
+  CIs jt ndns _ _ <- use typeCIs
+  str <- use doubly >>= D.toList
+  let n'Of s = maybe n (n-) $ IM.lookup s ndns
+        where n = ns U.! s
+  --
+
   mutEntries <- use $ mutBooks.byMut
   sequence_ $ flip2 M.intersectionWith
     mutEntries mutEntryUpdates $
@@ -337,8 +347,6 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
       let signedDeltaCor = case typeOfMut eMut of
             Add -> negate <$> deltaCor
             Del -> deltaCor
-          sumSignedDeltaCor = sum signedDeltaCor & \r -> if even r then r
-            else err' $ "expected even number: " ++ show (r,signedDeltaCor)
           eDdnsIls = -- zip eDdns eDdns'
             IM.mergeWithKey (\_ ddn c -> Just (ddn, ddn + c))
             (const IM.empty) ((0,) <$>) eDdns signedDeltaCor
@@ -358,10 +366,15 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
                     new_n'' = n' + eDdn'
                 in logFact old_n'' - logFact new_n'' )
                 nsIls eDdnsIls
+          deDnm = negate (sum signedDeltaCor) & \r ->
+            if even r then r `div` 2
+            else err' $ "expected even number: " ++ show (r,signedDeltaCor)
       zoom mutBooks $ -- update state
-        MB.update $ e{ _ddSymCountsLoss = eDnsLoss + deDnsLoss
-                     , _ddSymCounts     = IM.union (snd <$> eDdnsIls) eDdns
-                     , _dJointCount     = eDnm + (sumSignedDeltaCor `div` 2) }
+        MB.update $
+        ME.validate jt str n'Of $ -- (debug)
+        e{ _ddSymCountsLoss = eDnsLoss + deDnsLoss
+         , _ddSymCounts     = IM.union (snd <$> eDdnsIls) eDdns
+         , _dJointCount     = eDnm + deDnm }
 
   jointCount += mutDnm -- delta nm
 
