@@ -236,19 +236,20 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
       -- CORRECTIONS AFTER (FOR mutCIs TO BE <: typCIs)
       getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
       getCorrsOf <- uses2 doubly typeState corrsOf
-      corrsDelta <- fmap (unions . catMaybes) $ forM mutCIsL $
-        \ci -> (getSuperCI (traceShowId ci) >>=) $ \case
-          Just (Just (super, adjacent)) -> do
-            traceShowM ("super", super)
-            traceShowM ("adjacents", adjacent)
-            old <- sequence $ getCorrsOf <$> adjacent
-            traceShowM ("old", old)
-            new <- getCorrsOf super
-            traceShowM ("new", new)
-            traceM "delta:"
-            return $ -- note: will include corrs on enabled muts too
-              Just $ traceShowId $ unions $ new : (negate <<<$>>> old)
-          _else -> return Nothing
+      corrsDelta <- flip execStateT M.empty $ forM mutCIsL $
+        \ci -> (getSuperCI (traceShowId ci) >>=) $
+        flip whenJust $ flip whenJust $ \(super, adjacent) -> do
+          traceShowM ("super", super)
+          traceShowM ("adjacents", adjacent)
+          old <- sequence $ getCorrsOf <$> adjacent
+          traceShowM ("old", old)
+          new <- getCorrsOf super
+          traceShowM ("new", new)
+          let delta = -- note: will include corrs on enabled muts too
+                L.foldl' union new $ negate <<<$>>> old
+          traceShowM ("delta", delta)
+          modify (union delta)
+
       -- UPDATE TYPE CIs (join)
       typeCIs %= CIs.join mutCIs
       -- TODO: couldn't CIs.join give us adjacent for free?
@@ -261,22 +262,23 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
       dly <- use doubly
       getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
       getCorrsOf <- uses2 doubly typeState corrsOf
-      corrsDelta <- fmap (unions . catMaybes) $ forM mutCIsL $
-        \ci -> (getSuperCI (traceShowId ci) >>=) $ \case
-          Just (Just (super, rems)) -> do
-            traceShowM ("super", super)
-            traceShowM ("rems", rems)
-            -- UPDATE TYPE CIs (delete super, insert remainder)
-            typeCIs %== ( L.foldl' (>=>) (CIs.deleteExisting dly super) $
-                          CIs.insertDisjoint dly <$> rems )
-            old <- getCorrsOf super
-            traceShowM ("old", old)
-            new <- sequence $ getCorrsOf <$> rems
-            traceShowM ("new", new)
-            traceM "delta:"
-            return $ -- note: will include corrs on expired muts too
-              Just $ traceShowId $ unions $ (negate <<$>> old) : new
-          _else -> return Nothing
+      corrsDelta <- flip execStateT M.empty $ forM_ mutCIsL $
+        \ci -> (getSuperCI (traceShowId ci) >>=) $
+        flip whenJust $ flip whenJust $ \(super, rems) -> do
+          traceShowM ("super", super) --
+          traceShowM ("rems", rems) --
+          -- UPDATE TYPE CIs (delete super, insert remainder)
+          lift $ typeCIs %== ( L.foldl' (>=>) (CIs.deleteExisting dly super) $
+                               CIs.insertDisjoint dly <$> rems )
+          old <- getCorrsOf super
+          traceShowM ("old", old) --
+          new <- sequence $ getCorrsOf <$> rems
+          traceShowM ("new", new) --
+          let delta = -- note: will include corrs on expired muts too
+                L.foldl' union (negate <<$>> old) new
+          traceShowM ("delta", delta) --
+          modify (union delta)
+
       -- APPLY AFTER PASS
       (enabled, expired) <- zoom typeState $ TS.pushMut mut -- APPLY
       -- UPDATE TYPE CIs JOINT TYPE
@@ -316,8 +318,8 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
 
   getAffectedMuts <- mutBooks `uses` MB.affectedMuts
   let unionIl = M.unionWithKey $
-                const $ IM.unionWithKey
-                (err' . ("duplicate sym count intervals: " ++) . show .:. (,,))
+        const $ IM.unionWithKey
+        (err' . ("duplicate sym count intervals: " ++) . show .:. (,,))
   countUpdateIlsByAffected <- fmap (fromMaybe M.empty . foldTree unionIl) $
                               forM (IM.toList countUpdateIntervals) $
                               \(s,ddn) -> M.fromSet (const $ IM.singleton s ddn)
@@ -365,7 +367,7 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
 
   where
     union = M.unionWith (IM.unionWith (+))
-    unions = fromMaybe M.empty . foldTree union
+    -- unions = fromMaybe M.empty . foldTree union
     err' = err . ("pushMut: " ++)
 
 -- WHERE --
