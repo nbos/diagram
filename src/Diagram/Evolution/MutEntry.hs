@@ -1,7 +1,10 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
 {-# LANGUAGE TypeApplications, TypeOperators #-}
-{-# LANGUAGE TupleSections, LambdaCase, BangPatterns #-}
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TupleSections #-}
+
 module Diagram.Evolution.MutEntry (module Diagram.Evolution.MutEntry) where
 
 import Control.Lens hiding (both,last1,Index,(:>),index)
@@ -11,18 +14,16 @@ import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
 
 import Diagram.Pretty
-
 import Diagram.String
+import qualified Diagram.Simple as Simple
+import Diagram.JointType (JointType)
+import qualified Diagram.JointType as JT
 import Diagram.ConstrIntervals (CIs(..))
 import qualified Diagram.ConstrIntervals as CIs
 
 import Diagram.Evolution.Math (logFact)
 import qualified Diagram.Evolution.Math as Math
 import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
-
-import qualified Diagram.Simple as Simple
-import Diagram.JointType (JointType)
-import qualified Diagram.JointType as JT
 
 import Diagram.Util
 
@@ -62,19 +63,17 @@ eval m bigN nm vm' (ME mut dnsLoss _ dnm _)
 ------------------
 
 -- | Construct a mutation entry that needs no count correction.
-fromParams :: JointType -> [Sym] -> -- (debug args) TODO: rm
-              (Sym -> Count) -> Mutation -> CIs -> MutEntry
-fromParams jt str n'Of mut cis = fromParamsWith_ jt str n'Of mut cis ddns
+fromParams :: (Sym -> Count) -> Mutation -> CIs -> MutEntry
+fromParams n'Of mut cis = fromParamsWith_ n'Of mut cis ddns
   where mutSymCounts = cis^.CIs.symCounts
         ddns = case typeOfMut mut of
           Add -> negate <$> mutSymCounts
           Del -> mutSymCounts
 
 -- | Construct a mutation entry with a count correction.
-fromParamsWith :: JointType -> [Sym] -> -- (debug args) TODO: rm
-                  (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> MutEntry
-fromParamsWith jt str n'Of mut cis@(CIs _ mutSymCounts _ _) cor =
-  fromParamsWith_ jt str n'Of mut cis ddns
+fromParamsWith :: (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> MutEntry
+fromParamsWith n'Of mut cis@(CIs _ mutSymCounts _ _) cor =
+  fromParamsWith_ n'Of mut cis ddns
   where
     ddns = case typeOfMut mut of
       Add -> negate <$> corMutSymCounts
@@ -83,29 +82,52 @@ fromParamsWith jt str n'Of mut cis@(CIs _ mutSymCounts _ _) cor =
     union = IM.mergeWithKey (const $ nothingIf (==0) .: (+)) id id
 
 -- | Construct a mutation entry given the delta delta sym count (ddns).
-fromParamsWith_ :: JointType -> [Sym] -> -- (debug args) TODO: rm
-                  (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> MutEntry
-fromParamsWith_ jt str n'Of mut cis@(CIs mutJT mutCounts _ _) ddns =
+fromParamsWith_ :: (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> MutEntry
+fromParamsWith_ n'Of mut cis ddns =
   ME mut loss ddns dnm cis
   where
     two_dnm = negate $ sum ddns
-    dnm | even two_dnm = two_dnm `div` 2
-        | otherwise = err' $
-          "Expected even number: " ++ show (two_dnm, ddns) ++ "\n"
-          ++ "\nString (before):\n" ++ pShowStr jt    str ++ "\n\n"
-          ++ "String (delta):\n"    ++ pShowStr mutJT str ++ "\n\n"
-          ++ "String (after):\n"    ++ pShowStr jt'   str ++ "\n\n"
-          ++ "  mut: " ++ show mut ++ "\n"
-          ++ "  ddns (cis + cor): " ++ show ddns ++ "\n"
+    dnm = two_dnm `div` 2
+    loss = sum $ flip IM.mapWithKey ddns $
+      \s ddn -> let n' = n'Of s
+                    n'' = n' + ddn
+                in logFact n' - logFact n''
 
-    loss = sum losses
+validate :: JointType -> [Sym] -> (Sym -> Count) -> MutEntry -> MutEntry
+validate jt str n'Of e@(ME mut loss ddns dnm (CIs mutJT mutCounts _ _))
+  | odd two_dnm = err' $
+    "Expected even number: " ++ show (two_dnm, ddns) ++ "\n"
+    ++ "\nString (before):\n" ++ pShowStr jt    str ++ "\n\n"
+    ++ "String (delta):\n"    ++ pShowStr mutJT str ++ "\n\n"
+    ++ "String (after):\n"    ++ pShowStr jt'   str ++ "\n\n"
+    ++ "  mut: " ++ show mut ++ "\n"
+    ++ "  ddns (cis + cor): " ++ show ddns ++ "\n"
+  | dnm /= (two_dnm `div` 2) = err' $
+    "Delta joint count doesn't match with sum of delta symbol counts: "
+    ++ show (dnm, two_dnm) ++ "\n"
+    ++ "\nString (before):\n" ++ pShowStr jt    str ++ "\n\n"
+    ++ "String (delta):\n"    ++ pShowStr mutJT str ++ "\n\n"
+    ++ "String (after):\n"    ++ pShowStr jt'   str ++ "\n\n"
+    ++ "  mut: " ++ show mut ++ "\n"
+    ++ "  ddns (cis + cor): " ++ show ddns ++ "\n"
+  | rel_err_loss > 0.001 && err_loss > 1 = err' $
+    "Error on loss is not negligible: "
+    ++ "  Entry loss: "     ++ pShow loss         ++ "\n"
+    ++ "  Actual loss: "    ++ pShow verif_loss   ++ "\n"
+    ++ "  Absolute error: " ++ pShow err_loss     ++ "\n"
+    ++ "  Relative error: " ++ pShow rel_err_loss ++ "\n"
+  | otherwise = e
+  where
+    two_dnm = negate $ sum ddns
+    verif_loss = sum losses
+    err_loss = abs $ verif_loss - loss
+    rel_err_loss = err_loss / loss
     losses = flip IM.mapWithKey ddns $ \s ddn -> do
       let n' = n'Of s
           n'' = n' + ddn
           verif_n   = fromMaybe 0 $ IM.lookup s ns
           verif_n'  = fromMaybe 0 $ IM.lookup s ns'
           verif_n'' = fromMaybe 0 $ IM.lookup s ns''
-
       case () of
         _ | n' /= verif_n' -> err' $
             "Count before mut (n') is not what it should be\n"
@@ -135,22 +157,13 @@ fromParamsWith_ jt str n'Of mut cis@(CIs mutJT mutCounts _ _) ddns =
 
           | otherwise -> logFact n' - logFact n''
 
-    -- verif -- TODO: remove
     ns    = Simple.symCounts str
     str'  = Simple.subst jt 256 str
     ns'   = Simple.symCounts str'
     jt'   = JT.appMut mut jt
     str'' = Simple.subst jt' 256 str
     ns''  = Simple.symCounts str''
-    -- mutJtSign = mutType == Del
-    -- mark = case mut of
-    --   AddLeft s0  -> (== s0)
-    --   AddRight s1 -> (== s1)
-    --   Add2 s0 s1  -> (\s -> s == s0 || s == s1)
-    --   DelLeft s0  -> (== s0)
-    --   DelRight s1 -> (== s1)
-    --   Del2 s0 s1  -> (\s -> s == s0 || s == s1)
-    err' = err . ("fromParamsWith_: " ++)
+    err' = err . ("validate: " ++)
 
 err :: String -> a
 err = error . ("MutEntry." ++)

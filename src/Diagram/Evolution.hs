@@ -398,7 +398,8 @@ introMut mut = do
   str <- D.toList =<< use doubly -- (debug)
   ns <- use symCounts
   zoom mutBooks $ MB.insert $
-    ME.fromParamsWith jt str (n'Of ns ndns) mut mutCIs cor
+    ME.validate jt str (n'Of ns ndns) $ -- (debug)
+    ME.fromParamsWith (n'Of ns ndns) mut mutCIs cor
 
   where
     clean = IM.filter (/= 0)
@@ -433,8 +434,8 @@ init_ m bigN dly ns allCIs (jt, memJointCIs) = do
 
   str <- D.toList dly -- TODO: rm
   let es = M.mergeWithKey
-        (Just .:. ME.fromParamsWith jt str n'Of) -- CIs * cor
-        (M.mapWithKey $ ME.fromParams jt str n'Of) -- only CIs
+        (Just . ME.validate jt str n'Of .:. ME.fromParamsWith n'Of) -- CIs * cor
+        (M.mapWithKey $ ME.validate jt str n'Of .: ME.fromParams n'Of) -- only CIs
         (fmap $ err' . ("have cor, but CIs missing: " ++) . show) -- only cor
         cisByMut corByMut
 
