@@ -457,31 +457,6 @@ decomposeIn str tst ci@(CI hd shd len tl _)
              , _tailSymbol = s1 }
       (ended ++) <$> go mcis' (not p) i1 s1 rest
 
--- | Return the out-interval (and the add-mutation that would switch its
--- membership) immediately preceding the given in-interval but only if
--- the out-interval is not itself preceded by another in-interval (will
--- get caught by nextMutCIs instead). Returns `Nothing` if the preceding
--- interval is so sandwitched, `Just Nothing` if there is either no
--- preceding joint (begining of the string) or if it not add-able, and
--- `Just Just` if there is such a mutation-interval pair.
-prevMutCI :: forall m. PrimMonad m => Doubly (PrimState m) ->
-  TypeState (PrimState m) -> CI -> m (Maybe (Maybe (Mutation, CI)))
-prevMutCI str tst (CI tl stl _ _ _) = (D.prev str tl >>=) $ \case
-  Nothing -> return $ Just Nothing -- no prev symbol/interval
-  Just (ptl,sptl) -> (addMutOf tst sptl stl >>=) $ \case
-    Nothing -> return $ Just Nothing -- no mut
-    Just mut -> (mut,) <<<$>>> go 2 ptl sptl
-      where
-        go !len hd shd = (D.prev str hd >>=) $ \case
-          Nothing -> return $ Just $ Just ci -- hit start, end
-          Just (phd,sphd) -> (member tst sphd shd >>=) $ \case
-            True -> return Nothing -- not first of a chain (cancel)
-            False -> (addMutOf tst sphd shd >>=) $ \case
-              Just mut' | mut' == mut -> go (len+1) phd sphd
-              _else -> return $ Just $ Just ci -- end of interval
-          where
-            ci = CI hd shd len tl stl
-
 -- | For a string, a type state, a joint type which is a subtype of the
 -- type state, and a continuous, a maximal constructive interval (CI) in
 -- the subtype on the string, return the super-CI of the given CI in the
@@ -559,11 +534,35 @@ superCI dly tst jt (CI hd0 shd0 len0 tl0 stl0) = do
             False -> return (super, reverse rems) -- end
           where super = CI hd shd len tl stl
 
--- | Given the string, joint type and a constructive interval of the
--- joint type (a.k.a. in-interval), return the longest immediately
--- following sequence of alternating out-, int-, out-, etc. intervals
--- where all the out-intervals would get their membership flipped
--- (i.e. included) by the same add-mutation, which is also
+-- | Return the out-interval (and the add-mutation that would switch its
+-- membership) immediately preceding the given in-interval but only if
+-- the out-interval is not itself preceded by another in-interval (will
+-- get caught by nextMutCIs instead). Returns `Nothing` if the preceding
+-- interval is so sandwitched, `Just Nothing` if there is no addable
+-- preceeding joint, and `Just . Just` if there is such a
+-- mutation-interval pair.
+prevMutCI :: forall m. PrimMonad m => Doubly (PrimState m) ->
+  TypeState (PrimState m) -> CI -> m (Maybe (Maybe (Mutation, CI)))
+prevMutCI str tst (CI tl stl _ _ _) = (D.prev str tl >>=) $ \case
+  Nothing -> return $ Just Nothing -- no prev symbol/interval
+  Just (ptl,sptl) -> (addMutOf tst sptl stl >>=) $ \case
+    Nothing -> return $ Just Nothing -- no mut
+    Just mut -> (mut,) <<<$>>> go 2 ptl sptl
+      where
+        go !len hd shd = (D.prev str hd >>=) $ \case
+          Nothing -> return $ Just $ Just ci -- hit start, end
+          Just (phd,sphd) -> (member tst sphd shd >>=) $ \case
+            True -> return Nothing -- not first of a chain (cancel)
+            False -> (addMutOf tst sphd shd >>=) $ \case
+              Just mut' | mut' == mut -> go (len+1) phd sphd
+              _else -> return $ Just $ Just ci -- end of interval
+          where
+            ci = CI hd shd len tl stl
+
+-- | Given the string, joint type and an in-interval, return the longest
+-- immediately following sequence of alternating out-, int-, out-,
+-- etc. intervals where all the out-intervals would get their membership
+-- flipped (i.e. included) by the same add-mutation, which is also
 -- returned. Return Nothing if end of string or if the following joint
 -- does not have an add-mutation.
 nextMutCIs :: forall m. PrimMonad m => Doubly (PrimState m) ->

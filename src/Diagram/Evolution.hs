@@ -43,7 +43,8 @@ import Diagram.Evolution.Math (logFact)
 import qualified Diagram.Evolution.Math as Math
 import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
 
-import Diagram.Evolution.Correction (corrsOf)
+import Diagram.Evolution.Correction ( corrsOf, addClustersOf
+                                    , addCorrOf, delCorrsOf )
 import Diagram.Evolution.TypeState (TypeState)
 import qualified Diagram.Evolution.TypeState as TS
 import Diagram.Evolution.MutEntry (MutEntry(..))
@@ -236,7 +237,7 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
       (enabled, expired) <- zoom typeState $ TS.pushMut mut -- APPLY
       -- CORRECTIONS AFTER (FOR mutCIs TO BE <: typCIs)
       getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
-      getCorrsOf <- uses2 doubly typeState corrsOf
+      getCorrsOf <- uses2 doubly typeState corrsOf -- FIXME: corrsOf
       corrsDelta <- flip execStateT M.empty $ forM mutCIsL $
         \ci -> (getSuperCI (traceShowId ci) >>=) $ flip whenJust $ \case
           Nothing -> modify . union =<< getCorrsOf ci -- no adjacents
@@ -263,7 +264,7 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
       -- CORRECTIONS BEFORE (WHILE mutCIs <: typCIs)
       dly <- use doubly
       getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
-      getCorrsOf <- uses2 doubly typeState corrsOf
+      getCorrsOf <- uses2 doubly typeState corrsOf -- FIXME: corrsOf
       corrsDelta <- flip execStateT M.empty $ forM_ mutCIsL $
         \ci -> (getSuperCI (traceShowId ci) >>=) $ flip whenJust $ \case
           Nothing -> modify . union . ffmap negate =<< getCorrsOf ci -- no rem
@@ -380,7 +381,6 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
 
   where
     union = M.unionWith (IM.unionWith (+))
-    -- unions = fromMaybe M.empty . foldTree union
     err' = err . ("pushMut: " ++)
 
 -- WHERE --
@@ -444,9 +444,11 @@ init_ m bigN dly ns allCIs (jt, memJointCIs) = do
 
   -- TODO: switch back to non-debug CIs.join --
   cisByMut <- joinByMutM tst (CIs.debug_join dly) $ M.toList allCIs
-  corByMut <- fromMaybe M.empty . foldTree union
-              <$> mapM (corrsOf dly tst) (CIs.toList memCIs)
+  delCorByMut <- unions <$> mapM (delCorrsOf dly tst) memCIsL
+  addCorByMut <- unions . fmap (uc addCorrOf)
+                 <$> concatMapM (addClustersOf dly tst) memCIsL
 
+  let corByMut = M.unionWith (err' "impossible") delCorByMut addCorByMut
   str <- D.toList dly -- TODO: rm
   let es = M.mergeWithKey
         (Just . ME.validate jt str n'Of .:. ME.fromParamsWith n'Of) -- CIs * cor
@@ -465,8 +467,10 @@ init_ m bigN dly ns allCIs (jt, memJointCIs) = do
                           , _mutBooks   = books }
   where
     union = M.unionWith (IM.unionWith (+))
+    unions = fromMaybe M.empty . foldTree union
     allJoints = M.keys allCIs
     memCIs@(CIs _ ndns _ _) = mfoldTree $ M.elems memJointCIs
+    memCIsL = CIs.toList memCIs
     n'Of s = maybe n (n-) $ IM.lookup s ndns
       where n = ns U.! s
     err' = err . ("init: " ++)

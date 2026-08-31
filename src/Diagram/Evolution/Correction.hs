@@ -41,47 +41,37 @@ import Diagram.Util
 -- (Del) to the joint type's own CIs.symCounts.
 corrsOf :: forall m. PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
-corrsOf dly tst ci = do
+corrsOf = undefined -- TODO: delete
 
-  -- [DEL]: decompose, treat all delMuts
-  delMutCorrs <- delMutCorrsOf dly tst ci
+-- | Grab the largest chain possible, if CI is first in the chain, for a
+-- maximum of two mutations (prec & next, if they are
+-- different). (injective)
+addClustersOf :: forall m. PrimMonad m => Doubly (PrimState m) ->
+  TypeState (PrimState m) -> CI -> m [(Mutation, NonEmpty CI)]
+addClustersOf dly tst ci = (join <$> TS.prevMutCI dly tst ci >>=) $ \case
+  Nothing -> (<$> nextCIs ci) $ \case
+    Nothing -> []
+    Just (addMut, nexts) -> [ (addMut, ci:|nexts) ]
 
-  -- [ADD]: grab the largest chain possible, if CI is first in the chain
-  addMutCorrs <- (prevCI ci >>=) $ \case
-    Nothing -> (<$> nextCIs ci) $ \case
-      Nothing -> M.empty
-      Just (addMut, nexts) -> M.singleton addMut $
-                              addMutCorrOf (ci:|nexts)
-
-    Just (addMut, prv) -> (<$> nextCIs ci) $ \case
-      Nothing -> M.singleton addMut $ addMutCorrOf (prv:|[ci])
-      Just (addMut', nexts)
-        | addMut == addMut' -> M.singleton addMut $
-                               addMutCorrOf (prv:|ci:nexts)
-        | otherwise -> M.fromListWithKey col
-                       [ (addMut, addMutCorrOf (prv:|[ci]))
-                       , (addMut', addMutCorrOf (ci:|nexts)) ]
-
-  let res = clean $ M.unionWithKey col delMutCorrs addMutCorrs
-  return res
-
+  Just (addMut, prv) -> (<$> nextCIs ci) $ \case
+    Nothing -> [ (addMut, prv:|[ci]) ]
+    Just (addMut', nexts)
+      | addMut == addMut' -> [ (addMut, prv:|ci:nexts) ]
+      | otherwise -> [ (addMut, prv:|[ci])
+                     , (addMut', ci:|nexts) ]
   where
-    clean = M.filter (not . IM.null) . fmap (IM.filter (/=0))
-    err' = err . ("corrsOf: " ++)
-    col = err' . ("collision: " ++) . show .:. (,,)
-
-    prevCI = fmap join . TS.prevMutCI dly tst
     nextCIs = TS.nextMutCIs dly tst
 
 -- where --
 
--- TODO: guards before returning asserting: even (sum res)? (dnm)
-
--- | Given a non-empty list of overlapping (connecting) intervals after
--- an add mutation (alternating [in-]add-in-add-etc.), return the
--- appropriate correction on the mut's CIs' sym counts.
-addMutCorrOf :: NonEmpty CI -> IntMap Int
-addMutCorrOf cis = flip execState IM.empty $ do
+-- | Given a non-empty list of overlapping/connecting intervals brought
+-- together by an Add-mutation, alternating [in-]add-in-add-etc., return
+-- the appropriate correction on the mut's CIs' sym counts as a
+-- singleton of the given mutation, which is assumed to be the
+-- Add-mutation bringing together the sequence of intervals, although
+-- this is not checked.
+addCorrOf :: Mutation -> NonEmpty CI -> Map Mutation (IntMap Int)
+addCorrOf mut cis = M.singleton mut $ flip execState IM.empty $ do
   forM_ (NE.init cis) $ \(CI _ _ len _ stl) ->
     when (even len) $ modify $ IM.insertWith (+) stl (-1)
   let CI _ _ oldLen _ tailSym = NE.last cis
@@ -94,9 +84,9 @@ addMutCorrOf cis = flip execState IM.empty $ do
 -- the differences in symbol counts between the symCounts of the CIs
 -- for all joints removed by the same del-mutation and and the real
 -- difference in symCounts from applying those mutations.
-delMutCorrsOf :: forall m. PrimMonad m => Doubly (PrimState m) ->
+delCorrsOf :: forall m. PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
-delMutCorrsOf dly tst supCI@(CI _ _ supLen supTl supStl) = do
+delCorrsOf dly tst supCI@(CI _ _ supLen supTl supStl) = do
   fmap go . M.fromListWith (<>)
     . reverse -- preserve order through (<>)
     . ffmap NE.singleton <$> TS.decomposeIn dly tst supCI
