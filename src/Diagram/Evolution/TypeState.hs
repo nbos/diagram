@@ -13,9 +13,9 @@ import Control.Lens hiding (both,last1,Index,(:>))
 import Control.Monad.State.Strict
 
 import Data.Maybe
-import qualified Data.List as L
 import Data.Strict.Tuple (Pair((:!:)),(:!:))
 import qualified Data.Strict.Tuple as Strict
+
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.IntSet (IntSet)
@@ -33,7 +33,6 @@ import qualified Diagram.JointType as JT
 import Diagram.String
 import qualified Diagram.Doubly as D
 import Diagram.ConstrInterval(CI(..))
-import qualified Diagram.ConstrInterval as CI
 
 import Diagram.Evolution.Mutation (Mutation(..))
 import Diagram.Evolution.SymEntry ( SymEntry(SE, _isMember, _coSymsIn),
@@ -434,29 +433,6 @@ trySingleton is | [s] <- IS.toList is = Just s
 -- STRING/CI OPERATIONS --
 --------------------------
 
--- | Break a constructive interval of the joint type (in) into an
--- ordered (by tail) list of its segments by mutation. Only made for
--- `Correction.delMutCorrsOf`. For each CI also returns phase (binary)
--- of the head w.r.t. the begining of the given CI, i.e. 0\/False is
--- even\/constr., 1\/True is odd\/non-constr.
-decomposeIn :: forall m. PrimMonad m => Doubly (PrimState m) ->
-  TypeState (PrimState m) -> CI -> m [(Mutation, (Bool, CI))]
-decomposeIn str tst ci@(CI hd shd len tl _)
-  | len == 2  = (,(False,ci)) <<$>> delMutsOf tst hd tl
-  | otherwise = go [] False hd shd . drop 1 =<< CI.symExtension str ci
-  where
-    go mcis _ _ _ [] = return mcis
-    go mcis p i0 s0 ((i1,s1):rest) = do
-      muts <- delMutsOf tst s0 s1
-      let (alive, ended) = L.partition (flip elem muts . fst) mcis
-          started = (, (p, CI i0 s0 2 i1 s1))
-                    <$> filter (`notElem` (fst <$> mcis)) muts
-          mcis' = (++ started) $ (<<<$>>> alive) $ \c ->
-            c{ _ciLength = _ciLength c + 1 -- extend
-             , _tailIndex = i1
-             , _tailSymbol = s1 }
-      (ended ++) <$> go mcis' (not p) i1 s1 rest
-
 -- | For a string, a type state, a joint type which is a subtype of the
 -- type state, and a continuous, a maximal constructive interval (CI) in
 -- the subtype on the string, return the super-CI of the given CI in the
@@ -533,71 +509,6 @@ superCI dly tst jt (CI hd0 shd0 len0 tl0 stl0) = do
                      goRem rems len tl stl 2 ntl sntl -- switch
             False -> return (super, reverse rems) -- end
           where super = CI hd shd len tl stl
-
--- | Return the out-interval (and the add-mutation that would switch its
--- membership) immediately preceding the given in-interval but only if
--- the out-interval is not itself preceded by another in-interval (will
--- get caught by nextMutCIs instead). Returns `Nothing` if the preceding
--- interval is so sandwitched, `Just Nothing` if there is no addable
--- preceeding joint, and `Just . Just` if there is such a
--- mutation-interval pair.
-prevMutCI :: forall m. PrimMonad m => Doubly (PrimState m) ->
-  TypeState (PrimState m) -> CI -> m (Maybe (Maybe (Mutation, CI)))
-prevMutCI str tst (CI tl stl _ _ _) = (D.prev str tl >>=) $ \case
-  Nothing -> return $ Just Nothing -- no prev symbol/interval
-  Just (ptl,sptl) -> (addMutOf tst sptl stl >>=) $ \case
-    Nothing -> return $ Just Nothing -- no mut
-    Just mut -> (mut,) <<<$>>> go 2 ptl sptl
-      where
-        go !len hd shd = (D.prev str hd >>=) $ \case
-          Nothing -> return $ Just $ Just ci -- hit start, end
-          Just (phd,sphd) -> (member tst sphd shd >>=) $ \case
-            True -> return Nothing -- not first of a chain (cancel)
-            False -> (addMutOf tst sphd shd >>=) $ \case
-              Just mut' | mut' == mut -> go (len+1) phd sphd
-              _else -> return $ Just $ Just ci -- end of interval
-          where
-            ci = CI hd shd len tl stl
-
--- | Given the string, joint type and an in-interval, return the longest
--- immediately following sequence of alternating out-, int-, out-,
--- etc. intervals where all the out-intervals would get their membership
--- flipped (i.e. included) by the same add-mutation, which is also
--- returned. Return Nothing if end of string or if the following joint
--- does not have an add-mutation.
-nextMutCIs :: forall m. PrimMonad m => Doubly (PrimState m) ->
-              TypeState (PrimState m) -> CI -> m (Maybe (Mutation, [CI]))
-nextMutCIs str tst (CI _ _ _ i0 s0) = (D.next str i0 >>=) $ \case
-  Nothing -> return Nothing -- hit end
-  Just (i1,s1) -> (addMutOf tst s0 s1 >>=) $ \case
-    Nothing -> return Nothing -- no add-mutation
-    Just addMut -> Just . (addMut,) <$> grabOut [] (CI s0 i0) 2 i1 s1
-      where
-        grabOut :: [CI] -> (Len -> Index -> Sym -> CI) ->
-                   Len -> Index -> Sym -> m [CI]
-        grabOut acc mkCI !len tl stl = (D.next str tl >>=) $ \case
-          Nothing -> return $ reverse acc' -- hit end of string
-          Just (ntl,sntl) -> (member tst stl sntl >>=) $ \case
-            True -> grabIn acc' (CI tl stl) 2 ntl sntl -- switch
-            False -> (addMutOf tst stl sntl >>=) $ \case
-              Just addMut' | addMut' == addMut ->
-                grabOut acc mkCI (len+1) ntl sntl -- keep going
-              _else -> return $ reverse acc' -- end of intervals
-          where
-            acc' = mkCI len tl stl : acc
-
-        grabIn :: [CI] -> (Len -> Index -> Sym -> CI) ->
-                  Len -> Index -> Sym -> m [CI]
-        grabIn acc mkCI !len tl stl = (D.next str tl >>=) $ \case
-          Nothing -> return $ reverse acc' -- hit end of string
-          Just (ntl,sntl) -> (member tst stl sntl >>=) $ \case
-            True -> grabIn acc mkCI (len+1) ntl sntl -- keep going
-            False -> (addMutOf tst stl sntl >>=) $ \case
-              Just addMut' | addMut' == addMut ->
-                grabOut acc' (CI tl stl) 2 ntl sntl -- switch
-              _else -> return $ reverse acc' -- end of intervals
-          where
-            acc' = mkCI len tl stl : acc
 
 -----------------
 -- BOILERPLATE --

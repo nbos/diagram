@@ -42,9 +42,7 @@ import qualified Diagram.Doubly as D
 import Diagram.Evolution.Math (logFact)
 import qualified Diagram.Evolution.Math as Math
 import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
-
-import Diagram.Evolution.Correction ( corrsOf, addClustersOf
-                                    , addCorrOf, delCorrsOf )
+import qualified Diagram.Evolution.Correction as Cor
 import Diagram.Evolution.TypeState (TypeState)
 import qualified Diagram.Evolution.TypeState as TS
 import Diagram.Evolution.MutEntry (MutEntry(..))
@@ -237,7 +235,7 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
       (enabled, expired) <- zoom typeState $ TS.pushMut mut -- APPLY
       -- CORRECTIONS AFTER (FOR mutCIs TO BE <: typCIs)
       getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
-      getCorrsOf <- uses2 doubly typeState corrsOf -- FIXME: corrsOf
+      getCorrsOf <- uses2 doubly typeState Cor.onAllMuts -- FIXME: corrsOf
       corrsDelta <- flip execStateT M.empty $ forM mutCIsL $
         \ci -> (getSuperCI (traceShowId ci) >>=) $ flip whenJust $ \case
           Nothing -> modify . union =<< getCorrsOf ci -- no adjacents
@@ -264,7 +262,7 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
       -- CORRECTIONS BEFORE (WHILE mutCIs <: typCIs)
       dly <- use doubly
       getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
-      getCorrsOf <- uses2 doubly typeState corrsOf -- FIXME: corrsOf
+      getCorrsOf <- uses2 doubly typeState Cor.onAllMuts -- FIXME: corrsOf
       corrsDelta <- flip execStateT M.empty $ forM_ mutCIsL $
         \ci -> (getSuperCI (traceShowId ci) >>=) $ flip whenJust $ \case
           Nothing -> modify . union . ffmap negate =<< getCorrsOf ci -- no rem
@@ -444,9 +442,9 @@ init_ m bigN dly ns allCIs (jt, memJointCIs) = do
 
   -- TODO: switch back to non-debug CIs.join --
   cisByMut <- joinByMutM tst (CIs.debug_join dly) $ M.toList allCIs
-  delCorByMut <- unions <$> mapM (delCorrsOf dly tst) memCIsL
-  addCorByMut <- unions . fmap (uc addCorrOf)
-                 <$> concatMapM (addClustersOf dly tst) memCIsL
+  delCorByMut <- unions <$> mapM (Cor.onDelMuts dly tst) memCIsL
+  addCorByMut <- unions . fmap (uc Cor.onAddMuts)
+                 <$> concatMapM (Cor.composeAdds dly tst) memCIsL
 
   let corByMut = M.unionWith (err' "impossible") delCorByMut addCorByMut
   str <- D.toList dly -- TODO: rm
