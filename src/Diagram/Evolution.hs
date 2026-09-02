@@ -235,7 +235,8 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
       (enabled, expired) <- zoom typeState $ TS.pushMut mut -- APPLY
       -- CORRECTIONS AFTER (FOR mutCIs TO BE <: typCIs)
       getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
-      getCorrsOf <- uses2 doubly typeState Cor.onAllMuts -- FIXME: corrsOf
+      let sub = not . (`JT.member` mutJT)
+      getCorrsOf <- uses2 doubly typeState $ Cor.onAllMuts sub
       corrsDelta <- flip execStateT M.empty $ forM mutCIsL $
         \ci -> (getSuperCI (traceShowId ci) >>=) $ flip whenJust $ \case
           Nothing -> modify . union =<< getCorrsOf ci -- no adjacents
@@ -262,7 +263,8 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
       -- CORRECTIONS BEFORE (WHILE mutCIs <: typCIs)
       dly <- use doubly
       getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
-      getCorrsOf <- uses2 doubly typeState Cor.onAllMuts -- FIXME: corrsOf
+      let sub = const False -- TODO: verify this
+      getCorrsOf <- uses2 doubly typeState $ Cor.onAllMuts sub
       corrsDelta <- flip execStateT M.empty $ forM_ mutCIsL $
         \ci -> (getSuperCI (traceShowId ci) >>=) $ flip whenJust $ \case
           Nothing -> modify . union . ffmap negate =<< getCorrsOf ci -- no rem
@@ -442,15 +444,13 @@ init_ m bigN dly ns allCIs (jt, memJointCIs) = do
 
   -- TODO: switch back to non-debug CIs.join --
   cisByMut <- joinByMutM tst (CIs.debug_join dly) $ M.toList allCIs
-  delCorByMut <- unions <$> mapM (Cor.onDelMuts dly tst) memCIsL
-  addCorByMut <- unions . fmap (uc Cor.onAddMuts)
-                 <$> concatMapM (Cor.composeAdds dly tst) memCIsL
-
-  let corByMut = M.unionWith (err' "impossible") delCorByMut addCorByMut
+  let sub = const False -- always cancel if another in-CI immediately prec.
+  corByMut <- unions <$> mapM (Cor.onAllMuts sub dly tst) memCIsL
   str <- D.toList dly -- TODO: rm
   let es = M.mergeWithKey
         (Just . ME.validate jt str n'Of .:. ME.fromParamsWith n'Of) -- CIs * cor
-        (M.mapWithKey $ ME.validate jt str n'Of .: ME.fromParams n'Of) -- only CIs
+        (M.mapWithKey $
+          ME.validate jt str n'Of .: ME.fromParams n'Of) -- only CIs
         (fmap $ err' . ("have cor, but CIs missing: " ++) . show) -- only cor
         cisByMut corByMut
 
