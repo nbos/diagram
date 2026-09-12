@@ -225,32 +225,55 @@ getMutCountIntervals ddns = do
 -- | Apply a mutation, update books
 pushMut :: forall m. PrimMonad m => MutEntry -> EvolutionT m ()
 pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
-  CIs _ typNdns _ _ <- use typeCIs -- before we update it
+
+  CIs _ typNdns _ _ <- use typeCIs
+  old_tst <- TS.clone =<< use typeState
+  (enabled, expired) <- zoom typeState $ TS.pushMut mut -- APPLY
+  new_tst <- use typeState
+  dly <- use doubly
 
   let mutCIsL = IM.elems mutCIsBhd
+      notInMut = not . (`JT.member` mutJT)
+
+
   -- ENUMERATE CORRECTION AND APPLY MUT (IN THE RIGHT ORDER)
   (enabledMuts, expiredMuts, mutCorDelta) <- case typeOfMut mut of
     Add -> do
-      -- APPLY BEFORE PASS
-      (enabled, expired) <- zoom typeState $ TS.pushMut mut -- APPLY
-      -- CORRECTIONS AFTER (FOR mutCIs TO BE <: typCIs)
-      getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
-      let sub = not . (`JT.member` mutJT)
-      getCorrsOf <- uses2 doubly typeState $ Cor.onAllMuts sub
-      corrsDelta <- flip execStateT M.empty $ forM mutCIsL $
-        \ci -> (getSuperCI (traceShowId ci) >>=) $ flip whenJust $ \case
-          Nothing -> modify . union =<< getCorrsOf ci -- no adjacents
-          Just (super, adjacent) -> do
-            traceShowM ("super", super)
-            traceShowM ("adjacents", adjacent)
-            adjCorrs <- sequence $ getCorrsOf <$> adjacent
-            traceShowM ("adjCorrs", adjCorrs)
-            superCorr <- getCorrsOf super
-            traceShowM ("superCorr", superCorr)
-            let delta = -- note: will include corrs on enabled muts too
-                  L.foldl' union superCorr $ negate <<<$>>> adjCorrs
-            traceShowM ("delta", delta)
-            modify (union delta)
+      let getSuperCI = TS.superCI dly new_tst mutJT
+          onDelMuts = Cor.onDelMuts dly
+
+          insertNewCorrs newCI = do
+            (newChains, _) <- Cor.composeAdds notInMut dly new_tst newCI
+            let newAddCorrs = uc Cor.onAddMuts_ <$> newChains
+            newDelCorrs <- onDelMuts new_tst newCI
+            let newCorrs = foldr union newDelCorrs newAddCorrs
+            modify $ union newCorrs -- insert
+
+          removeOldCorrs oldCI = do
+            oldChains <- Cor.composeAdds (const False) dly old_tst oldCI
+            undefined
+
+      corrsDelta <- flip execStateT M.empty $ forM_ mutCIsL $
+        \ci -> (getSuperCI (traceShowId ci) >>=) $ \case
+          Nothing -> return () -- skip
+          Just Nothing -> insertNewCorrs ci
+          Just (Just (super, adjs)) -> -- all notInMut adjs
+            insertNewCorrs super
+            >> mapM_ removeOldCorrs adjs
+
+        -- flip whenJust $ \case
+        --   Nothing -> modify . union =<< getCorrsOf ci -- no adjacents
+        --   Just (super, adjacent) -> do
+        --     traceShowM ("super", super)
+        --     traceShowM ("adjacents", adjacent)
+        --     adjCorrs <- sequence $ getCorrsOf <$> adjacent
+        --     traceShowM ("adjCorrs", adjCorrs)
+        --     superCorr <- getCorrsOf super
+        --     traceShowM ("superCorr", superCorr)
+        --     let delta = -- note: will include corrs on enabled muts too
+        --           L.foldl' union superCorr $ negate <<<$>>> adjCorrs
+        --     traceShowM ("delta", delta)
+        --     modify (union delta)
 
       -- UPDATE TYPE CIs (join)
       typeCIs %= CIs.join mutCIs
@@ -260,11 +283,11 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
              , corrsDelta `M.withoutKeys` enabled )
 
     Del -> do
-      -- CORRECTIONS BEFORE (WHILE mutCIs <: typCIs)
-      dly <- use doubly
-      getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
+      let getSuperCI = TS.superCI dly old_tst mutJT
+      -- getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
       let sub = const False -- TODO: verify this
-      getCorrsOf <- uses2 doubly typeState $ Cor.onAllMuts sub
+      getCorrsOf <- uses2 doubly typeState $ undefined -- FIXME ------------
+      -- Cor.onAllMuts sub
       corrsDelta <- flip execStateT M.empty $ forM_ mutCIsL $
         \ci -> (getSuperCI (traceShowId ci) >>=) $ flip whenJust $ \case
           Nothing -> modify . union . ffmap negate =<< getCorrsOf ci -- no rem
@@ -283,8 +306,6 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
             traceShowM ("delta", delta) --
             modify (union delta)
 
-      -- APPLY AFTER PASS
-      (enabled, expired) <- zoom typeState $ TS.pushMut mut -- APPLY
       -- UPDATE TYPE CIs JOINT TYPE
       typeCIs.CIs.jointType %= case mut of
         DelLeft s0  -> JT.deleteLeftMember s0
@@ -445,7 +466,8 @@ init_ m bigN dly ns allCIs (jt, memJointCIs) = do
   -- TODO: switch back to non-debug CIs.join --
   cisByMut <- joinByMutM tst (CIs.debug_join dly) $ M.toList allCIs
   let sub = const False -- always cancel if another in-CI immediately prec.
-  corByMut <- unions <$> mapM (Cor.onAllMuts sub dly tst) memCIsL
+  corByMut <- unions <$> undefined -- FIXME --------------------
+    -- mapM (Cor.onAllMuts sub dly tst) memCIsL
   str <- D.toList dly -- TODO: rm
   let es = M.mergeWithKey
         (Just . ME.validate jt str n'Of .:. ME.fromParamsWith n'Of) -- CIs * cor

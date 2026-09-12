@@ -55,6 +55,10 @@ makeLenses ''TypeState
 numSymbols :: Monad m => TypeT m Int
 numSymbols = leftSyms `uses` MV.length
 
+-- | Clones state
+clone :: PrimMonad m => TypeState (PrimState m) -> m (TypeState (PrimState m))
+clone (TS u0 u1) = TS <$> MV.clone u0 <*> MV.clone u1
+
 ----------
 -- INIT --
 ----------
@@ -433,18 +437,20 @@ trySingleton is | [s] <- IS.toList is = Just s
 -- STRING/CI OPERATIONS --
 --------------------------
 
--- | For a string, a type state, a joint type which is a subtype of the
--- type state, and a continuous, a maximal constructive interval (CI) in
--- the subtype on the string, return the super-CI of the given CI in the
--- type state, but only if this super-CI doesn't contain another CI
--- member of the given joint type on the left of the given CI (for
--- unique realization). This way a mapMaybe over a set of CIs will
--- return a set (rather than a multiset) of super-CIs. Explicitly:
--- returns `Nothing` if the superCI is canonically realized by another
--- CI on its left, `Just Nothing` if the superCI is itself (not strictly
--- super), and `Just (Just _)` otherwise. Returns the superCI (fst) and
--- the remainder CIs from subtracting the given JointType from the
--- TypeState (snd) from left to right (in order).
+-- | For a string, a type state, a joint type **which is a subtype of
+-- the type state**, and a continuous, a maximal constructive interval
+-- (CI) in the subtype on the string, return the super-CI of the given
+-- CI in the type state, but only if this super-CI doesn't contain
+-- another CI member of the given joint (sub-)type on the left of the
+-- given CI (for injectivity).
+--
+-- Explicitly: returns `Nothing` if the superCI is canonically mapped on
+-- by another CI on its left, `Just Nothing` if the superCI is itself
+-- (not strictly super), and `Just (Just _)` otherwise.
+--
+-- Returns the superCI (fst) and the remainder CIs from taking aways all
+-- of the given JointType's intervals from the superCI (snd), in
+-- left-to-right order.
 superCI :: forall m. PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> JointType -> CI -> m (Maybe (Maybe (CI, [CI])))
 superCI dly tst jt (CI hd0 shd0 len0 tl0 stl0) = do
@@ -453,7 +459,7 @@ superCI dly tst jt (CI hd0 shd0 len0 tl0 stl0) = do
     Nothing -> return $ Just Nothing -- same
     Just (phd, sphd) -> (member tst sphd shd0 >>=) $ \case
       False -> return $ Just Nothing -- same
-      True -> expandBwd hd0 shd0 phd sphd 2 -- tl first
+      True -> goBwd hd0 shd0 phd sphd 2 -- tl first
 
   case bwd of
     Nothing -> return Nothing -- canceled (escaladed from expandBwd)
@@ -462,7 +468,7 @@ superCI dly tst jt (CI hd0 shd0 len0 tl0 stl0) = do
         Nothing -> return Nothing -- same
         Just (ntl, sntl) -> (member tst stl0 sntl >>=) $ \case
           False -> return Nothing -- same
-          True -> Just <$> expandFwd tl0 stl0 2 ntl sntl -- GT
+          True -> Just <$> goFwd tl0 stl0 2 ntl sntl -- GT
 
       return $ Just $ case (bwd', fwd) of
         (Nothing, Nothing) -> Nothing -- same: Just Nothing
@@ -476,7 +482,7 @@ superCI dly tst jt (CI hd0 shd0 len0 tl0 stl0) = do
           let len = lenBwd + len0 + lenFwd - 2
           in Just (CI hd shd len tl stl, lrem:rems)
   where
-    expandBwd tl stl = go
+    goBwd tl stl = go
       where
         go hd shd !len = (D.prev dly hd >>=) $ \case
           Nothing -> return $ Just $ Just ci -- eos
@@ -486,8 +492,8 @@ superCI dly tst jt (CI hd0 shd0 len0 tl0 stl0) = do
                  | otherwise -> go phd sphd (len+1) -- continue
           where ci = CI hd shd len tl stl
 
-    expandFwd hd shd = goRem [] 1 hd shd -- (len+remLen-1) overlap logic
-      where                              -- requires we start with len 1
+    goFwd hd shd = goRem [] 1 hd shd -- (len+remLen-1) overlap logic
+      where                          -- requires we start with len 1
         goRem rems len remHd remShd = go
           where -- a remainder is inside TypeState but outside jt
             go !remLen tl stl = (D.next dly tl >>=) $ \case
