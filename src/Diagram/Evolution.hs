@@ -239,7 +239,7 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
   -- ENUMERATE CORRECTION AND APPLY MUT (IN THE RIGHT ORDER)
   (enabledMuts, expiredMuts, mutCorDelta) <- case typeOfMut mut of
     Add -> do
-      let getSuperCI = TS.superCI dly new_tst mutJT
+      let getSuperCI = Cor.superCI dly new_tst mutJT
           onDelMuts = Cor.onDelMuts dly
 
           insertNewCorrs newCI = do
@@ -283,7 +283,7 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
              , corrsDelta `M.withoutKeys` enabled )
 
     Del -> do
-      let getSuperCI = TS.superCI dly old_tst mutJT
+      let getSuperCI = Cor.superCI dly old_tst mutJT
       -- getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
       let sub = const False -- TODO: verify this
       getCorrsOf <- uses2 doubly typeState $ undefined -- FIXME ------------
@@ -420,7 +420,7 @@ introMut mut = do
     Del -> do
       dly <- use doubly
       flip execStateT IM.empty $ forM_ mutCIsL $ \ci ->
-        (lift (TS.superCI dly tst mutJT ci) >>=) $ \case
+        (lift (Cor.superCI dly tst mutJT ci) >>=) $ \case
         Just Nothing -> return () -- super is identical, do nothing
         Nothing -> do -- super doesn't start here, but ci is inside it
           ciCounts <- lift (CI.symCounts dly ci)

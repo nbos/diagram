@@ -22,6 +22,8 @@ import Diagram.Primitive
 import Diagram.String
 
 import qualified Diagram.Doubly as D
+import Diagram.JointType (JointType)
+import qualified Diagram.JointType as JT
 import Diagram.ConstrInterval(CI(..))
 import qualified Diagram.ConstrInterval as CI
 
@@ -324,3 +326,86 @@ decomposeIn str tst ci@(CI hd shd len tl _)
 
 err :: [Char] -> a
 err = error . ("Correction." ++)
+
+----------
+-- MORE --
+----------
+
+-- | For a string, a type state, a joint type **which is a subtype of
+-- the type state**, and a continuous, a maximal constructive interval
+-- (CI) in the subtype on the string, return the super-CI of the given
+-- CI in the type state, but only if this super-CI doesn't contain
+-- another CI member of the given joint (sub-)type on the left of the
+-- given CI (for injectivity).
+--
+-- Explicitly: returns `Nothing` if the superCI is canonically mapped on
+-- by another CI on its left, `Just Nothing` if the superCI is itself
+-- (not strictly super), and `Just (Just _)` otherwise.
+--
+-- Returns the superCI (fst) and the remainder CIs from taking aways all
+-- of the given JointType's intervals from the superCI (snd), in
+-- left-to-right order.
+superCI :: forall m. PrimMonad m => Doubly (PrimState m) ->
+  TypeState (PrimState m) -> JointType -> CI -> m (Maybe (Maybe (CI, [CI])))
+superCI dly tst jt (CI hd0 shd0 len0 tl0 stl0) = do
+
+  bwd <- (D.prev dly hd0 >>=) $ \case
+    Nothing -> return $ Just Nothing -- same
+    Just (phd, sphd) -> (TS.member tst sphd shd0 >>=) $ \case
+      False -> return $ Just Nothing -- same
+      True -> goBwd hd0 shd0 phd sphd 2 -- tl first
+
+  case bwd of
+    Nothing -> return Nothing -- canceled (escaladed from expandBwd)
+    Just bwd' -> do
+      fwd <- (D.next dly tl0 >>=) $ \case
+        Nothing -> return Nothing -- same
+        Just (ntl, sntl) -> (TS.member tst stl0 sntl >>=) $ \case
+          False -> return Nothing -- same
+          True -> Just <$> goFwd tl0 stl0 2 ntl sntl -- GT
+
+      return $ Just $ case (bwd', fwd) of
+        (Nothing, Nothing) -> Nothing -- same: Just Nothing
+        (Nothing, Just (CI _ _ lenFwd tl stl, rems)) ->
+          let len = len0 + lenFwd - 1
+          in Just (CI hd0 shd0 len tl stl, rems)
+        (Just lrem@(CI hd shd lenBwd _ _), Nothing) ->
+          let len = lenBwd + len0 - 1
+          in Just (CI hd shd len tl0 stl0, [lrem])
+        (Just lrem@(CI hd shd lenBwd _ _), Just (CI _ _ lenFwd tl stl, rems)) ->
+          let len = lenBwd + len0 + lenFwd - 2
+          in Just (CI hd shd len tl stl, lrem:rems)
+  where
+    goBwd tl stl = go
+      where
+        go hd shd !len = (D.prev dly hd >>=) $ \case
+          Nothing -> return $ Just $ Just ci -- eos
+          Just (phd, sphd) -> (TS.member tst sphd shd >>=) $ \case
+            False -> return $ Just $ Just ci -- end
+            True | JT.member (sphd,shd) jt -> return Nothing -- canceled
+                 | otherwise -> go phd sphd (len+1) -- continue
+          where ci = CI hd shd len tl stl
+
+    goFwd hd shd = goRem [] 1 hd shd -- (len+remLen-1) overlap logic
+      where                          -- requires we start with len 1
+        goRem rems len remHd remShd = go
+          where -- a remainder is inside TypeState but outside jt
+            go !remLen tl stl = (D.next dly tl >>=) $ \case
+              Nothing -> return (super, reverse rems') -- eos
+              Just (ntl, sntl) -> (TS.member tst stl sntl >>=) $ \case
+                True | JT.member (stl,sntl) jt ->
+                         goJT rems' (len+remLen-1) ntl sntl -- switch
+                     | otherwise -> go (remLen+1) ntl sntl -- cont.
+                False -> return (super, reverse rems') -- end
+              where super = CI hd shd (len+remLen-1) tl stl
+                    rems' = (CI remHd remShd remLen tl stl):rems
+
+        goJT rems !len tl stl = (D.next dly tl >>=) $ \case
+          Nothing -> return (super, reverse rems) -- eos
+          Just (ntl, sntl) -> (TS.member tst stl sntl >>=) $ \case
+            True | JT.member (stl,sntl) jt ->
+                     goJT rems (len+1) ntl sntl -- cont.
+                 | otherwise ->
+                     goRem rems len tl stl 2 ntl sntl -- switch
+            False -> return (super, reverse rems) -- end
+          where super = CI hd shd len tl stl
