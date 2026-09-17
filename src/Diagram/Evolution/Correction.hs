@@ -8,7 +8,7 @@ import Prelude hiding (init)
 import Control.Monad
 import Control.Monad.State.Strict
 
--- import Data.Maybe
+import Data.Maybe
 import qualified Data.List as L
 import Data.List.NonEmpty (NonEmpty(..),(<|))
 import qualified Data.List.NonEmpty as NE
@@ -39,24 +39,28 @@ import Diagram.Util
 -- symbol counts of the CIs and those of the mutation's (i.e. (cis.ns +
 -- mut.cis.ns)).
 
--- onAllMuts :: PrimMonad m => ((Sym, Sym) -> Bool) -> Doubly (PrimState m) ->
---   TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
--- onAllMuts sub dly tst ci = do
---   onAdd <- onAddMuts sub dly tst ci
---   onDel <- onDelMuts dly tst ci
---   return $ M.unionWith (error "impossible") onAdd onDel
+-- The logic is very much cursed and choices were made ultimately to
+-- accomodate Cor. delta computation inside Evolution.pushMut.
+
+onAllMuts :: PrimMonad m => Doubly (PrimState m) -> TypeState (PrimState m) ->
+             CI -> m (Map Mutation (IntMap Int))
+onAllMuts dly tst ci = do
+  onAdd <- onAddMuts dly tst ci
+  onDel <- onDelMuts dly tst ci
+  return $ M.unionWith (error "impossible") onAdd onDel
 
 ----------------------
 -- ON ADD MUTATIONS --
 ----------------------
 
--- -- | Corrections on add-muts regarding all chains of a given CI. See
--- -- @onAddMuts_@.
--- onAddMuts :: PrimMonad m => ((Sym, Sym) -> Bool) -> Doubly (PrimState m) ->
---   TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
--- onAddMuts = fmap (unions . fmap (uc onAddMuts_)) .:: composeAdds
---   where unions = fromMaybe M.empty . foldTree union
---         union = M.unionWith (IM.unionWith (+))
+-- | Corrections on add-muts regarding all chains of a given CI,
+-- injective, with no `sub` predicate.
+onAddMuts :: PrimMonad m => Doubly (PrimState m) -> TypeState (PrimState m) ->
+             CI -> m (Map Mutation (IntMap Int))
+onAddMuts = fmap (maybe M.empty $ unions . fmap (uc onAddMuts_) . fst)
+            .:. composeAdds (const False)
+  where unions = fromMaybe M.empty . foldTree union
+        union = M.unionWith (IM.unionWith (+))
 
 -- WHERE --
 
@@ -80,30 +84,34 @@ onAddMuts_ mut cis = M.singleton mut $ flip execState IM.empty $ do
 
 -- | Grab the largest chain possible, if CI is first in the chain (for
 -- injectivity), for zero, one or two mutations (prec. & next, if they
--- are different), also returning the set of in-CIs satisfying the `sub`
--- predicate.
+-- are different). The `sub` parameter allows to refine the condition by
+-- which extension to the left is interrupted, returning chains even if
+-- input is not the first in-CI, provided that all the left ones inhabit
+-- the `sub` predicate.
 --
--- In some way this function is the inverse of @decomposeIn@. This chain
--- is the level at which add-mut corrections have to be calculated
+-- We also return the set of in-CIs satisfying the `sub` predicate, both
+-- on the left and the right (but not within the given input CI).
+--
+-- This is the level at which add-mut corrections have to be calculated
 -- because of how parity might cascade down an arbitrary number of type
--- CIs interspersed by mut-added CIs.
+-- CIs interspersed by mut-added CIs. In some way this function is the
+-- inverse of @decomposeIn@.
 composeAdds :: PrimMonad m => ((Sym, Sym) -> Bool) ->
   Doubly (PrimState m) -> TypeState (PrimState m) ->
-  CI -> m ([(Mutation, NonEmpty CI)], [CI])
+  CI -> m (Maybe ([(Mutation, NonEmpty CI)], [CI]))
 composeAdds sub dly tst ci = (prevCIs >>=) $ \case
-  Nothing -> return ([],[]) -- skip
-
-  Just Nothing -> (<$> nextCIs) $ \case
-    Nothing -> ([],[])
-    Just (addMut, nexts, rsubs) -> ([(addMut, ci <| nexts)], rsubs)
-
-  Just (Just (addMut, prv, lsubs)) -> (<$> nextCIs) $ \case
-    Nothing -> ([(addMut, prv <> (ci:|[]))], lsubs)
-    Just (addMut', nexts, rsubs)
-      | addMut == addMut' -> ([(addMut, prv <> (ci <| nexts))], subs)
-      | otherwise -> ( [ (addMut, prv <> (ci:|[]))
-                       , (addMut', ci <| nexts) ], subs )
-      where subs = lsubs ++ rsubs
+  Nothing -> return Nothing -- ran into non-sub in-CI: escalate
+  Just prev -> do
+    next <- nextCIs
+    return $ Just $ case (prev, next) of
+      (Nothing, Nothing) -> ([],[])
+      (Nothing, Just (addMut, nexts, rsubs)) -> ([(addMut, ci <| nexts)], rsubs)
+      (Just (addMut, prv, lsubs), Nothing) -> ([(addMut, prv <> (ci:|[]))], lsubs)
+      (Just (addMut, prv, lsubs), Just (addMut', nexts, rsubs))
+        | addMut == addMut' -> ([(addMut, prv <> (ci <| nexts))], subs)
+        | otherwise -> ( [ (addMut, prv <> (ci:|[]))
+                         , (addMut', ci <| nexts) ], subs )
+        where subs = lsubs ++ rsubs
   where
     prevCIs = prevMutCI  sub dly tst ci
     nextCIs = nextMutCIs sub dly tst ci

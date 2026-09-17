@@ -35,6 +35,7 @@ import Diagram.JointType (JointType)
 import qualified Diagram.JointType as JT
 import Diagram.String
 import qualified Diagram.ConstrInterval as CI
+import Diagram.ConstrInterval (CI)
 import Diagram.ConstrIntervals (CIs(CIs))
 import qualified Diagram.ConstrIntervals as CIs
 import qualified Diagram.Doubly as D
@@ -222,99 +223,91 @@ getMutCountIntervals ddns = do
 -- UPDATE --
 ------------
 
--- | Apply a mutation, update books
-pushMut :: forall m. PrimMonad m => MutEntry -> EvolutionT m ()
-pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
+type Cor = Map Mutation (IntMap Int)
 
-  CIs _ typNdns _ _ <- use typeCIs
-  old_tst <- TS.clone =<< use typeState
-  (enabled, expired) <- zoom typeState $ TS.pushMut mut -- APPLY
+-- | Apply a mutation, update books.
+pushMut :: forall m. PrimMonad m => MutEntry -> EvolutionT m ()
+pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
+
+  CIs _ oldTypNdns _ _ <- use typeCIs -- (before we modify)
+  old_tst <- TS.clone =<< use typeState -- for Cor delta, difficult otherwise
+  (enabledMuts, expiredMuts) <- zoom typeState $ TS.pushMut mut -- [APPLY]
   new_tst <- use typeState
-  dly <- use doubly
+  dly <- use doubly -- convenient
+
+  -- [typeCIs]: We could modify CIs with CIs.join for Add, but for Del
+  -- we need to go CI-by-CI, deleting supers and inserting remainders,
+  -- and manually deleting symbols from the JT, because CIs are not
+  -- indexed by other symbols than their head and tail, and there is no
+  -- point to. Since we go over all mutCIs anyway to compute the Cor
+  -- delta, we do it manually whether we're in Add or Del. First, we
+  -- modify the JT here, and do all the insert-deleting in the loop.
+  typeCIs.CIs.jointType %= JT.appValidMut mut
+  --
 
   let mutCIsL = IM.elems mutCIsBhd
       notInMut = not . (`JT.member` mutJT)
+      cisInsert = CIs.insertDisjoint dly
+      cisDelete = CIs.deleteExisting dly
 
-
-  -- ENUMERATE CORRECTION AND APPLY MUT (IN THE RIGHT ORDER)
-  (enabledMuts, expiredMuts, mutCorDelta) <- case typeOfMut mut of
+  mutCorDelta <- case typeOfMut mut of
     Add -> do
-      let getSuperCI = Cor.superCI dly new_tst mutJT
-          onDelMuts = Cor.onDelMuts dly
+      let procNewSuper :: CI -> [CI] -> StateT Cor (EvolutionT m) ()
+          procNewSuper super subs = do -- subs are adjacents to mut ci
+            -- Del Cor, unconditionally
+            newDelCor <- Cor.onDelMuts dly new_tst super
+            oldDelCor <- forM subs $ Cor.onDelMuts dly old_tst
+            modify $ union $ foldr union newDelCor $ negate <<<$>>> oldDelCor
 
-          insertNewCorrs newCI = do
-            (newChains, _) <- Cor.composeAdds notInMut dly new_tst newCI
-            let newAddCorrs = uc Cor.onAddMuts_ <$> newChains
-            newDelCorrs <- onDelMuts new_tst newCI
-            let newCorrs = foldr union newDelCorrs newAddCorrs
-            modify $ union newCorrs -- insert
+            -- Add Cor, if canonical in chain
+            (Cor.composeAdds notInMut dly new_tst super >>=) $ \case
+              Nothing -> return () -- skip if prevMutCI cancels
+              Just (newAddChains, subs') -> do
+                let newAddCor = uc Cor.onAddMuts_ <$> newAddChains
+                oldAddCor <- forM (subs ++ subs') $ Cor.onAddMuts dly old_tst
+                flip whenJust (modify . union) $
+                  foldTree union $ newAddCor ++ (negate <<<$>>> oldAddCor)
 
-          removeOldCorrs oldCI = do
-            oldChains <- Cor.composeAdds (const False) dly old_tst oldCI
-            undefined
+            -- typeCIs update (EvolutionT)
+            lift $ typeCIs %== foldr (>=>) (cisInsert super) -- insert after
+                                           (cisDelete <$> subs) -- dels first
 
       corrsDelta <- flip execStateT M.empty $ forM_ mutCIsL $
-        \ci -> (getSuperCI (traceShowId ci) >>=) $ \case
-          Nothing -> return () -- skip
-          Just Nothing -> insertNewCorrs ci
-          Just (Just (super, adjs)) -> -- all notInMut adjs
-            insertNewCorrs super
-            >> mapM_ removeOldCorrs adjs
+        \ci -> (Cor.superCI dly new_tst mutJT (traceShowId ci) >>=) $ \case
+          Nothing -> return () -- respect canonicity in superCI
+          Just Nothing -> procNewSuper ci []
+          Just (Just (super, subs)) -> procNewSuper super subs
 
-        -- flip whenJust $ \case
-        --   Nothing -> modify . union =<< getCorrsOf ci -- no adjacents
-        --   Just (super, adjacent) -> do
-        --     traceShowM ("super", super)
-        --     traceShowM ("adjacents", adjacent)
-        --     adjCorrs <- sequence $ getCorrsOf <$> adjacent
-        --     traceShowM ("adjCorrs", adjCorrs)
-        --     superCorr <- getCorrsOf super
-        --     traceShowM ("superCorr", superCorr)
-        --     let delta = -- note: will include corrs on enabled muts too
-        --           L.foldl' union superCorr $ negate <<<$>>> adjCorrs
-        --     traceShowM ("delta", delta)
-        --     modify (union delta)
-
-      -- UPDATE TYPE CIs (join)
-      typeCIs %= CIs.join mutCIs
-      -- TODO: couldn't CIs.join give us adjacent for free?
-
-      return ( enabled, expired
-             , corrsDelta `M.withoutKeys` enabled )
+      return $ corrsDelta `M.withoutKeys` enabledMuts
 
     Del -> do
-      let getSuperCI = Cor.superCI dly old_tst mutJT
-      -- getSuperCI <- uses2 doubly typeState TS.superCI ?? mutJT
-      let sub = const False -- TODO: verify this
-      getCorrsOf <- uses2 doubly typeState $ undefined -- FIXME ------------
-      -- Cor.onAllMuts sub
+      let procOldSuper :: CI -> [CI] -> StateT Cor (EvolutionT m) ()
+          procOldSuper super rems = do
+            -- Del Cor, unconditionally
+            oldDelCor <- Cor.onDelMuts dly old_tst super
+            newDelCor <- forM rems $ Cor.onDelMuts dly new_tst
+            modify $ union $ foldr union (negate <<$>> oldDelCor) newDelCor
+
+            -- Add Cor, if canonical in chain
+            (Cor.composeAdds notInMut dly old_tst super >>=) $ \case
+              Nothing -> return () -- skip if prevMutCI cancels
+              Just (oldAddChains, subs') -> do
+                let oldAddCor = uc Cor.onAddMuts_ <$> oldAddChains
+                newAddCor <- forM (rems ++ subs') $ Cor.onAddMuts dly new_tst
+                flip whenJust (modify . union) $
+                  foldTree union $ newAddCor ++ (negate <<<$>>> oldAddCor)
+
+            -- typeCIs update (EvolutionT)
+            lift $ typeCIs %== foldr (<=<) (cisDelete super) -- insert after
+                                           (cisInsert <$> rems) -- dels first
+
       corrsDelta <- flip execStateT M.empty $ forM_ mutCIsL $
-        \ci -> (getSuperCI (traceShowId ci) >>=) $ flip whenJust $ \case
-          Nothing -> modify . union . ffmap negate =<< getCorrsOf ci -- no rem
-          Just (super, rems) -> do
-            traceShowM ("super", super) --
-            traceShowM ("rems", rems) --
-            -- UPDATE TYPE CIs (delete super, insert remainder)
-            lift $ typeCIs %== ( L.foldl' (>=>) (CIs.deleteExisting dly super) $
-                                 CIs.insertDisjoint dly <$> rems )
-            old <- getCorrsOf super
-            traceShowM ("old", old) --
-            new <- sequence $ getCorrsOf <$> rems
-            traceShowM ("new", new) --
-            let delta = -- note: will include corrs on expired muts too
-                  L.foldl' union (negate <<$>> old) new
-            traceShowM ("delta", delta) --
-            modify (union delta)
+        \ci -> (Cor.superCI dly old_tst mutJT (traceShowId ci) >>=) $ \case
+          Nothing -> return () -- skip
+          Just Nothing -> procOldSuper ci []
+          Just (Just (super, rems)) -> procOldSuper super rems
 
-      -- UPDATE TYPE CIs JOINT TYPE
-      typeCIs.CIs.jointType %= case mut of
-        DelLeft s0  -> JT.deleteLeftMember s0
-        DelRight s1 -> JT.deleteRightMember s1
-        Del2 s0 s1  -> JT.deleteLeftMember s0 . JT.deleteRightMember s1
-        _else -> error "impossible"
-
-      return ( enabled, expired
-             , corrsDelta `M.withoutKeys` expired )
+      return $ corrsDelta `M.withoutKeys` expiredMuts
 
   -- DELETE EACH EXPIRED MUT
   zoom mutBooks $ mapM_ MB.delete $ Set.toList expiredMuts
@@ -339,7 +332,7 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
                 new_n' = old_n' + ddn
                 dLoss = logFact new_n' - logFact old_n'
             in seq dLoss (old_n', new_n', dLoss) )
-        typNdns mutDdns
+        oldTypNdns mutDdns
 
   getAffectedMuts <- mutBooks `uses` MB.affectedMuts
   let unionIl = M.unionWithKey $
@@ -382,7 +375,7 @@ pushMut (ME mut _ mutDdns mutDnm mutCIs@(CIs mutJT _ mutCIsBhd _)) = do
             ( const IM.empty ) -- no eDdn, no cor ==> no dnsLoss
             ( IM.mapWithKey $ \s (eDdn, eDdn') -> -- cor only
                 let n       = ns U.! s
-                    ndn     = fromMaybe 0 $ IM.lookup s typNdns
+                    ndn     = fromMaybe 0 $ IM.lookup s oldTypNdns
                     n'      = n - ndn -- old == new
                     old_n'' = n' + eDdn
                     new_n'' = n' + eDdn'
@@ -417,7 +410,7 @@ introMut mut = do
   typCIs@(CIs jt ndns _ _) <- use typeCIs
   cor <- fmap clean $ case typeOfMut mut of
     Add -> return $ snd $ CIs.join_ typCIs mutCIs
-    Del -> do
+    Del -> do -- manually count difference
       dly <- use doubly
       flip execStateT IM.empty $ forM_ mutCIsL $ \ci ->
         (lift (Cor.superCI dly tst mutJT ci) >>=) $ \case
@@ -465,9 +458,7 @@ init_ m bigN dly ns allCIs (jt, memJointCIs) = do
 
   -- TODO: switch back to non-debug CIs.join --
   cisByMut <- joinByMutM tst (CIs.debug_join dly) $ M.toList allCIs
-  let sub = const False -- always cancel if another in-CI immediately prec.
-  corByMut <- unions <$> undefined -- FIXME --------------------
-    -- mapM (Cor.onAllMuts sub dly tst) memCIsL
+  corByMut <- unions <$> mapM (Cor.onAllMuts dly tst) memCIsL
   str <- D.toList dly -- TODO: rm
   let es = M.mergeWithKey
         (Just . ME.validate jt str n'Of .:. ME.fromParamsWith n'Of) -- CIs * cor

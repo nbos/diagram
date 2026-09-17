@@ -87,6 +87,7 @@ extension_ (JT u0 u1) = [ (s0,s1) | s0 <- s0s, s1 <- s1s ]
 -- MODIFY --
 ------------
 
+-- | Safe apply a mut
 appMut :: Mutation -> JointType -> JointType
 appMut (AddLeft  s0) = insertLeft  s0
 appMut (AddRight s1) = insertRight s1
@@ -94,6 +95,17 @@ appMut (Add2  s0 s1) = insertBoth  s0 s1
 appMut (DelLeft  s0) = deleteLeft  s0
 appMut (DelRight s1) = deleteRight s1
 appMut (Del2  s0 s1) = deleteBoth  s0 s1
+
+-- | Apply a mut, where all added symbols are missing from the type and
+-- all deleted symbols are members of the type in their respective
+-- positions.
+appValidMut :: Mutation -> JointType -> JointType
+appValidMut (AddLeft  s0) = insertLeftMissing  s0
+appValidMut (AddRight s1) = insertRightMissing s1
+appValidMut (Add2  s0 s1) = insertBothMissing s0 s1
+appValidMut (DelLeft  s0) = deleteLeftMember s0
+appValidMut (DelRight s1) = deleteRightMember s1
+appValidMut (Del2  s0 s1) = deleteBothMember s0 s1
 
 -- | Safe left insertion
 insertLeft :: Sym -> JointType -> JointType
@@ -142,6 +154,11 @@ deleteRightMember s = right %~ UT.deleteMember s
 
 deleteBoth :: Sym -> Sym -> JointType -> JointType
 deleteBoth s0 s1 = deleteRight s1 . deleteLeft s0
+
+deleteBothMember :: Sym -> Sym -> JointType -> JointType
+deleteBothMember s0 s1 (JT u0 u1) = JT u0' u1'
+  where u0' = UT.deleteMember s0 u0
+        u1' = UT.deleteMember s1 u1
 
 -------------
 -- LATTICE --
