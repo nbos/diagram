@@ -3,6 +3,8 @@
 
 module Diagram.Evolution.Correction (module Diagram.Evolution.Correction) where
 
+import Debug.Trace
+
 import Prelude hiding (init)
 
 import Control.Monad
@@ -261,9 +263,13 @@ nextMutCIs sub str tst (CI _ _ _ i0 s0) = (D.next str i0 >>=) $ \case
 onDelMuts :: PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
 onDelMuts dly tst supCI@(CI _ _ supLen supTl supStl) = do
-  fmap go . M.fromListWith (<>)
-    . reverse -- preserve order through (<>)
-    . ffmap NE.singleton <$> decomposeIn dly tst supCI
+  traceM ""
+  traceShowM supCI
+  res <- fmap go . M.fromListWith (<>)
+         . reverse -- preserve order through (<>)
+         . ffmap NE.singleton <$> decomposeIn dly tst supCI
+  traceShowM res
+  return res
   where
     supLenEven = even supLen
     go :: NonEmpty (Bool, CI) -> IntMap Int
@@ -296,16 +302,16 @@ onDelMuts dly tst supCI@(CI _ _ supLen supTl supStl) = do
             nextRemPhase =  -- | even len   = not hp
               lenEven /= hp -- | othwerwise = hp
 
-        -- decrement: every symbol that is counted in the del CI, but will
-        -- still be constr. in the remainder CI
-        dec :: Sym -> State (IntMap Int) ()
-        dec = inc_ (-1)
-        -- increment: every symbol that is not counted in the del CI,
-        -- but still gets its count reduced in the remainder CI
-        inc :: Sym -> State (IntMap Int) ()
-        inc = inc_ 1
-        inc_ :: Int -> Sym -> State (IntMap Int) ()
-        inc_ d s = modify $ IM.insertWith (+) s d
+    -- decrement: every symbol that is counted in the del CI, but will
+    -- still be constr. in the remainder CI
+    dec :: Sym -> State (IntMap Int) ()
+    dec = inc_ (-1)
+    -- increment: every symbol that is not counted in the del CI,
+    -- but still gets its count reduced in the remainder CI
+    inc :: Sym -> State (IntMap Int) ()
+    inc = inc_ 1
+    inc_ :: Int -> Sym -> State (IntMap Int) ()
+    inc_ d s = modify $ IM.insertWith (+) s d
 
 -- WHERE --
 
@@ -316,8 +322,8 @@ onDelMuts dly tst supCI@(CI _ _ supLen supTl supStl) = do
 -- 1\/True is odd\/non-constr.
 decomposeIn :: PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m [(Mutation, (Bool, CI))]
-decomposeIn str tst ci@(CI hd shd len tl _)
-  | len == 2  = (,(False,ci)) <<$>> TS.delMutsOf tst hd tl
+decomposeIn str tst ci@(CI hd shd len _ stl)
+  | len == 2  = (,(False,ci)) <<$>> TS.delMutsOf tst shd stl
   | otherwise = go [] False hd shd . drop 1 =<< CI.symExtension str ci
   where
     go mcis _ _ _ [] = return mcis
