@@ -10,7 +10,6 @@ import Prelude hiding (init)
 import Control.Monad
 import Control.Monad.State.Strict
 
-import Data.Maybe
 import qualified Data.List as L
 import Data.List.NonEmpty (NonEmpty(..),(<|))
 import qualified Data.List.NonEmpty as NE
@@ -41,11 +40,35 @@ import Diagram.Util
 -- symbol counts of the CIs and those of the mutation's (i.e. (cis.ns +
 -- mut.cis.ns)).
 
--- The logic is very much cursed and choices were made ultimately to
--- accomodate Cor. delta computation inside Evolution.pushMut.
+---------
+-- Cor --
+---------
 
-onAllMuts :: PrimMonad m => Doubly (PrimState m) -> TypeState (PrimState m) ->
-             CI -> m (Map Mutation (IntMap Int))
+type Cor = Map Mutation (IntMap Int)
+
+empty :: Cor
+empty = M.empty
+
+-- | Instead of M.unionWith (IM.unionWith (+)) and having to worry about
+-- empty\/null entries
+union :: Cor -> Cor -> Cor
+union = M.mergeWithKey (const f) id id
+  where
+    f :: IntMap Int -> IntMap Int -> Maybe (IntMap Int)
+    f = nothingIf IM.null .: IM.mergeWithKey (const g) id id
+    g :: Int -> Int -> Maybe Int
+    g = nothingIf (==0) .: (+)
+
+unions :: [Cor] -> Cor
+unions [] = empty
+unions (c:cs) = L.foldl' union c cs -- (use foldTree?)
+
+-----------------
+-- ENTRY POINT --
+-----------------
+
+onAllMuts :: PrimMonad m =>
+  Doubly (PrimState m) -> TypeState (PrimState m) -> CI -> m Cor
 onAllMuts dly tst ci = do
   onAdd <- onAddMuts dly tst ci
   onDel <- onDelMuts dly tst ci
@@ -59,10 +82,8 @@ onAllMuts dly tst ci = do
 -- injective, with no `sub` predicate.
 onAddMuts :: PrimMonad m => Doubly (PrimState m) -> TypeState (PrimState m) ->
              CI -> m (Map Mutation (IntMap Int))
-onAddMuts = fmap (maybe M.empty $ unions . fmap (uc onAddMuts_) . fst)
+onAddMuts = fmap (maybe empty $ unions . fmap (uc onAddMuts_) . fst)
             .:. composeAdds (const False)
-  where unions = fromMaybe M.empty . foldTree union
-        union = M.unionWith (IM.unionWith (+))
 
 -- WHERE --
 
@@ -75,14 +96,17 @@ onAddMuts = fmap (maybe M.empty $ unions . fmap (uc onAddMuts_) . fst)
 -- added to the mut's CIs' counts *before* they are added/subtracted
 -- from the type's or string's counts.
 onAddMuts_ :: Mutation -> NonEmpty CI -> Map Mutation (IntMap Int)
-onAddMuts_ mut cis = M.singleton mut $ flip execState IM.empty $ do
-  forM_ (NE.init cis) $ \(CI _ _ len _ stl) ->
-    when (even len) $ modify $ IM.insertWith (+) stl (-1)
-  let CI _ _ oldLen _ tailSym = NE.last cis
-      newLen = sum (_ciLength <$> cis) -- constituents lengths
-               - (length cis - 1) -- overlaps
-      d = fromEnum (even newLen) - fromEnum (even oldLen)
-  when (d /= 0) $ modify $ IM.insertWith (+) tailSym d
+onAddMuts_ mut cis | IM.null cor = M.empty
+                   | otherwise   = M.singleton mut cor
+  where
+    cor = IM.filter (/= 0) $ flip execState IM.empty $ do
+      forM_ (NE.init cis) $ \(CI _ _ len _ stl) ->
+        when (even len) $ modify $ IM.insertWith (+) stl (-1)
+      let CI _ _ oldLen _ tailSym = NE.last cis
+          newLen = sum (_ciLength <$> cis) -- constituents lengths
+                   - (length cis - 1) -- overlaps
+          d = fromEnum (even newLen) - fromEnum (even oldLen)
+      when (d /= 0) $ modify $ IM.insertWith (+) tailSym d
 
 -- | Grab the largest chain possible, if CI is first in the chain (for
 -- injectivity), for zero, one or two mutations (prec. & next, if they
@@ -262,10 +286,13 @@ nextMutCIs sub str tst (CI _ _ _ i0 s0) = (D.next str i0 >>=) $ \case
 -- they are added/subtracted from the string's or type's counts.
 onDelMuts :: PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
+onDelMuts _ _ (CI _ _ 2 _ _) = return M.empty
 onDelMuts dly tst supCI@(CI _ _ supLen supTl supStl) = do
   traceM ""
-  traceShowM supCI
-  res <- fmap go . M.fromListWith (<>)
+  traceM $ "onDelMuts: " ++ show supCI
+  res <- M.filter (not . IM.null) -- clean
+         . fmap (IM.filter (/= 0) .  go)
+         . M.fromListWith (<>)
          . reverse -- preserve order through (<>)
          . ffmap NE.singleton <$> decomposeIn dly tst supCI
   traceShowM res

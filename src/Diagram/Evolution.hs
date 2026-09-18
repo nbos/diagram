@@ -43,6 +43,7 @@ import qualified Diagram.Doubly as D
 import Diagram.Evolution.Math (logFact)
 import qualified Diagram.Evolution.Math as Math
 import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
+import Diagram.Evolution.Correction (Cor)
 import qualified Diagram.Evolution.Correction as Cor
 import Diagram.Evolution.TypeState (TypeState)
 import qualified Diagram.Evolution.TypeState as TS
@@ -223,8 +224,6 @@ getMutCountIntervals ddns = do
 -- UPDATE --
 ------------
 
-type Cor = Map Mutation (IntMap Int)
-
 -- | Apply a mutation, update books.
 pushMut :: forall m. PrimMonad m => MutEntry -> EvolutionT m ()
 pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
@@ -257,7 +256,8 @@ pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
             -- Del Cor, unconditionally
             newDelCor <- Cor.onDelMuts dly new_tst super
             oldDelCor <- forM subs $ Cor.onDelMuts dly old_tst
-            modify $ union $ foldr union newDelCor $ negate <<<$>>> oldDelCor
+            modify $ Cor.union $
+              foldr Cor.union newDelCor $ negate <<<$>>> oldDelCor
 
             -- Add Cor, if canonical in chain
             (Cor.composeAdds notInMut dly new_tst super >>=) $ \case
@@ -265,8 +265,8 @@ pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
               Just (newAddChains, subs') -> do
                 let newAddCor = uc Cor.onAddMuts_ <$> newAddChains
                 oldAddCor <- forM (subs ++ subs') $ Cor.onAddMuts dly old_tst
-                flip whenJust (modify . union) $
-                  foldTree union $ newAddCor ++ (negate <<<$>>> oldAddCor)
+                flip whenJust (modify . Cor.union) $
+                  foldTree Cor.union $ newAddCor ++ (negate <<<$>>> oldAddCor)
 
             -- typeCIs update (EvolutionT)
             lift $ typeCIs %== foldr (>=>) (cisInsert super) -- insert after
@@ -286,7 +286,8 @@ pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
             -- Del Cor, unconditionally
             oldDelCor <- Cor.onDelMuts dly old_tst super
             newDelCor <- forM rems $ Cor.onDelMuts dly new_tst
-            modify $ union $ foldr union (negate <<$>> oldDelCor) newDelCor
+            modify $ Cor.union $
+              foldr Cor.union (negate <<$>> oldDelCor) newDelCor
 
             -- Add Cor, if canonical in chain
             (Cor.composeAdds notInMut dly old_tst super >>=) $ \case
@@ -294,8 +295,8 @@ pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
               Just (oldAddChains, subs') -> do
                 let oldAddCor = uc Cor.onAddMuts_ <$> oldAddChains
                 newAddCor <- forM (rems ++ subs') $ Cor.onAddMuts dly new_tst
-                flip whenJust (modify . union) $
-                  foldTree union $ newAddCor ++ (negate <<<$>>> oldAddCor)
+                flip whenJust (modify . Cor.union) $
+                  foldTree Cor.union $ newAddCor ++ (negate <<<$>>> oldAddCor)
 
             -- typeCIs update (EvolutionT)
             lift $ typeCIs %== foldr (<=<) (cisDelete super) -- insert after
@@ -394,7 +395,6 @@ pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
   jointCount += mutDnm -- delta nm
 
   where
-    union = M.unionWith (IM.unionWith (+))
     err' = err . ("pushMut: " ++)
 
 -- WHERE --
@@ -458,13 +458,16 @@ init_ m bigN dly ns allCIs (jt, memJointCIs) = do
 
   -- TODO: switch back to non-debug CIs.join --
   cisByMut <- joinByMutM tst (CIs.debug_join dly) $ M.toList allCIs
-  corByMut <- unions <$> mapM (Cor.onAllMuts dly tst) memCIsL
+  corByMut <- Cor.unions <$> mapM (Cor.onAllMuts dly tst) memCIsL
   str <- D.toList dly -- TODO: rm
+  traceM $ pShowStr jt str
+
   let es = M.mergeWithKey
         (Just . ME.validate jt str n'Of .:. ME.fromParamsWith n'Of) -- CIs * cor
         (M.mapWithKey $
           ME.validate jt str n'Of .: ME.fromParams n'Of) -- only CIs
-        (fmap $ err' . ("have cor, but CIs missing: " ++) . show) -- only cor
+        (M.mapWithKey $ -- note: mergeWithKey can pass empty maps, so map errs
+          err' . ("have cor, but CIs missing: " ++) . show .: (,)) -- only cor
         cisByMut corByMut
 
   books <- MB.fromList m $ M.elems es
@@ -477,8 +480,6 @@ init_ m bigN dly ns allCIs (jt, memJointCIs) = do
                           , _jointCount = nm
                           , _mutBooks   = books }
   where
-    union = M.unionWith (IM.unionWith (+))
-    unions = fromMaybe M.empty . foldTree union
     allJoints = M.keys allCIs
     memCIs@(CIs _ ndns _ _) = mfoldTree $ M.elems memJointCIs
     memCIsL = CIs.toList memCIs
