@@ -53,6 +53,12 @@ empty m = MutBooks IM.empty IM.empty IM.empty IM.empty IM.empty IM.empty
 fromList :: PrimMonad m => Int -> [MutEntry] -> m (MutBooks (PrimState m))
 fromList m es = empty m >>= execStateT (mapM_ insert es)
 
+toList :: MutBooks s -> [MutEntry]
+toList (MutBooks _ _ _ _ _ _ muts _) = M.elems muts
+
+toMap :: MutBooks s -> Map Mutation MutEntry
+toMap = _byMut
+
 -- | Insert an entry in the books
 insert :: PrimMonad m => MutEntry -> MutBooksT m ()
 insert e@(ME mut loss ddns dnm _) = do

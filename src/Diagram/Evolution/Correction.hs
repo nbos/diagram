@@ -80,10 +80,17 @@ onAllMuts dly tst ci = do
 
 -- | Corrections on add-muts regarding all chains of a given CI,
 -- injective, with no `sub` predicate.
-onAddMuts :: PrimMonad m => Doubly (PrimState m) -> TypeState (PrimState m) ->
-             CI -> m (Map Mutation (IntMap Int))
-onAddMuts = fmap (maybe empty $ unions . fmap (uc onAddMuts_) . fst)
-            .:. composeAdds (const False)
+onAddMuts :: PrimMonad m =>
+  Doubly (PrimState m) -> TypeState (PrimState m) -> CI -> m Cor
+onAddMuts dly tst ci = do
+  traceM ""
+  traceM ("[ADD COR]: " ++ show ci)
+  res <- f dly tst ci
+  traceShowM res
+  return res
+  where
+    f = fmap (maybe empty $ unions . fmap (uc onAddMuts_) . fst)
+        .:. composeAdds (const False)
 
 -- WHERE --
 
@@ -95,7 +102,7 @@ onAddMuts = fmap (maybe empty $ unions . fmap (uc onAddMuts_) . fst)
 -- this is not checked. Correction values are signed in order to be
 -- added to the mut's CIs' counts *before* they are added/subtracted
 -- from the type's or string's counts.
-onAddMuts_ :: Mutation -> NonEmpty CI -> Map Mutation (IntMap Int)
+onAddMuts_ :: Mutation -> NonEmpty CI -> Cor
 onAddMuts_ mut cis | IM.null cor = M.empty
                    | otherwise   = M.singleton mut cor
   where
@@ -284,12 +291,12 @@ nextMutCIs sub str tst (CI _ _ _ i0 s0) = (D.next str i0 >>=) $ \case
 -- in symCounts from applying those mutations. Correction values are
 -- signed in order to be added to the del-mut's CIs' counts *before*
 -- they are added/subtracted from the string's or type's counts.
-onDelMuts :: PrimMonad m => Doubly (PrimState m) ->
-  TypeState (PrimState m) -> CI -> m (Map Mutation (IntMap Int))
+onDelMuts :: PrimMonad m =>
+  Doubly (PrimState m) -> TypeState (PrimState m) -> CI -> m Cor
 onDelMuts _ _ (CI _ _ 2 _ _) = return M.empty
 onDelMuts dly tst supCI@(CI _ _ supLen supTl supStl) = do
   traceM ""
-  traceM $ "onDelMuts: " ++ show supCI
+  traceM $ "[DEL COR]: " ++ show supCI
   res <- M.filter (not . IM.null) -- clean
          . fmap (IM.filter (/= 0) .  go)
          . M.fromListWith (<>)

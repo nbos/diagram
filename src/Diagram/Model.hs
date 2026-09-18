@@ -50,11 +50,15 @@ emptyFromAtoms ss = do
 
 -- | Histogram of the 256 bytes in a stream
 countAtoms :: PrimMonad m => Stream (Of Word8) m r -> m (U.Vector Int, r)
-countAtoms ss = do
-  mks <- MV.replicate 256 0
-  r <- S.effects $ S.mapM (MV.modify mks (+1) . fromEnum) ss
-  ks <- U.freeze mks
-  return (ks, r)
+countAtoms = histogram 256 . S.map fromEnum
+
+-- TODO: move to Diagram.Simple?
+histogram :: PrimMonad m => Int -> Stream (Of Int) m r -> m (U.Vector Int, r)
+histogram bigN ss = do
+  mv <- MV.replicate bigN 0
+  r <- S.effects $ S.mapM (MV.modify mv (+1)) ss
+  v <- U.freeze mv
+  return (v, r)
 
 -- | Count the constructable joints in a stream
 -- TODO: move to another module

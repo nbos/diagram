@@ -17,6 +17,7 @@ import Control.Monad.State.Strict
 
 import Data.Maybe
 import Data.Function
+import Data.Foldable (fold)
 import qualified Data.List as L
 
 import qualified Data.Set as Set
@@ -25,6 +26,7 @@ import qualified Data.Map.Strict as M
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
 
+import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 
 import Diagram.Pretty
@@ -394,6 +396,9 @@ pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
 
   jointCount += mutDnm -- delta nm
 
+  get >>= validate -- debug
+  traceM "------------------------------------------------- valid ---------------------------"
+
   where
     err' = err . ("pushMut: " ++)
 
@@ -520,3 +525,57 @@ fromListWithM f = foldM g M.empty
 
 err :: String -> a
 err = error . ("Evolution." ++)
+
+validate :: PrimMonad m => EvolutionState (PrimState m) -> m ()
+validate (EvolutionState bigN dly ns allCIs tst memCIs nm books) = do
+  st' <- init m bigN dly ns allCIs jt
+  let EvolutionState _ _ _ _ tst' memCIs' nm' books' = st'
+
+  unless (nm == nm') $
+    err'' "joint counts (total)" (nm, nm')
+  return $ validateCIs "Evolution.validate: mismatch in type CIs: "
+    memCIs memCIs'
+
+  let TS.TS u0 u1 = tst
+  e0s <- V.toList <$> V.freeze u0
+  e1s <- V.toList <$> V.freeze u1
+  let TS.TS u0' u1' = tst'
+  e0s' <- V.toList <$> V.freeze u0'
+  e1s' <- V.toList <$> V.freeze u1'
+  forM_ (zip [0::Int ..] $ zip e0s e0s') $ \(s, (e0, e0')) ->
+    unless (e0 == e0') $
+    err'' ("sym entries for " ++ show s ++ " (left)") (e0,e0')
+  forM_ (zip [0::Int ..] $ zip e1s e1s') $ \(s, (e1, e1')) ->
+    unless (e1 == e1') $
+    err'' ("sym entries for " ++ show s ++ " (right)") (e1,e1')
+
+  return $ fold $ M.mergeWithKey -- fold :: Foldable t => t () -> ()
+    (\mut (ME _ _ ddns dnm cis) (ME _ _ ddns' dnm' cis') -> case () of
+        () | ddns /= ddns' ->
+               err'' ("fields ddns for mut entry " ++ show mut) (ddns, ddns')
+           | dnm /= dnm' ->
+               err'' ("fields dnm for mut entry " ++ show mut) (dnm, dnm')
+           | otherwise -> Just $ validateCIs
+             ( "Evolution.validate: mismatch in CIs for mut "
+               ++ show mut ++ ": " ) cis cis' )
+    (fmap $ err' . ("extra mut entry found: " ++) . show)
+    (fmap $ err' . ("missing mut entry: " ++) . show)
+    (books^.MB.byMut) (books'^.MB.byMut)
+
+  where
+    CIs jt _ _ _ = memCIs
+    m = U.length ns
+    err' = err . ("validate: " ++)
+    err'' name vals = err' $ name ++ " don't check out: " ++ show vals
+
+validateCIs :: String -> CIs -> CIs -> ()
+validateCIs msg (CIs jt ndns bhd btl) (CIs jt' ndns' bhd' btl')
+  | jt /= jt' = err' "joint types" (jt,jt')
+  | ndns /= ndns' = err' "joint counts (individual)" $ imValDiff ndns ndns'
+  | bhd /= bhd' = err' "CIs (by head)" $ imKeyDiff bhd bhd'
+  | btl /= btl' = err' "CIs (by tail)" $ imKeyDiff btl btl'
+  | otherwise = ()
+  where
+    err' name = err . ((msg ++ name ++ " don't check out: ") ++) . show
+    imKeyDiff im im' = (im IM.\\ im', im' IM.\\ im)
+    imValDiff im im' = IM.unionWith (+) im (negate <$> im')
