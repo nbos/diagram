@@ -89,8 +89,7 @@ onAddMuts dly tst ci = do
   traceShowM res
   return res
   where
-    f = fmap (maybe empty $ unions . fmap (uc onAddMuts_) . fst)
-        .:. composeAdds (const False)
+    f = fmap (unions . fmap (uc onAddMuts_)) .:. composeAdds
 
 -- WHERE --
 
@@ -115,67 +114,95 @@ onAddMuts_ mut cis | IM.null cor = M.empty
           d = fromEnum (even newLen) - fromEnum (even oldLen)
       when (d /= 0) $ modify $ IM.insertWith (+) tailSym d
 
--- | Grab the largest chain possible, if CI is first in the chain (for
--- injectivity), for zero, one or two mutations (prec. & next, if they
--- are different). The `sub` parameter allows to refine the condition by
--- which extension to the left is interrupted, returning chains even if
--- input is not the first in-CI, provided that all the left ones inhabit
--- the `sub` predicate.
+-- TODO: factor/optimize case order
+-- | Grab the maximal [in-]add-in-add-etc. chains surrounding a given
+-- in-CI, both the left and right ones (if they differ in their
+-- mutation, otherwise they are returned as one) if there are no
+-- in-intervals to the left of the given in-CI which have a joint not
+-- satisfying the `sub` predicate (basically, if there is a non-sub
+-- interval to the left, the chain is cancelled, to be canonically
+-- returned by the leftmost non-sub in-CI when applied to this
+-- function).
 --
--- We also return the set of in-CIs satisfying the `sub` predicate, both
--- on the left and the right (but not within the given input CI).
+-- Also returns (snd) the set of sub-intervals of the returned
+-- in-intervals satisfying the given `sub` predicate (both to the left
+-- and right), except those that are contained within the given in-CI.
 --
 -- This is the level at which add-mut corrections have to be calculated
 -- because of how parity might cascade down an arbitrary number of type
 -- CIs interspersed by mut-added CIs. In some way this function is the
 -- inverse of @decomposeIn@.
-composeAdds :: PrimMonad m => ((Sym, Sym) -> Bool) ->
-  Doubly (PrimState m) -> TypeState (PrimState m) ->
-  CI -> m (Maybe ([(Mutation, NonEmpty CI)], [CI]))
-composeAdds sub dly tst ci = (prevCIs >>=) $ \case
-  Nothing -> return Nothing -- ran into non-sub in-CI: escalate
-  Just prev -> do
-    next <- nextCIs
-    return $ Just $ case (prev, next) of
-      (Nothing, Nothing) -> ([],[])
-      (Nothing, Just (addMut, nexts, rsubs)) -> ([(addMut, ci <| nexts)], rsubs)
-      (Just (addMut, prv, lsubs), Nothing) -> ([(addMut, prv <> (ci:|[]))], lsubs)
-      (Just (addMut, prv, lsubs), Just (addMut', nexts, rsubs))
-        | addMut == addMut' -> ([(addMut, prv <> (ci <| nexts))], subs)
-        | otherwise -> ( [ (addMut, prv <> (ci:|[]))
-                         , (addMut', ci <| nexts) ], subs )
-        where subs = lsubs ++ rsubs
+composeAddsSub :: PrimMonad m => ((Sym, Sym) -> Bool) ->
+                  Doubly (PrimState m) -> TypeState (PrimState m) ->
+                  CI -> m ([(Mutation, NonEmpty CI)], [CI])
+composeAddsSub sub dly tst ci = (<$> liftA2 (,) prevCIs nextCIs) $ \case
+  (Nothing, Nothing) -> ([],[])
+  (Nothing, Just (addMut, nexts, rsubs)) -> ([(addMut, ci <| nexts)], rsubs)
+  (Just (_, Nothing), Nothing) -> ([],[])
+  (Just (addMut, Just (prvs, lsubs)), Nothing) ->
+    ([(addMut, prvs <> (ci:|[]))], lsubs)
+  (Just (addMut, Nothing), Just (addMut', nexts, rsubs))
+    | addMut == addMut' -> ([],[]) -- cancels fwd
+    | otherwise -> ([(addMut', ci <| nexts)], rsubs)
+  (Just (addMut, Just (prvs, lsubs)), Just (addMut', nexts, rsubs))
+    | addMut == addMut' -> ( [(addMut, prvs <> (ci <| nexts))] -- join
+                           , lsubs ++ rsubs )
+    | otherwise -> ( [ (addMut, prvs <> (ci:|[]))
+                     , (addMut', ci <| nexts) ], lsubs ++ rsubs)
   where
-    prevCIs = prevMutCI  sub dly tst ci
-    nextCIs = nextMutCIs sub dly tst ci
+    prevCIs = prevMutCIsSub sub dly tst ci
+    nextCIs = nextMutCIs (const False) dly tst ci
+
+-- | Return each etc-add-in-add-in-etc-chain the given in-CI is the
+-- canonical (read: first) in-CI of. (TODO: optimize case order)
+composeAdds :: PrimMonad m => Doubly (PrimState m) ->
+  TypeState (PrimState m) -> CI -> m [(Mutation, NonEmpty CI)]
+composeAdds dly tst ci = (<$> liftA2 (,) prevCIs nextCIs) $ \case
+  (Nothing, Nothing) -> []
+  (Nothing, Just (addMut, nexts, _)) -> [(addMut, ci <| nexts)]
+  (Just (_, Nothing), Nothing) -> []
+  (Just (addMut, Just prv), Nothing) -> [(addMut, prv:|[ci])]
+  (Just (addMut, Nothing), Just (addMut', nexts, _))
+    | addMut == addMut' -> [] -- cancels fwd
+    | otherwise -> [ (addMut', ci <| nexts) ]
+  (Just (addMut, Just prv), Just (addMut', nexts, _))
+    | addMut == addMut' -> [(addMut, prv <| ci <| nexts)] -- join
+    | otherwise -> [ (addMut, prv:|[ci])
+                   , (addMut', ci <| nexts) ]
+  where
+    prevCIs = prevMutCI dly tst ci
+    nextCIs = nextMutCIs (const False) dly tst ci
 
 -- WHERE --
 
 -- | Return the etc-in-out-in-out chain (and the add-mutation that would
--- switch all returned out-intervals' memberships) immediately preceding
--- the given in-interval, from left to right (therefore always ending in
--- an out-interval), only if no out interval fails the given `sub`
--- condition.
+-- switch all returned out-intervals' membership) immediately preceding
+-- the given in-interval, in left-to-right order (therefore always
+-- ending in an out-interval immediately preceeding the given interval),
+-- only if no in-interval has a joint failing the given `sub` condition.
 --
--- Returns `Nothing` if the chain was cancelled by failing the `sub`
--- condition, `Just Nothing` if there is no addable preceeding joint,
--- and `Just . Just` if there is such a mutation-chain pair.
+-- Returns `Nothing` if there is no joint immediately preceeding the
+-- given interval or if there is not add-mutation that would switch
+-- it. Within the pair, returns Nothing if the chain is cancelled by
+-- failing the `sub` condition, otherwise, returns the chain as a
+-- NonEmpty and the interspersed set of sub-intervals as a (possibly
+-- empty) list.
 --
 -- The `sub` condition is assumed to hold only joints which are members
 -- of the state's type (hence "sub"): it's only checked once a joint has
 -- been found to be within the state's type.
-prevMutCI :: forall m. PrimMonad m => ((Sym, Sym) -> Bool) ->
+prevMutCIsSub :: forall m. PrimMonad m => ((Sym, Sym) -> Bool) ->
   Doubly (PrimState m) -> TypeState (PrimState m) ->
-  CI -> m (Maybe (Maybe (Mutation, NonEmpty CI, [CI])))
-prevMutCI sub str tst (CI hd0 shd0 _ _ _) = (D.prev str hd0 >>=) $ \case
-  Nothing -> return $ Just Nothing -- no prev symbol/interval
+  CI -> m (Maybe (Mutation, Maybe (NonEmpty CI, [CI])))
+prevMutCIsSub sub str tst (CI hd0 shd0 _ _ _) = (D.prev str hd0 >>=) $ \case
+  Nothing -> return Nothing -- no prev symbol/interval
   Just (phd0,sphd0) -> (TS.addMutOf tst sphd0 shd0 >>=) $ \case
-    Nothing -> return $ Just Nothing -- no mut
+    Nothing -> return Nothing -- no mut
     Just addMut -> let mkCI hd shd len = CI hd shd len hd0 shd0
-                   in uc (addMut,,) <<<$>>> goOut [] [] mkCI phd0 sphd0 2
+                   in Just . (addMut,) <$> goOut [] [] mkCI phd0 sphd0 2
       where
         goOut :: [CI] -> [CI] -> (Index -> Sym -> Len -> CI) ->
-                 Index -> Sym -> Len -> m (Maybe (Maybe (NonEmpty CI, [CI])))
+                 Index -> Sym -> Len -> m (Maybe (NonEmpty CI, [CI]))
         goOut acc subs mkCI = go where
           go hd shd !len = (D.prev str hd >>=) $ \case
             Nothing -> return res -- hit start, end
@@ -183,23 +210,22 @@ prevMutCI sub str tst (CI hd0 shd0 _ _ _) = (D.prev str hd0 >>=) $ \case
               True | sub p ->
                        let mkCI' hd' shd' len' = CI hd' shd' len' hd shd
                        in goSub (ci:acc) subs mkCI' phd sphd 2 -- sub: switch
-                   | otherwise ->
-                       return Nothing -- not first of a chain (cancel)
+                   | otherwise -> return Nothing -- not first of a chain, cancel
               False -> (TS.addMutOf tst sphd shd >>=) $ \case
                 Just addMut' | addMut' == addMut -> go phd sphd (len+1)
                 _else -> return res -- end of interval
             where
               ci = mkCI hd shd len
-              res = Just $ Just (ci:|acc, subs)
+              res = Just (ci:|acc, subs)
 
         goSub :: [CI] -> [CI] -> (Index -> Sym -> Len -> CI) ->
-                 Index -> Sym -> Len -> m (Maybe (Maybe (NonEmpty CI, [CI])))
+                 Index -> Sym -> Len -> m (Maybe (NonEmpty CI, [CI]))
         goSub acc subs mkCI = go where
           go hd shd !len = (D.prev str hd >>=) $ \case
             Nothing -> return res -- hit start, end
             Just p@(phd,sphd) -> (TS.member tst sphd shd >>=) $ \case
               True | sub p -> go phd sphd (len+1)
-                   | otherwise -> return Nothing
+                   | otherwise -> return Nothing -- not first of a chain, cancel
               False -> (TS.addMutOf tst sphd shd >>=) $ \case
                 Just addMut'
                   | addMut' == addMut ->
@@ -208,7 +234,29 @@ prevMutCI sub str tst (CI hd0 shd0 _ _ _) = (D.prev str hd0 >>=) $ \case
                 _else -> return res -- end
             where
               ci = mkCI hd shd len
-              res = Just $ Just (ci:|acc, ci:subs)
+              res = Just (ci:|acc, ci:subs)
+
+-- | Return the CI immediately preceeding the given CI and the
+-- Add-mutation that would include it in the type, if there is such a
+-- mutation. Returns Nothing inside the pair if there is another in-CI
+-- immediately before that mutCI (signals cancel, for injectivity).
+prevMutCI :: forall m. PrimMonad m => Doubly (PrimState m) ->
+              TypeState (PrimState m) -> CI -> m (Maybe (Mutation, Maybe CI))
+prevMutCI str tst (CI hd0 shd0 _ _ _) = (D.prev str hd0 >>=) $ \case
+  Nothing -> return Nothing -- no prev symbol/interval
+  Just (phd0,sphd0) -> (TS.addMutOf tst sphd0 shd0 >>=) $ \case
+    Nothing -> return Nothing -- no mut
+    Just addMut -> Just . (addMut,) <$> go phd0 sphd0 2
+      where
+        go hd shd !len = (D.prev str hd >>=) $ \case
+          Nothing -> return $ Just ci -- hit start, end
+          Just (phd,sphd) -> (TS.member tst sphd shd >>=) $ \case
+            True -> return Nothing -- not first of a chain, cancel
+            False -> (TS.addMutOf tst sphd shd >>=) $ \case
+              Just addMut' | addMut' == addMut -> go phd sphd (len+1)
+              _else -> return $ Just ci -- end of interval
+          where
+            ci = CI hd shd len hd0 shd0
 
 -- | Given the string, joint type and an in-interval, return the longest
 -- immediately following sequence of alternating

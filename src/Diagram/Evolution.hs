@@ -255,20 +255,21 @@ pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
     Add -> do
       let procNewSuper :: CI -> [CI] -> StateT Cor (EvolutionT m) ()
           procNewSuper super subs = do -- subs are adjacents to mut ci
-            -- Del Cor, unconditionally
+            -- Del Cor
             newDelCor <- Cor.onDelMuts dly new_tst super
             oldDelCor <- forM subs $ Cor.onDelMuts dly old_tst
-            modify $ Cor.union $
-              foldr Cor.union newDelCor $ negate <<<$>>> oldDelCor
+            let delCorDelta = foldr Cor.union newDelCor $
+                              negate <<<$>>> oldDelCor
+            -- Add Cor
+            (newAddChains, subs') <- Cor.composeAddsSub
+                                     notInMut dly new_tst super
+            let newAddCor = uc Cor.onAddMuts_ <$> newAddChains
+            oldAddCor <- forM (subs ++ subs') $ Cor.onAddMuts dly old_tst
+            let addCorDelta = foldTree Cor.union $
+                              newAddCor ++ (negate <<<$>>> oldAddCor)
+                corDelta = delCorDelta & maybe id Cor.union addCorDelta
 
-            -- Add Cor, if canonical in chain
-            (Cor.composeAdds notInMut dly new_tst super >>=) $ \case
-              Nothing -> return () -- skip if prevMutCI cancels
-              Just (newAddChains, subs') -> do
-                let newAddCor = uc Cor.onAddMuts_ <$> newAddChains
-                oldAddCor <- forM (subs ++ subs') $ Cor.onAddMuts dly old_tst
-                flip whenJust (modify . Cor.union) $
-                  foldTree Cor.union $ newAddCor ++ (negate <<<$>>> oldAddCor)
+            modify $ Cor.union corDelta
 
             -- typeCIs update (EvolutionT)
             lift $ typeCIs %== foldr (>=>) (cisInsert super) -- insert after
@@ -285,20 +286,20 @@ pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
     Del -> do
       let procOldSuper :: CI -> [CI] -> StateT Cor (EvolutionT m) ()
           procOldSuper super rems = do
-            -- Del Cor, unconditionally
+            -- Del Cor
             oldDelCor <- Cor.onDelMuts dly old_tst super
             newDelCor <- forM rems $ Cor.onDelMuts dly new_tst
-            modify $ Cor.union $
-              foldr Cor.union (negate <<$>> oldDelCor) newDelCor
+            let delCorDelta = foldr Cor.union (negate <<$>> oldDelCor) newDelCor
+            -- Add Cor
+            (oldAddChains, subs') <- Cor.composeAddsSub
+                                     notInMut dly old_tst super
+            let oldAddCor = uc Cor.onAddMuts_ <$> oldAddChains
+            newAddCor <- forM (rems ++ subs') $ Cor.onAddMuts dly new_tst
+            let addCorDelta = foldTree Cor.union $
+                              newAddCor ++ (negate <<<$>>> oldAddCor)
+                corDelta = delCorDelta & maybe id Cor.union addCorDelta
 
-            -- Add Cor, if canonical in chain
-            (Cor.composeAdds notInMut dly old_tst super >>=) $ \case
-              Nothing -> return () -- skip if prevMutCI cancels
-              Just (oldAddChains, subs') -> do
-                let oldAddCor = uc Cor.onAddMuts_ <$> oldAddChains
-                newAddCor <- forM (rems ++ subs') $ Cor.onAddMuts dly new_tst
-                flip whenJust (modify . Cor.union) $
-                  foldTree Cor.union $ newAddCor ++ (negate <<<$>>> oldAddCor)
+            modify $ Cor.union corDelta
 
             -- typeCIs update (EvolutionT)
             lift $ typeCIs %== foldr (<=<) (cisDelete super) -- insert after
