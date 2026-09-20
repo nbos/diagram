@@ -261,15 +261,19 @@ pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
             let delCorDelta = foldr Cor.union newDelCor $
                               negate <<<$>>> oldDelCor
             -- Add Cor
-            (newAddChains, subs') <- Cor.composeAddsSub
-                                     notInMut dly new_tst super
-            let newAddCor = uc Cor.onAddMuts_ <$> newAddChains
-            oldAddCor <- forM (subs ++ subs') $ Cor.onAddMuts dly old_tst
-            let addCorDelta = foldTree Cor.union $
-                              newAddCor ++ (negate <<<$>>> oldAddCor)
-                corDelta = delCorDelta & maybe id Cor.union addCorDelta
+            (mSuperAddChains, subs') <- Cor.composeAddsSub
+                                        notInMut dly new_tst super
+            subsNewAddCor <- mapM (Cor.onAddMuts dly new_tst) subs'
+            newAddCor <- case mSuperAddChains of
+              Nothing -> (:subsNewAddCor) <$> Cor.onAddMuts dly new_tst super
+              Just superAddChains -> return $
+                fmap (uc Cor.onAddMuts_) superAddChains ++ subsNewAddCor
 
-            modify $ Cor.union corDelta
+            oldAddCor <- forM (subs ++ subs') $ Cor.onAddMuts dly old_tst
+            let addCorDelta = fromMaybe M.empty $ foldTree Cor.union $
+                              newAddCor ++ (negate <<<$>>> oldAddCor)
+
+            modify $ Cor.union $ Cor.union addCorDelta delCorDelta
 
             -- typeCIs update (EvolutionT)
             lift $ typeCIs %== foldr (>=>) (cisInsert super) -- insert after
@@ -291,15 +295,18 @@ pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
             newDelCor <- forM rems $ Cor.onDelMuts dly new_tst
             let delCorDelta = foldr Cor.union (negate <<$>> oldDelCor) newDelCor
             -- Add Cor
-            (oldAddChains, subs') <- Cor.composeAddsSub
-                                     notInMut dly old_tst super
-            let oldAddCor = uc Cor.onAddMuts_ <$> oldAddChains
+            (mSuperAddChains, subs') <- Cor.composeAddsSub
+                                        notInMut dly old_tst super
+            subsOldAddCor <- mapM (Cor.onAddMuts dly old_tst) subs'
+            oldAddCor <- case mSuperAddChains of
+              Nothing -> (:subsOldAddCor) <$> Cor.onAddMuts dly old_tst super
+              Just oldAddChains -> return $
+                fmap (uc Cor.onAddMuts_) oldAddChains ++ subsOldAddCor
             newAddCor <- forM (rems ++ subs') $ Cor.onAddMuts dly new_tst
-            let addCorDelta = foldTree Cor.union $
+            let addCorDelta = fromMaybe M.empty $ foldTree Cor.union $
                               newAddCor ++ (negate <<<$>>> oldAddCor)
-                corDelta = delCorDelta & maybe id Cor.union addCorDelta
 
-            modify $ Cor.union corDelta
+            modify $ Cor.union $ Cor.union addCorDelta delCorDelta
 
             -- typeCIs update (EvolutionT)
             lift $ typeCIs %== foldr (<=<) (cisDelete super) -- insert after
