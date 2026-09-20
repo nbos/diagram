@@ -270,7 +270,7 @@ nextMutCIs sub str tst (CI _ _ _ i0 s0) = (D.next str i0 >>=) $ \case
   Nothing -> return Nothing -- hit end
   Just (i1,s1) -> (TS.addMutOf tst s0 s1 >>=) $ \case
     Nothing -> return Nothing -- no add-mutation
-    Just addMut -> Just . uc (addMut,,) <$> goOut [] [] (CI s0 i0) 2 i1 s1
+    Just addMut -> Just . uc (addMut,,) <$> goOut [] [] (CI i0 s0) 2 i1 s1
       where
         goOut :: [CI] -> [CI] -> (Len -> Index -> Sym -> CI) ->
                  Len -> Index -> Sym -> m (NonEmpty CI, [CI])
