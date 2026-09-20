@@ -148,7 +148,7 @@ composeAddsSub sub dly tst ci = (<$> liftA2 (,) prevCIs nextCIs) $ \case
                           , (addMut', ci <| nexts) ], rsubs )
   where
     prevCIs = prevMutCIsSub sub dly tst ci
-    nextCIs = nextMutCIs (const False) dly tst ci
+    nextCIs = nextMutCIs sub dly tst ci
 
 -- | Return each etc-add-in-add-in-etc-chain the given in-CI is the
 -- canonical (read: first) in-CI of. (TODO: optimize case order)
