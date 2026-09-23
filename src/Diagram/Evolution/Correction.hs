@@ -23,8 +23,6 @@ import Diagram.Primitive
 import Diagram.String
 
 import qualified Diagram.Doubly as D
-import Diagram.JointType (JointType)
-import qualified Diagram.JointType as JT
 import Diagram.ConstrInterval(CI(..))
 import qualified Diagram.ConstrInterval as CI
 
@@ -127,7 +125,7 @@ onAddMuts_ mut cis | IM.null cor = M.empty
 -- Also returns (snd) all sub-intervals which don't connect to/touch a
 -- non-sub interval satisfying the given `sub` predicate (both to the
 -- left and right), nor those that are contained within the given in-CI.
-composeAddsSub :: PrimMonad m => ((Sym, Sym) -> Bool) ->
+composeAddsSub :: PrimMonad m => (Sym -> Sym -> Bool) ->
                   Doubly (PrimState m) -> TypeState (PrimState m) ->
                   CI -> m (Maybe [(Mutation, NonEmpty CI)], [CI])
 composeAddsSub sub dly tst ci = (<$> liftA2 (,) prevCIs nextCIs) $ \case
@@ -168,7 +166,7 @@ composeAdds dly tst ci = (<$> liftA2 (,) prevCIs nextCIs) $ \case
                    , (addMut', ci <| nexts) ]
   where
     prevCIs = prevMutCI dly tst ci
-    nextCIs = nextMutCIs (const False) dly tst ci
+    nextCIs = nextMutCIs (\_ _ -> False) dly tst ci
 
 -- WHERE --
 
@@ -188,7 +186,7 @@ composeAdds dly tst ci = (<$> liftA2 (,) prevCIs nextCIs) $ \case
 -- The `sub` condition is assumed to hold only joints which are members
 -- of the state's type (hence "sub"): it's only checked once a joint has
 -- been found to be within the state's type.
-prevMutCIsSub :: forall m. PrimMonad m => ((Sym, Sym) -> Bool) ->
+prevMutCIsSub :: forall m. PrimMonad m => (Sym -> Sym -> Bool) ->
   Doubly (PrimState m) -> TypeState (PrimState m) ->
   CI -> m (Maybe (Mutation, Maybe (NonEmpty CI, [CI])))
 prevMutCIsSub sub str tst (CI hd0 shd0 _ _ _) = (D.prev str hd0 >>=) $ \case
@@ -203,8 +201,8 @@ prevMutCIsSub sub str tst (CI hd0 shd0 _ _ _) = (D.prev str hd0 >>=) $ \case
         goOut acc subs mkCI = go where
           go hd shd !len = (D.prev str hd >>=) $ \case
             Nothing -> return res -- hit start, end
-            Just p@(phd,sphd) -> (TS.member tst sphd shd >>=) $ \case
-              True | sub p ->
+            Just (phd,sphd) -> (TS.member tst sphd shd >>=) $ \case
+              True | sub sphd shd ->
                        let mkCI' hd' shd' len' = CI hd' shd' len' hd shd
                        in goSub (ci:acc) subs mkCI' phd sphd 2 -- sub: switch
                    | otherwise -> return Nothing -- not first of a chain, cancel
@@ -220,8 +218,8 @@ prevMutCIsSub sub str tst (CI hd0 shd0 _ _ _) = (D.prev str hd0 >>=) $ \case
         goSub acc subs mkCI = go where
           go hd shd !len = (D.prev str hd >>=) $ \case
             Nothing -> return res -- hit start, end
-            Just p@(phd,sphd) -> (TS.member tst sphd shd >>=) $ \case
-              True | sub p -> go phd sphd (len+1)
+            Just (phd,sphd) -> (TS.member tst sphd shd >>=) $ \case
+              True | sub sphd shd -> go phd sphd (len+1)
                    | otherwise -> return Nothing -- not first of a chain, cancel
               False -> (TS.addMutOf tst sphd shd >>=) $ \case
                 Just addMut'
@@ -263,7 +261,7 @@ prevMutCI str tst (CI hd0 shd0 _ _ _) = (D.prev str hd0 >>=) $ \case
 -- joint does not have an add-mutation. Returns intervals satisfying the
 -- `sub` predicate if they don't make contact with an in-CI (i.e. if
 -- they wouldn't be part of any superCI)
-nextMutCIs :: forall m. PrimMonad m => ((Sym, Sym) -> Bool) ->
+nextMutCIs :: forall m. PrimMonad m => (Sym -> Sym -> Bool) ->
   Doubly (PrimState m) -> TypeState (PrimState m) -> CI ->
   m (Maybe (Mutation, NonEmpty CI, [CI]))
 nextMutCIs sub str tst (CI _ _ _ i0 s0) = (D.next str i0 >>=) $ \case
@@ -278,7 +276,7 @@ nextMutCIs sub str tst (CI _ _ _ i0 s0) = (D.next str i0 >>=) $ \case
           go !len tl stl = (D.next str tl >>=) $ \case
             Nothing -> return res -- hit end of string
             Just (ntl,sntl) -> (TS.member tst stl sntl >>=) $ \case
-              True | sub (stl,sntl) -> -- switch
+              True | sub stl sntl -> -- switch
                        goSub False (ci:acc) subs mkCI' mkCI' 2 2 ntl sntl
                    | otherwise -> goIn (ci:acc) subs mkCI' 2 ntl sntl -- switch
               False -> (TS.addMutOf tst stl sntl >>=) $ \case
@@ -297,7 +295,7 @@ nextMutCIs sub str tst (CI _ _ _ i0 s0) = (D.next str i0 >>=) $ \case
           go !len tl stl = (D.next str tl >>=) $ \case
             Nothing -> return res -- hit end of string
             Just (ntl,sntl) -> (TS.member tst stl sntl >>=) $ \case
-              True | sub (stl,sntl) -> goSub True acc subs mkCI' mkCI 2 2 ntl sntl
+              True | sub stl sntl -> goSub True acc subs mkCI' mkCI 2 2 ntl sntl
                    | otherwise -> go (len+1) ntl sntl -- keep going
               False -> (TS.addMutOf tst stl sntl >>=) $ \case
                 Just addMut' | addMut' == addMut ->
@@ -316,7 +314,7 @@ nextMutCIs sub str tst (CI _ _ _ i0 s0) = (D.next str i0 >>=) $ \case
           go !subLen !len tl stl = (D.next str tl >>=) $ \case
             Nothing -> return res -- hit end of string
             Just (ntl,sntl) -> (TS.member tst stl sntl >>=) $ \case
-              True | sub (stl,sntl) ->
+              True | sub stl sntl ->
                        go (subLen+1) (len+1) ntl sntl -- keep going
                    | otherwise -> -- sub is not inter-, don't cons
                        goIn acc subs mkCI (len+1) ntl sntl
@@ -423,86 +421,3 @@ decomposeIn str tst ci@(CI hd shd len _ stl)
 
 err :: [Char] -> a
 err = error . ("Correction." ++)
-
-----------
--- MORE --
-----------
-
--- | For a string, a type state, a joint type **which is a subtype of
--- the type state**, and a continuous, a maximal constructive interval
--- (CI) in the subtype on the string, return the super-CI of the given
--- CI in the type state, but only if this super-CI doesn't contain
--- another CI member of the given joint (sub-)type on the left of the
--- given CI (for injectivity).
---
--- Explicitly: returns `Nothing` if the superCI is canonically mapped on
--- by another CI on its left, `Just Nothing` if the superCI is itself
--- (not strictly super), and `Just (Just _)` otherwise.
---
--- Returns the superCI (fst) and the remainder CIs from taking aways all
--- of the given JointType's intervals from the superCI (snd), in
--- left-to-right order.
-superCI :: forall m. PrimMonad m => Doubly (PrimState m) ->
-  TypeState (PrimState m) -> JointType -> CI -> m (Maybe (Maybe (CI, [CI])))
-superCI dly tst jt (CI hd0 shd0 len0 tl0 stl0) = do
-
-  bwd <- (D.prev dly hd0 >>=) $ \case
-    Nothing -> return $ Just Nothing -- same
-    Just (phd, sphd) -> (TS.member tst sphd shd0 >>=) $ \case
-      False -> return $ Just Nothing -- same
-      True -> goBwd hd0 shd0 phd sphd 2 -- tl first
-
-  case bwd of
-    Nothing -> return Nothing -- canceled (escaladed from expandBwd)
-    Just bwd' -> do
-      fwd <- (D.next dly tl0 >>=) $ \case
-        Nothing -> return Nothing -- same
-        Just (ntl, sntl) -> (TS.member tst stl0 sntl >>=) $ \case
-          False -> return Nothing -- same
-          True -> Just <$> goFwd tl0 stl0 2 ntl sntl -- GT
-
-      return $ Just $ case (bwd', fwd) of
-        (Nothing, Nothing) -> Nothing -- same: Just Nothing
-        (Nothing, Just (CI _ _ lenFwd tl stl, rems)) ->
-          let len = len0 + lenFwd - 1
-          in Just (CI hd0 shd0 len tl stl, rems)
-        (Just lrem@(CI hd shd lenBwd _ _), Nothing) ->
-          let len = lenBwd + len0 - 1
-          in Just (CI hd shd len tl0 stl0, [lrem])
-        (Just lrem@(CI hd shd lenBwd _ _), Just (CI _ _ lenFwd tl stl, rems)) ->
-          let len = lenBwd + len0 + lenFwd - 2
-          in Just (CI hd shd len tl stl, lrem:rems)
-  where
-    goBwd tl stl = go
-      where
-        go hd shd !len = (D.prev dly hd >>=) $ \case
-          Nothing -> return $ Just $ Just ci -- eos
-          Just (phd, sphd) -> (TS.member tst sphd shd >>=) $ \case
-            False -> return $ Just $ Just ci -- end
-            True | JT.member (sphd,shd) jt -> return Nothing -- canceled
-                 | otherwise -> go phd sphd (len+1) -- continue
-          where ci = CI hd shd len tl stl
-
-    goFwd hd shd = goRem [] 1 hd shd -- (len+remLen-1) overlap logic
-      where                          -- requires we start with len 1
-        goRem rems len remHd remShd = go
-          where -- a remainder is inside TypeState but outside jt
-            go !remLen tl stl = (D.next dly tl >>=) $ \case
-              Nothing -> return (super, reverse rems') -- eos
-              Just (ntl, sntl) -> (TS.member tst stl sntl >>=) $ \case
-                True | JT.member (stl,sntl) jt ->
-                         goJT rems' (len+remLen-1) ntl sntl -- switch
-                     | otherwise -> go (remLen+1) ntl sntl -- cont.
-                False -> return (super, reverse rems') -- end
-              where super = CI hd shd (len+remLen-1) tl stl
-                    rems' = (CI remHd remShd remLen tl stl):rems
-
-        goJT rems !len tl stl = (D.next dly tl >>=) $ \case
-          Nothing -> return (super, reverse rems) -- eos
-          Just (ntl, sntl) -> (TS.member tst stl sntl >>=) $ \case
-            True | JT.member (stl,sntl) jt ->
-                     goJT rems (len+1) ntl sntl -- cont.
-                 | otherwise ->
-                     goRem rems len tl stl 2 ntl sntl -- switch
-            False -> return (super, reverse rems) -- end
-          where super = CI hd shd len tl stl

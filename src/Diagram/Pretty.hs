@@ -21,25 +21,24 @@ pShowStrMark :: (Sym -> Bool) -> JointType -> [Sym] -> [Char]
 pShowStrMark _ _ [] = []
 pShowStrMark mark jt (hd:tl) = goOut hd tl
   where
-    mem = JT.member
 
     -- s0 not yet printed
     goOut s0 [] = show' red s0 -- end
     goOut s0 (s1:ss)
-      | (s0,s1) `mem` jt =
+      | JT.member jt s0 s1 =
           "[" ++ show' green s0 ++ " " ++ show' green s1 ++ goInEven s1 ss
       | otherwise = show' red s0 ++ " " ++ goOut s1 ss
 
     -- s0 already printed
     goInEven _ [] = "]" -- end
     goInEven s0 (s1:ss)
-      | (s0,s1) `mem` jt = " " ++ goInOdd s1 ss
+      | JT.member jt s0 s1 = " " ++ goInOdd s1 ss
       | otherwise = "] " ++ goOut s1 ss
 
     -- s0 not yet printed
     goInOdd s0 [] = show' yellow s0 ++ "]" -- end
     goInOdd s0 (s1:ss)
-      | (s0,s1) `mem` jt =
+      | JT.member jt s0 s1 =
           show' green s0 ++ " " ++ show' green s1 ++ goInEven s1 ss
       | otherwise = show' yellow s0 ++ "] " ++ goOut s1 ss
 

@@ -212,7 +212,7 @@ printConservation (jt,jts) (rjt,rjts) = liftIO $ do
 
 printMembership :: MonadIO m => Map (Sym,Sym) a -> (JointType, Map (Sym,Sym) a) -> m ()
 printMembership jts (rjt,rjts) = liftIO $ do
-  let rjtsVerif = M.filterWithKey (\k _ -> k `JT.member` rjt) jts
+  let rjtsVerif = M.filterWithKey (const . uncurry (JT.member rjt)) jts
   putStr "returned joints "
   if M.keys rjts == M.keys rjtsVerif
     then putStrLn $ inGreen "match" ++ " joints under the type"

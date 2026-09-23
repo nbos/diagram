@@ -66,8 +66,8 @@ dims :: JointType -> (Int, Int)
 dims (JT u0 u1) = (UT.size u0, UT.size u1)
 
 -- | Is the symbol a member of the union?
-member :: (Sym,Sym) -> JointType -> Bool
-member (s0,s1) (JT u0 u1) = UT.member s0 u0 && UT.member s1 u1
+member :: JointType -> Sym -> Sym -> Bool
+member (JT u0 u1) s0 s1 = UT.member s0 u0 && UT.member s1 u1
 
 -- | Return a Map of all joints that could be member of the given type,
 -- regardless of their presence in the string. O(n^2)

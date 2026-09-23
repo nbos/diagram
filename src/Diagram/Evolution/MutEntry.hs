@@ -93,6 +93,10 @@ fromParamsWith_ n'Of mut cis ddns =
                     n'' = n' + ddn
                 in logFact n' - logFact n''
 
+-----------
+-- DEBUG --
+-----------
+
 validate :: JointType -> [Sym] -> (Sym -> Count) -> MutEntry -> MutEntry
 validate jt str n'Of e@(ME mut loss ddns dnm (CIs mutJT mutCounts _ _))
   | odd two_dnm = err' $

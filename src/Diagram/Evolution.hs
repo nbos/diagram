@@ -229,12 +229,17 @@ getMutCountIntervals ddns = do
 -- | Apply a mutation, update books.
 pushMut :: forall m. PrimMonad m => MutEntry -> EvolutionT m ()
 pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
-
-  CIs _ oldTypNdns _ _ <- use typeCIs -- (before we modify)
+  ----------------
+  -- TYPE STATE --
+  ----------------
   old_tst <- TS.clone =<< use typeState -- for Cor delta, difficult otherwise
   (enabledMuts, expiredMuts) <- zoom typeState $ TS.pushMut mut -- [APPLY]
   new_tst <- use typeState
-  dly <- use doubly -- convenient
+
+  --------------------------
+  -- CORRECTION, TYPE CIs --
+  --------------------------
+  CIs _ oldTypNdns _ _ <- use typeCIs -- (before we modify)
 
   -- [typeCIs]: We could modify CIs with CIs.join for Add, but for Del
   -- we need to go CI-by-CI, deleting supers and inserting remainders,
@@ -246,8 +251,9 @@ pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
   typeCIs.CIs.jointType %= JT.appValidMut mut
   --
 
+  dly <- use doubly -- convenient
   let mutCIsL = IM.elems mutCIsBhd
-      notInMut = not . (`JT.member` mutJT)
+      notInMut = not .: JT.member mutJT
       cisInsert = CIs.insertDisjoint dly
       cisDelete = CIs.deleteExisting dly
 
@@ -268,7 +274,6 @@ pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
               Nothing -> (:subsNewAddCor) <$> Cor.onAddMuts dly new_tst super
               Just superAddChains -> return $
                 fmap (uc Cor.onAddMuts_) superAddChains ++ subsNewAddCor
-
             oldAddCor <- forM (subs ++ subs') $ Cor.onAddMuts dly old_tst
             let addCorDelta = fromMaybe M.empty $ foldTree Cor.union $
                               newAddCor ++ (negate <<<$>>> oldAddCor)
@@ -279,8 +284,10 @@ pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
             lift $ typeCIs %== foldr (>=>) (cisInsert super) -- insert after
                                            (cisDelete <$> subs) -- dels first
 
+      let superCI = CI.superCI dly
+                    (TS.member new_tst) (return .: JT.member mutJT)
       corrsDelta <- flip execStateT M.empty $ forM_ mutCIsL $
-        \ci -> (Cor.superCI dly new_tst mutJT (traceShowId ci) >>=) $ \case
+        \ci -> (superCI (traceShowId ci) >>=) $ \case
           Nothing -> return () -- respect canonicity in superCI
           Just Nothing -> procNewSuper ci []
           Just (Just (super, subs)) -> procNewSuper super subs
@@ -312,22 +319,29 @@ pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
             lift $ typeCIs %== foldr (<=<) (cisDelete super) -- insert after
                                            (cisInsert <$> rems) -- dels first
 
+      let superCI = CI.superCI dly
+                    (TS.member old_tst) (return .: JT.member mutJT)
       corrsDelta <- flip execStateT M.empty $ forM_ mutCIsL $
-        \ci -> (Cor.superCI dly old_tst mutJT (traceShowId ci) >>=) $ \case
+        \ci -> (superCI (traceShowId ci) >>=) $ \case
           Nothing -> return () -- skip
           Just Nothing -> procOldSuper ci []
           Just (Just (super, rems)) -> procOldSuper super rems
 
       return $ corrsDelta `M.withoutKeys` expiredMuts
 
-  -- DELETE EACH EXPIRED MUT
-  zoom mutBooks $ mapM_ MB.delete $ Set.toList expiredMuts
+  ---------------------
+  -- INTRO/ELIM MUTS --
+  ---------------------
+  zoom mutBooks $ -- DELETE EACH EXPIRED MUT
+    mapM_ MB.delete $ Set.toList expiredMuts
   -- INSERT EACH NEWLY ENABLED MUTS
   mapM_ introMut $ Set.toList enabledMuts
   -- TODO: fish out recip of mut from enabledMuts and intro it directly
   -- without going through introMut?
 
-  -- UPDATE MUT BOOKS
+  ----------------------
+  -- UPDATE MUT BOOKS --
+  ----------------------
   ns <- use symCounts
   let countUpdateIntervals = IM.mergeWithKey
         ( \s ndn ddn ->
@@ -405,7 +419,6 @@ pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
   jointCount += mutDnm -- delta nm
 
   get >>= validate -- debug
-  traceM "------------------------------------------------- valid ---------------------------"
 
   where
     err' = err . ("pushMut: " ++)
@@ -425,8 +438,9 @@ introMut mut = do
     Add -> return $ snd $ CIs.join_ typCIs mutCIs
     Del -> do -- manually count difference
       dly <- use doubly
+      let superCI = CI.superCI dly (TS.member tst) (return .: JT.member mutJT)
       flip execStateT IM.empty $ forM_ mutCIsL $ \ci ->
-        (lift (Cor.superCI dly tst mutJT ci) >>=) $ \case
+        (lift (superCI ci) >>=) $ \case
         Just Nothing -> return () -- super is identical, do nothing
         Nothing -> do -- super doesn't start here, but ci is inside it
           ciCounts <- lift (CI.symCounts dly ci)
@@ -458,7 +472,7 @@ init :: PrimMonad m =>
   Int -> Int -> Doubly (PrimState m) -> U.Vector Int -> Joints CIs ->
   JointType -> m (EvolutionState (PrimState m))
 init m bigN dly ns allCIs jt = init_ m bigN dly ns allCIs (jt, memJointCIs)
-  where memJointCIs = M.filterWithKey (const . flip JT.member jt) allCIs
+  where memJointCIs = M.filterWithKey (const . uc (JT.member jt)) allCIs
 
 -- | Construct a new EvolutionState where the second set of CIs given is
 -- a subset of the first set and corresponds exactly to its entries for
