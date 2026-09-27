@@ -21,12 +21,14 @@ import qualified Data.Set as Set
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IS
 import qualified Data.IntMap.Strict as IM
+import qualified Data.Map.Strict as M
 import qualified Data.Vector as V
 import qualified Data.Vector.Mutable as MV
 
 import Diagram.Pretty
 import Diagram.Primitive
 
+import Diagram.Joints (Joints)
 import qualified Diagram.UnionType as UT
 import Diagram.JointType (JointType(JT))
 import Diagram.String
@@ -55,6 +57,26 @@ numSymbols = leftSyms `uses` MV.length
 -- | Clones state
 clone :: PrimMonad m => TypeState (PrimState m) -> m (TypeState (PrimState m))
 clone (TS u0 u1) = TS <$> MV.clone u0 <*> MV.clone u1
+
+-- | Assuming the mutation is valid/available, return the set of joints
+-- that will flip membership upon its application.
+jointsOf :: PrimMonad m => TypeState (PrimState m) -> Mutation -> m (Joints ())
+jointsOf ts mut = case mut of
+  AddLeft s0  -> goLeft s0
+  AddRight s1 -> goRight s1
+  Add2 s0 s1  -> return $ M.singleton (s0,s1) ()
+  DelLeft s0  -> goLeft s0
+  DelRight s1 -> goRight s1
+  Del2 s0 s1  -> return $ M.singleton (s0,s1) ()
+  where
+    goLeft s0  = M.fromDistinctAscList
+                 . fmap ((,()) . (s0,))
+                 . IS.toAscList
+                 . SE._coSymsIn <$> readLeft_ ts s0
+    goRight s1 = M.fromDistinctAscList
+                 . fmap ((,()) . (,s1))
+                 . IS.toAscList
+                 . SE._coSymsIn <$> readRight_ ts s1
 
 ----------
 -- INIT --
@@ -498,25 +520,6 @@ delMutsOf :: PrimMonad m =>
              TypeState (PrimState m) -> Sym -> Sym -> m [Mutation]
 delMutsOf (TS u0 u1) s0 s1 = SE.delMutsOf <$> sequence (s0, MV.read u0 s0)
                                           <*> sequence (s1, MV.read u1 s1)
-
--- | Assuming the mutation is valid/available, return the set of joints
--- that will flip membership upon its application. Returned list is in
--- order.
-jointsOf :: PrimMonad m => TypeState (PrimState m) -> Mutation -> m [(Sym,Sym)]
-jointsOf ts mut = case mut of
-  AddLeft s0  -> goLeft s0
-  AddRight s1 -> goRight s1
-  Add2 s0 s1  -> return [(s0,s1)]
-  DelLeft s0  -> goLeft s0
-  DelRight s1 -> goRight s1
-  Del2 s0 s1  -> return [(s0,s1)]
-  where
-    goLeft s0 = do
-      SE _ coIn _ _ <- readLeft_ ts s0
-      return $ (s0,) <$> IS.toAscList coIn
-    goRight s1 = do
-      SE _ coIn _ _ <- readRight_ ts s1
-      return $ (,s1) <$> IS.toAscList coIn
 
 -----------
 -- DEBUG --

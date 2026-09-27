@@ -429,7 +429,7 @@ introMut mut = do
   tst <- use typeState
   jts <- TS.jointsOf tst mut
   allCIs <- use jointCIs
-  let mutCIs = mfoldTree $ fmap (allCIs M.!) jts
+  let mutCIs = mfoldTree $ M.elems $ M.intersection allCIs jts
 
   typCIs@(CIs jt ndns _ _) <- use typeCIs
   str <- D.toList =<< use doubly -- (debug)
