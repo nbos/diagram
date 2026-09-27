@@ -50,12 +50,7 @@ empty = M.empty
 -- | Instead of M.unionWith (IM.unionWith (+)) and having to worry about
 -- empty\/null entries
 union :: Cor -> Cor -> Cor
-union = M.mergeWithKey (const f) id id
-  where
-    f :: IntMap Int -> IntMap Int -> Maybe (IntMap Int)
-    f = nothingIf IM.null .: IM.mergeWithKey (const g) id id
-    g :: Int -> Int -> Maybe Int
-    g = nothingIf (==0) .: (+)
+union = M.mergeWithKey (const $ nothingIf IM.null .: imUnion) id id
 
 unions :: [Cor] -> Cor
 unions [] = empty

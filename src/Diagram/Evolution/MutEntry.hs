@@ -25,8 +25,6 @@ import Diagram.Evolution.Math (logFact)
 import qualified Diagram.Evolution.Math as Math
 import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
 
-import Diagram.Util
-
 --------------------
 -- MUTATION ENTRY --
 --------------------
@@ -64,26 +62,25 @@ eval m bigN nm vm' (ME mut dnsLoss _ dnm _)
 
 -- | Construct a mutation entry that needs no count correction.
 fromParams :: (Sym -> Count) -> Mutation -> CIs -> MutEntry
-fromParams n'Of mut cis = fromParamsWith_ n'Of mut cis ddns
+fromParams n'Of mut cis = fromParamsWithDelta n'Of mut cis ddns
   where mutSymCounts = cis^.CIs.symCounts
         ddns = case typeOfMut mut of
           Add -> negate <$> mutSymCounts
           Del -> mutSymCounts
 
 -- | Construct a mutation entry with a count correction.
-fromParamsWith :: (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> MutEntry
-fromParamsWith n'Of mut cis@(CIs _ mutSymCounts _ _) cor =
-  fromParamsWith_ n'Of mut cis ddns
+fromParamsWithCor :: (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> MutEntry
+fromParamsWithCor n'Of mut cis@(CIs _ mutSymCounts _ _) cor =
+  fromParamsWithDelta n'Of mut cis ddns
   where
     ddns = case typeOfMut mut of
       Add -> negate <$> corMutSymCounts
       Del -> corMutSymCounts
-    corMutSymCounts = mutSymCounts `union` cor
-    union = IM.mergeWithKey (const $ nothingIf (==0) .: (+)) id id
+    corMutSymCounts = mutSymCounts `imUnion` cor
 
 -- | Construct a mutation entry given the delta delta sym count (ddns).
-fromParamsWith_ :: (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> MutEntry
-fromParamsWith_ n'Of mut cis ddns =
+fromParamsWithDelta :: (Sym -> Count) -> Mutation -> CIs -> IntMap Int -> MutEntry
+fromParamsWithDelta n'Of mut cis ddns =
   ME mut loss ddns dnm cis
   where
     two_dnm = negate $ sum ddns

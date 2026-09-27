@@ -417,7 +417,6 @@ pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
          , _dJointCount     = eDnm + deDnm }
 
   jointCount += mutDnm -- delta nm
-
   get >>= validate -- debug
 
   where
@@ -430,36 +429,22 @@ introMut mut = do
   tst <- use typeState
   jts <- TS.jointsOf tst mut
   allCIs <- use jointCIs
-  let mutCIs@(CIs mutJT _ bhd _) = mfoldTree $ fmap (allCIs M.!) jts
-      mutCIsL = IM.elems bhd
+  let mutCIs = mfoldTree $ fmap (allCIs M.!) jts
 
   typCIs@(CIs jt ndns _ _) <- use typeCIs
-  cor <- fmap clean $ case typeOfMut mut of
-    Add -> return $ snd $ CIs.join_ typCIs mutCIs
-    Del -> do -- manually count difference
-      dly <- use doubly
-      let superCI = CI.superCI dly (TS.member tst) (return .: JT.member mutJT)
-      flip execStateT IM.empty $ forM_ mutCIsL $ \ci ->
-        (lift (superCI ci) >>=) $ \case
-        Just Nothing -> return () -- super is identical, do nothing
-        Nothing -> do -- super doesn't start here, but ci is inside it
-          ciCounts <- lift (CI.symCounts dly ci)
-          modify (IM.unionWith (+) (negate <$> ciCounts))
-        Just (Just (super, remainder)) -> do -- subtract subs from super
-          subCounts <- lift $ mapM (CI.symCounts dly) (ci:remainder)
-          supCounts <- lift (CI.symCounts dly super)
-          let delta = IM.unionWith (+) supCounts $ negate <$> unions subCounts
-          modify (IM.unionWith (+) delta)
-
   str <- D.toList =<< use doubly -- (debug)
   ns <- use symCounts
+  cor <- case typeOfMut mut of
+    Add -> return $ snd $ CIs.join_ typCIs mutCIs
+    Del -> do
+      dly <- use doubly
+      fmap snd $ CIs.difference dly (Just $ TS.member tst)
+         Nothing typCIs mutCIs
+
   zoom mutBooks $ MB.insert $
     ME.validate jt str (n'Of ns ndns) $ -- (debug)
-    ME.fromParamsWith (n'Of ns ndns) mut mutCIs cor
-
+    ME.fromParamsWithCor (n'Of ns ndns) mut mutCIs cor
   where
-    clean = IM.filter (/= 0)
-    unions = fromMaybe IM.empty . foldTree (IM.unionWith (+))
     n'Of ns ndns s = maybe n (n-) $ IM.lookup s ndns
       where n = ns U.! s
 
@@ -489,8 +474,8 @@ init_ m bigN dly ns allCIs (jt, memJointCIs) = do
   str <- D.toList dly -- TODO: rm
   traceM $ pShowStr jt str
 
-  let es = M.mergeWithKey
-        (Just . ME.validate jt str n'Of .:. ME.fromParamsWith n'Of) -- CIs * cor
+  let es = M.mergeWithKey ( Just . ME.validate jt str n'Of
+                               .:. ME.fromParamsWithCor n'Of ) -- CIs * cor
         (M.mapWithKey $
           ME.validate jt str n'Of .: ME.fromParams n'Of) -- only CIs
         (M.mapWithKey $ -- note: mergeWithKey can pass empty maps, so map errs

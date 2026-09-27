@@ -95,7 +95,6 @@ jointExtension str (CI hd shd len _ _)
 -- SUPER-CI --
 --------------
 
--- TODO: rewrite this doc
 -- | For a reference string, membership functions for (1) a super-type
 -- and (2) a sub-type, and a CI that maximally (meaning it couldn't be
 -- extended without falling out of it) inhabits the sub-type, return the
@@ -112,8 +111,8 @@ jointExtension str (CI hd shd len _ _)
 -- aways all of the given JointType's intervals from the superCI (snd),
 -- in left-to-right order.
 superCI :: forall m. PrimMonad m => Doubly (PrimState m) ->
-  (Sym -> Sym -> m Bool) -> (Sym -> Sym -> m Bool) ->
-  CI -> m (Maybe (Maybe (CI, [CI])))
+           (Sym -> Sym -> m Bool) -> (Sym -> Sym -> m Bool) ->
+           CI -> m (Maybe (Maybe (CI, [CI])))
 superCI dly super sub (CI hd0 shd0 len0 tl0 stl0) = do
 
   bwd <- (D.prev dly hd0 >>=) $ \case

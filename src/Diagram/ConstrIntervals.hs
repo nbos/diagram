@@ -12,7 +12,7 @@ import Control.Lens hiding (Index,(:>))
 import Control.Monad.State.Strict
 
 import Data.Maybe
-import Data.Tuple.Extra
+import Data.Bifunctor
 import qualified Data.List as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -23,8 +23,9 @@ import Streaming (Of(..), Stream)
 import qualified Streaming.Prelude as S
 
 import Diagram.Pretty
-import Diagram.Primitive (PrimMonad(..))
-import Diagram.String (Index, Count, Doubly, Sym)
+import Diagram.String
+import Diagram.Primitive
+
 import Diagram.JointType (JointType(..))
 import qualified Diagram.JointType as JT
 import qualified Diagram.UnionType as UT
@@ -164,7 +165,7 @@ fromStream_0 is0@(i0,s0) ss !m = (S.next ss >>=) $ \case
 data JoinState = JoinState
   { __A :: !CIs -- some set of intervals 'A'
   , __B :: !CIs -- some other set of intervals 'B'
-  , _delta :: !(IntMap Int) -- sym count delta accumulator
+  , _joinCor :: !(IntMap Int) -- sym count delta accumulator
 } deriving (Show,Eq)
 makeLenses ''JoinState
 
@@ -188,7 +189,7 @@ join = fst .: join_
 -- between the sum of the counts of each set of intervals and the counts
 -- of the returned set of intervals (snd)
 join_ :: CIs -> CIs -> (CIs, IntMap Int)
-join_ ciAs ciBs = runIdentity $ flip evalStateT (JoinState ciAs ciBs IM.empty) $ do
+join_ ciAs ciBs = flip evalState (JoinState ciAs ciBs IM.empty) $ do
 
   unless (uB0 `UT.disjoint` uA1) $ -- short-circuit intersection (O(m) <<< O(N))
     uses2 (_B.byHead) (_A.byTail) IM.intersection
@@ -201,14 +202,14 @@ join_ ciAs ciBs = runIdentity $ flip evalStateT (JoinState ciAs ciBs IM.empty) $
     modify $ \(JoinState b a d) -> JoinState a b d -- B <--> A
 
   -- fold new sym count deltas into the counts map
-  dns <- use delta
+  cor <- use joinCor
   bhd <- uses2 (_A.byHead) (_B.byHead) $ IM.unionWithKey err'
   btl <- uses2 (_A.byTail) (_B.byTail) $ IM.unionWithKey err'
   let ns' = -- L.foldl' (flip $ uc alter) ns (IM.toList dns)
         IM.mergeWithKey (\_ n dn -> nothingIf (==0) (n + dn))
-        id id ns dns
+        id id ns cor
 
-  return (CIs jt ns' bhd btl, dns)
+  return (CIs jt ns' bhd btl, cor)
 
   where
     JT uA0 uA1 = ciAs^.jointType
@@ -223,7 +224,7 @@ join_ ciAs ciBs = runIdentity $ flip evalStateT (JoinState ciAs ciBs IM.empty) $
     -- inc = inc_ 1
     dec = inc_ (-1)
     inc_ :: Int -> Sym -> StateT JoinState Identity ()
-    inc_ d s = delta %= alter s d
+    inc_ d s = joinCor %= alter s d
 
     -- | Given a constructive interval from 'B' whose head collides with
     -- the tail of an interval of the other set 'A', join together, fix
@@ -267,6 +268,57 @@ join_ ciAs ciBs = runIdentity $ flip evalStateT (JoinState ciAs ciBs IM.empty) $
 deleteLookup :: Sym -> IntMap a -> (Maybe a, IntMap a)
 deleteLookup = IM.updateLookupWithKey (\_ _ -> Nothing)
 {-# INLINE deleteLookup #-}
+
+----------------
+-- DIFFERENCE --
+----------------
+
+data DiffState = DiffState
+  { _byHeadRes :: IntMap CI
+  , _byTailRes :: IntMap CI
+  , _diffCor :: !(IntMap Int) -- sym count delta accumulator
+} deriving (Show,Eq)
+makeLenses ''DiffState
+
+-- | Remove the constructions of the second set of CIs from the first,
+-- given a reference string and optionally membership functions for the
+-- super (left) and sub (right) operands. Cannot determine if the joints
+-- of the sub set are sufficient to eliminate any symbol of the joint
+-- type of the super type without a complete scan of the super's joints,
+-- so the type field is left untouched. Also returns (snd) the
+-- correction on the counts between the difference in the counts and the
+-- counts of the difference (i.e. the Cor of this mut).
+difference :: PrimMonad m => Doubly (PrimState m) ->
+  Maybe (Sym -> Sym -> m Bool) -> Maybe (Sym -> Sym -> m Bool) ->
+  CIs -> CIs -> m (CIs, IntMap Int)
+difference dly memSuper_ memSub_ cisA (CIs jtB _ bhdB _) = do
+  DiffState bhdA' btlA' dnsA <- flip execStateT (DiffState bhdA btlA IM.empty) $
+    forM_ (IM.elems bhdB) $ \ci@(CI subHd _ _ subTl _) -> (getSuper ci >>=) $ \case
+      Nothing -> do -- super doesn't start here, but ci is inside it
+        ((diffCor %=) . imUnion) =<< CI.symCounts dly ci
+      Just Nothing -> do -- super is identical, remove indexes, cor is 0
+        byHeadRes %= IM.delete subHd
+        byTailRes %= IM.delete subTl
+      Just (Just (super@(CI superHd _ _ superTl _), rems)) -> do -- case super
+        byHeadRes %= IM.delete superHd
+        byTailRes %= IM.delete superTl
+        ciCounts <- CI.symCounts dly ci
+        supCounts <- CI.symCounts dly super
+        diffCor %= imUnion ((negate <$> ciCounts) `imUnion` supCounts)
+        forM_ rems $ \r@(CI remHd _ _ remTl _) -> do
+          byHeadRes %= IM.insert remHd r
+          byTailRes %= IM.insert remTl r
+          remCounts <- CI.symCounts dly r
+          diffCor %= imUnion (negate <$> remCounts)
+
+  let nsA' = imUnion nsA dnsA
+  return (CIs jtA nsA' bhdA' btlA', dnsA)
+
+  where
+    CIs jtA nsA bhdA btlA = cisA
+    memSuper = fromMaybe (return .: JT.member jtA) memSuper_
+    memSub   = fromMaybe (return .: JT.member jtB) memSub_
+    getSuper = lift . CI.superCI dly memSuper memSub
 
 -----------
 -- DEBUG --
