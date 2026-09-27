@@ -105,31 +105,31 @@ init m allJoints (JT u0 u1) = do
 
 pushMut :: PrimMonad m => Mutation -> TypeT m (Set Mutation, Set Mutation)
 pushMut mut = do
-  res <- mutsChange mut
+  res <- lift =<< gets (`mutsChange` mut)
   pushMut_ mut
   return res
 
--- | (Read only) Return the Mutations to be added (fst) or removed (snd)
--- from the Books after a given Mutation is applied. This must be called
--- *before* applying the mutation.
-mutsChange :: forall m.
-  PrimMonad m => Mutation -> TypeT m (Set Mutation, Set Mutation)
-mutsChange mut = fmap (Strict.uncurry (,)) $ case mut of
+-- | Return the Mutations to be added (fst) or removed (snd) from the
+-- Books after a given Mutation is applied. This must be called
+-- **before** applying the mutation.
+mutsChange :: forall m. PrimMonad m => TypeState (PrimState m) ->
+              Mutation -> m (Set Mutation, Set Mutation)
+mutsChange tst mut = fmap (Strict.uncurry (,)) $ case mut of
 
   AddLeft s0 -> flip execStateT (ss (DelLeft s0) :!: ss mut) $ do
-    SE _ coIn0 _ coOut0 <- lift $ readLeft s0
-    forM_ (IS.toList coOut0) addAddRightsFromAddLeft --
+    SE _ coIn _ coOut <- readL s0
+    forM_ (IS.toList coOut) addAddRightsFromAddLeft --
 
-    whenJust (trySingleton coIn0) $ \s1 -> do
-      SE _ _ deps1 _ <- lift $ readRight s1
+    whenJust (trySingleton coIn) $ \s1 -> do
+      SE _ _ deps1 _ <- readR s1
       when (IS.null deps1) $ delMut (DelRight s1) --
 
     depsLost <- fmap (IM.fromListWith IS.union . catMaybes) $
-      forM (IS.toList coIn0) $ \s1 -> do
-        SE _ coIn1 _ _ <- lift $ readRight s1
+      forM (IS.toList coIn) $ \s1 -> do
+        SE _ coIn1 _ _ <- readR s1
         return $ trySingleton coIn1 <&> (, IS.singleton s1)
     forM_ (IM.toList depsLost) $ \(s0', deps) -> do
-      SE _ coIn0' deps0' _ <- lift $ readLeft s0'
+      SE _ coIn0' deps0' _ <- readL s0'
       whenJust (trySingleton coIn0') $ \s1 ->
         delMut (Del2 s0' s1) --
       let lostAllDeps = deps0' == deps
@@ -138,19 +138,19 @@ mutsChange mut = fmap (Strict.uncurry (,)) $ case mut of
 
   -- symmetric w/ above
   AddRight s1 -> flip execStateT (ss (DelRight s1) :!: ss mut) $ do
-    SE _ coIn1 _ coOut1 <- lift $ readRight s1
-    forM_ (IS.toList coOut1) addAddLeftsFromAddRight --
+    SE _ coIn _ coOut <- readR s1
+    forM_ (IS.toList coOut) addAddLeftsFromAddRight --
 
-    whenJust (trySingleton coIn1) $ \s0 -> do
-      SE _ _ deps0 _ <- lift $ readLeft s0
+    whenJust (trySingleton coIn) $ \s0 -> do
+      SE _ _ deps0 _ <- readL s0
       when (IS.null deps0) $ delMut (DelLeft s0) --
 
     depsLost <- fmap (IM.fromListWith IS.union . catMaybes) $
-      forM (IS.toList coIn1) $ \s0 -> do
-        SE _ coIn0 _ _ <- lift $ readLeft s0
+      forM (IS.toList coIn) $ \s0 -> do
+        SE _ coIn0 _ _ <- readL s0
         return $ trySingleton coIn0 <&> (, IS.singleton s0)
     forM_ (IM.toList depsLost) $ \(s1', deps) -> do
-      SE _ coIn1' deps1' _ <- lift $ readRight s1'
+      SE _ coIn1' deps1' _ <- readR s1'
       whenJust (trySingleton coIn1') $ \s0 ->
         delMut (Del2 s0 s1') --
       let lostAllDeps = deps1' == deps
@@ -158,25 +158,25 @@ mutsChange mut = fmap (Strict.uncurry (,)) $ case mut of
         addMut (DelRight s1') --
 
   Add2 s0 s1 -> flip execStateT (ss (Del2 s0 s1) :!: ss mut) $ do
-    SE _ _ _ coOut0 <- lift $ readLeft s0
+    SE _ _ _ coOut0 <- readL s0
     forM_ (IS.toList $ IS.delete s1 coOut0) addAddRightsFromAddLeft --
-    SE _ _ _ coOut1 <- lift $ readRight s1
+    SE _ _ _ coOut1 <- readR s1
     forM_ (IS.toList $ IS.delete s0 coOut1) addAddLeftsFromAddRight --
 
   DelLeft s0 -> flip execStateT (ss (AddLeft s0) :!: ss mut) $ do
-    SE _ coIn0 _ coOut0 <- lift $ readLeft s0
-    forM_ (IS.toList coOut0) delAddRightsFromDelLeft --
+    SE _ coIn _ coOut <- readL s0
+    forM_ (IS.toList coOut) delAddRightsFromDelLeft --
 
-    whenJust (trySingleton coIn0) $ \s1 -> do
-      SE _ _ deps1 _ <- lift $ readRight s1
+    whenJust (trySingleton coIn) $ \s1 -> do
+      SE _ _ deps1 _ <- readR s1
       when (deps1 == IS.singleton s0) $ addMut (DelRight s1) --
 
     depsGained <- fmap (IM.fromListWith IS.union . catMaybes) $
-      forM (IS.toList coIn0) $ \s1 -> do
-        SE _ coIn1 _ _ <- lift $ readRight s1
+      forM (IS.toList coIn) $ \s1 -> do
+        SE _ coIn1 _ _ <- readR s1
         return $ trySingleton (IS.delete s0 coIn1) <&> (, IS.singleton s1)
     forM_ (IM.toList depsGained) $ \(s0', deps) -> do
-      SE _ coIn0' deps0' _ <- lift $ readLeft s0'
+      SE _ coIn0' deps0' _ <- readL s0'
       when (IS.null deps0') $ do
         delMut (DelLeft s0') --
         whenJust (trySingleton deps) $ \s1 -> do
@@ -185,19 +185,19 @@ mutsChange mut = fmap (Strict.uncurry (,)) $ case mut of
 
   -- symmetric w/ above
   DelRight s1 -> flip execStateT (ss (AddRight s1) :!: ss mut) $ do
-    SE _ coIn1 _ coOut1 <- lift $ readRight s1
-    forM_ (IS.toList coOut1) delAddLeftsFromDelRight --
+    SE _ coIn _ coOut <- readR s1
+    forM_ (IS.toList coOut) delAddLeftsFromDelRight --
 
-    whenJust (trySingleton coIn1) $ \s0 -> do
-      SE _ _ deps0 _ <- lift $ readLeft s0
+    whenJust (trySingleton coIn) $ \s0 -> do
+      SE _ _ deps0 _ <- readL s0
       when (deps0 == IS.singleton s1) $ addMut (DelLeft s0) --
 
     depsGained <- fmap (IM.fromListWith IS.union . catMaybes) $
-      forM (IS.toList coIn1) $ \s0 -> do
-        SE _ coIn0 _ _ <- lift $ readLeft s0
+      forM (IS.toList coIn) $ \s0 -> do
+        SE _ coIn0 _ _ <- readL s0
         return $ trySingleton (IS.delete s1 coIn0) <&> (, IS.singleton s0)
     forM_ (IM.toList depsGained) $ \(s1', deps) -> do
-      SE _ coIn1' deps1' _ <- lift $ readRight s1'
+      SE _ coIn1' deps1' _ <- readR s1'
       when (IS.null deps1') $ do
         delMut (DelRight s1') --
         whenJust (trySingleton deps) $ \s0 -> do
@@ -205,15 +205,18 @@ mutsChange mut = fmap (Strict.uncurry (,)) $ case mut of
             addMut (Del2 s0 s1') --
 
   Del2 s0 s1 -> flip execStateT (ss (Add2 s0 s1) :!: ss mut) $ do
-    SE _ _ _ coOut0 <- lift $ readLeft s0
+    SE _ _ _ coOut0 <- readL s0
     forM_ (IS.toList coOut0) delAddRightsFromDelLeft --
-    SE _ _ _ coOut1 <- lift $ readRight s1
+    SE _ _ _ coOut1 <- readR s1
     forM_ (IS.toList coOut1) delAddLeftsFromDelRight --
 
   where
-    addMut :: Mutation -> StateT (Set Mutation :!: Set Mutation) (TypeT m) ()
+    readL = readLeft_ tst
+    readR = readRight_ tst
+
+    addMut :: Mutation -> StateT (Set Mutation :!: Set Mutation) m ()
     addMut mu = _1 %= Set.insert mu
-    delMut :: Mutation -> StateT (Set Mutation :!: Set Mutation) (TypeT m) ()
+    delMut :: Mutation -> StateT (Set Mutation :!: Set Mutation) m ()
     delMut mu = _2 %= Set.insert mu
 
     ss :: Mutation -> Set Mutation
@@ -222,41 +225,41 @@ mutsChange mut = fmap (Strict.uncurry (,)) $ case mut of
     -- | Add an `AddRight s1` mutation made available by the
     -- introduction of a neighbor `s0` to the left union
     addAddRightsFromAddLeft s1 = do
-      SE _ coIn1 _ coOut1 <- lift $ readRight s1
-      when (IS.null coIn1) $ do
+      SE _ coIn _ coOut1 <- readR s1
+      when (IS.null coIn) $ do
         addMut (AddRight s1) --
         forM_ (IS.toList coOut1) $ \s0' -> do
-          SE _ coIn0' _ _ <- lift $ readLeft s0'
+          SE _ coIn0' _ _ <- readL s0'
           when (IS.null coIn0') $ delMut (Add2 s0' s1) --
 
     -- | Delete `AddRight s1` mutations invalidated from the deltion of
     -- its last left in-neighbor
     delAddRightsFromDelLeft s1 = do
-      SE _ coIn1 _ coOut1 <- lift $ readRight s1
-      whenJust (trySingleton coIn1) $ \_ -> do
+      SE _ coIn _ coOut <- readR s1
+      whenJust (trySingleton coIn) $ \_ -> do
         delMut (AddRight s1) --
-        forM_ (IS.toList coOut1) $ \s0' -> do
-          SE _ coIn0' _ _ <- lift $ readLeft s0'
+        forM_ (IS.toList coOut) $ \s0' -> do
+          SE _ coIn0' _ _ <- readL s0'
           when (IS.null coIn0') $ addMut (Add2 s0' s1) --
 
     -- | Add an `AddLeft s0` mutation made available by the introduction
     -- of a neighbor `s1` to the left union
     addAddLeftsFromAddRight s0 = do
-      SE _ coIn0 _ coOut0 <- lift $ readLeft s0
-      when (IS.null coIn0) $ do
+      SE _ coIn _ coOut <- readL s0
+      when (IS.null coIn) $ do
         addMut (AddLeft s0) --
-        forM_ (IS.toList coOut0) $ \s1' -> do
-          SE _ coIn1' _ _ <- lift $ readRight s1'
+        forM_ (IS.toList coOut) $ \s1' -> do
+          SE _ coIn1' _ _ <- readR s1'
           when (IS.null coIn1') $ delMut (Add2 s0 s1') --
 
     -- | Delete `AddLeft s0` mutations invalidated from the deltion of
     -- its last right in-neighbor
     delAddLeftsFromDelRight s0 = do
-      SE _ coIn0 _ coOut0 <- lift $ readLeft s0
-      whenJust (trySingleton coIn0) $ \_ -> do
+      SE _ coIn _ coOut <- readL s0
+      whenJust (trySingleton coIn) $ \_ -> do
         delMut (AddLeft s0) --
-        forM_ (IS.toList coOut0) $ \s1' -> do
-          SE _ coIn1' _ _ <- lift $ readRight s1'
+        forM_ (IS.toList coOut) $ \s1' -> do
+          SE _ coIn1' _ _ <- readR s1'
           when (IS.null coIn1') $ addMut (Add2 s0 s1') --
 
 err :: String -> a
