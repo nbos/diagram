@@ -12,6 +12,7 @@ import System.IO.Unsafe
 
 import Data.Maybe
 import Data.Tuple.Extra
+import Data.Functor.Compose (Compose(..))
 import qualified Data.Bits as B
 import qualified Data.List.Extra as L
 import qualified Data.Vector as V
@@ -779,4 +780,30 @@ l %== f = do
   s  <- get
   s' <- unwrapMonad (l (WrapMonad . f) s)
   put s'
+{-# INLINE (%==) #-}
 infixr 4 %==
+
+-- | Monadic version of '%%='.
+--
+-- Modifies the target of a Lens (or Traversal) in MonadState using a monadic
+-- function that also produces an extra result, returning that result.
+--
+-- @
+-- (%%==) :: MonadState s m => Lens      s s a b -> (a -> m (r, b)) -> m r
+-- (%%==) :: MonadState s m => Traversal s s a b -> (a -> m (r, b)) -> m r
+-- @
+(%%==) :: MonadState s m
+       => LensLike (Compose m ((,) r)) s s a b
+       -> (a -> m (r, b))
+       -> m r
+l %%== f = do
+  s <- get
+  -- Apply the lens/traversal, collecting the composed functor
+  -- getCompose :: Compose m ((,) r) b -> m (r, b)
+  --   ... but over the whole structure s, we get m (r, s')
+  let Compose mrs' = l (Compose . f) s
+  (r, s') <- mrs'
+  put s'
+  return r
+{-# INLINE (%%==) #-}
+infixr 4 %%==

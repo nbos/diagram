@@ -19,6 +19,8 @@ import Data.Maybe
 import Data.Function
 import Data.Foldable (fold)
 import qualified Data.List as L
+import Data.Strict.Tuple (Pair(..),(:!:))
+import Data.Strict.Classes (toLazy)
 
 import qualified Data.Set as Set
 import Data.Map.Strict (Map)
@@ -228,106 +230,18 @@ getMutCountIntervals ddns = do
 
 -- | Apply a mutation, update books.
 pushMut :: forall m. PrimMonad m => MutEntry -> EvolutionT m ()
-pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
-  ----------------
-  -- TYPE STATE --
-  ----------------
+pushMut me@(ME mut _ mutDdns mutDnm _) = do
+
   old_tst <- TS.clone =<< use typeState -- for Cor delta, difficult otherwise
   (enabledMuts, expiredMuts) <- zoom typeState $ TS.pushMut mut -- [APPLY]
   new_tst <- use typeState
 
-  --------------------------
-  -- CORRECTION, TYPE CIs --
-  --------------------------
+  dly <- use doubly
   CIs _ oldTypNdns _ _ <- use typeCIs -- (before we modify)
-
-  -- [typeCIs]: We could modify CIs with CIs.join for Add, but for Del
-  -- we need to go CI-by-CI, deleting supers and inserting remainders,
-  -- and manually deleting symbols from the JT, because CIs are not
-  -- indexed by other symbols than their head and tail, and there is no
-  -- point to. Since we go over all mutCIs anyway to compute the Cor
-  -- delta, we do it manually whether we're in Add or Del. First, we
-  -- modify the JT here, and do all the insert-deleting in the loop.
-  typeCIs.CIs.jointType %= JT.appValidMut mut
-  --
-
-  dly <- use doubly -- convenient
-  let mutCIsL = IM.elems mutCIsBhd
-      notInMut = not .: JT.member mutJT
-      cisInsert = CIs.insertDisjoint dly
-      cisDelete = CIs.deleteExisting dly
-
-  mutCorDelta <- case typeOfMut mut of
-    Add -> do
-      let procNewSuper :: CI -> [CI] -> StateT Cor (EvolutionT m) ()
-          procNewSuper super subs = do -- subs are adjacents to mut ci
-            -- Del Cor
-            newDelCor <- Cor.onDelMuts dly new_tst super
-            oldDelCor <- forM subs $ Cor.onDelMuts dly old_tst
-            let delCorDelta = foldr Cor.union newDelCor $
-                              negate <<<$>>> oldDelCor
-            -- Add Cor
-            (mSuperAddChains, subs') <- Cor.composeAddsSub
-                                        notInMut dly new_tst super
-            subsNewAddCor <- mapM (Cor.onAddMuts dly new_tst) subs'
-            newAddCor <- case mSuperAddChains of
-              Nothing -> (:subsNewAddCor) <$> Cor.onAddMuts dly new_tst super
-              Just superAddChains -> return $
-                fmap (uc Cor.onAddMuts_) superAddChains ++ subsNewAddCor
-            oldAddCor <- forM (subs ++ subs') $ Cor.onAddMuts dly old_tst
-            let addCorDelta = fromMaybe M.empty $ foldTree Cor.union $
-                              newAddCor ++ (negate <<<$>>> oldAddCor)
-
-            modify $ Cor.union $ Cor.union addCorDelta delCorDelta
-
-            -- typeCIs update (EvolutionT)
-            lift $ typeCIs %== foldr (>=>) (cisInsert super) -- insert after
-                                           (cisDelete <$> subs) -- dels first
-
-      let superCI = CI.superCI dly
-                    (TS.member new_tst) (return .: JT.member mutJT)
-      corrsDelta <- flip execStateT M.empty $ forM_ mutCIsL $
-        \ci -> (superCI (traceShowId ci) >>=) $ \case
-          Nothing -> return () -- respect canonicity in superCI
-          Just Nothing -> procNewSuper ci []
-          Just (Just (super, subs)) -> procNewSuper super subs
-
-      return $ corrsDelta `M.withoutKeys` enabledMuts
-
-    Del -> do
-      let procOldSuper :: CI -> [CI] -> StateT Cor (EvolutionT m) ()
-          procOldSuper super rems = do
-            -- Del Cor
-            oldDelCor <- Cor.onDelMuts dly old_tst super
-            newDelCor <- forM rems $ Cor.onDelMuts dly new_tst
-            let delCorDelta = foldr Cor.union (negate <<$>> oldDelCor) newDelCor
-            -- Add Cor
-            (mSuperAddChains, subs') <- Cor.composeAddsSub
-                                        notInMut dly old_tst super
-            subsOldAddCor <- mapM (Cor.onAddMuts dly old_tst) subs'
-            oldAddCor <- case mSuperAddChains of
-              Nothing -> (:subsOldAddCor) <$> Cor.onAddMuts dly old_tst super
-              Just oldAddChains -> return $
-                fmap (uc Cor.onAddMuts_) oldAddChains ++ subsOldAddCor
-            newAddCor <- forM (rems ++ subs') $ Cor.onAddMuts dly new_tst
-            let addCorDelta = fromMaybe M.empty $ foldTree Cor.union $
-                              newAddCor ++ (negate <<<$>>> oldAddCor)
-
-            modify $ Cor.union $ Cor.union addCorDelta delCorDelta
-
-            -- typeCIs update (EvolutionT)
-            lift $ typeCIs %== foldr (<=<) (cisDelete super) -- insert after
-                                           (cisInsert <$> rems) -- dels first
-
-      let superCI = CI.superCI dly
-                    (TS.member old_tst) (return .: JT.member mutJT)
-      corrsDelta <- flip execStateT M.empty $ forM_ mutCIsL $
-        \ci -> (superCI (traceShowId ci) >>=) $ \case
-          Nothing -> return () -- skip
-          Just Nothing -> procOldSuper ci []
-          Just (Just (super, rems)) -> procOldSuper super rems
-
-      return $ corrsDelta `M.withoutKeys` expiredMuts
+  corDeltaDirty <- typeCIs %%== mutCorDelta dly old_tst new_tst me
+  let corDelta = case typeOfMut mut of
+        Add -> corDeltaDirty `M.withoutKeys` enabledMuts
+        Del -> corDeltaDirty `M.withoutKeys` expiredMuts
 
   ---------------------
   -- INTRO/ELIM MUTS --
@@ -371,7 +285,7 @@ pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
   -- mutEntryUpdate :: COUNT_UPDATE * CORR_UPDATE
   let mutEntryUpdates = M.mergeWithKey (\_ -> Just .: (,))
                         ((,IM.empty) <$>) ((IM.empty,) <$>)
-                        countUpdateIlsByAffected mutCorDelta
+                        countUpdateIlsByAffected corDelta
 
   -- (debug)
   CIs jt ndns _ _ <- use typeCIs
@@ -424,12 +338,107 @@ pushMut (ME mut _ mutDdns mutDnm (CIs mutJT _ mutCIsBhd _)) = do
 
 -- WHERE --
 
-introMut :: forall m. PrimMonad m => Mutation -> EvolutionT m ()
+-- | (Part 1 of pushMut) Given the string, before and after type states
+-- of the given mut as well as the CIs of the type before application of
+-- the mut, apply the difference on the type CIs and the delta on Cor of
+-- all available mutations (may include erroneous corrections on newly
+-- enabled muts (Add case) or newly expired muts (Del case), which need
+-- to be computed explicitly anyway, but remember to filter them out)
+mutCorDelta :: forall m. PrimMonad m => Doubly (PrimState m) ->
+               TypeState (PrimState m) -> TypeState (PrimState m) ->
+               MutEntry -> CIs -> m (Cor, CIs)
+mutCorDelta dly old_tst new_tst me typCIs = fmap toLazy $ case typeOfMut mut of
+  Add -> do
+    let procNewSuper :: CI -> [CI] -> StateT (Cor :!: CIs) m ()
+        procNewSuper super subs = do -- subs are adjacents to mut ci
+          -- Del Cor
+          newDelCor <- Cor.onDelMuts dly new_tst super
+          oldDelCor <- forM subs $ Cor.onDelMuts dly old_tst
+          let delCorDelta = foldr Cor.union newDelCor $
+                            negate <<<$>>> oldDelCor
+          -- Add Cor
+          (mSuperAddChains, subs') <- Cor.composeAddsSub
+                                      notInMut dly new_tst super
+          subsNewAddCor <- mapM (Cor.onAddMuts dly new_tst) subs'
+          newAddCor <- case mSuperAddChains of
+            Nothing -> (:subsNewAddCor) <$> Cor.onAddMuts dly new_tst super
+            Just superAddChains -> return $
+              fmap (uc Cor.onAddMuts_) superAddChains ++ subsNewAddCor
+          oldAddCor <- forM (subs ++ subs') $ Cor.onAddMuts dly old_tst
+          let addCorDelta = fromMaybe M.empty $ foldTree Cor.union $
+                            newAddCor ++ (negate <<<$>>> oldAddCor)
+
+          _1 %= Cor.union (Cor.union addCorDelta delCorDelta)
+          _2 %== foldr (>=>) (cisInsert super) -- insert after
+                             (cisDelete <$> subs) -- dels first
+
+        superCI :: CI -> StateT (Cor :!: CIs) m (Maybe (Maybe (CI, [CI])))
+        superCI = CI.superCI dly (TS.member new_tst)
+                                 (return .: JT.member mutJT)
+
+    flip execStateT st0 $ forM_ mutCIsL $
+      \ci -> (superCI (traceShowId ci) >>=) $ \case
+        Nothing -> return () -- respect canonicity in superCI
+        Just Nothing -> procNewSuper ci []
+        Just (Just (super, subs)) -> procNewSuper super subs
+
+  Del -> do
+    let procOldSuper :: CI -> [CI] -> StateT (Cor :!: CIs) m ()
+        procOldSuper super rems = do
+          -- Del Cor
+          oldDelCor <- Cor.onDelMuts dly old_tst super
+          newDelCor <- forM rems $ Cor.onDelMuts dly new_tst
+          let delCorDelta = foldr Cor.union (negate <<$>> oldDelCor) newDelCor
+          -- Add Cor
+          (mSuperAddChains, subs') <- Cor.composeAddsSub
+                                      notInMut dly old_tst super
+          subsOldAddCor <- mapM (Cor.onAddMuts dly old_tst) subs'
+          oldAddCor <- case mSuperAddChains of
+            Nothing -> (:subsOldAddCor) <$> Cor.onAddMuts dly old_tst super
+            Just oldAddChains -> return $
+              fmap (uc Cor.onAddMuts_) oldAddChains ++ subsOldAddCor
+          newAddCor <- forM (rems ++ subs') $ Cor.onAddMuts dly new_tst
+          let addCorDelta = fromMaybe M.empty $ foldTree Cor.union $
+                            newAddCor ++ (negate <<<$>>> oldAddCor)
+
+          _1 %= Cor.union (Cor.union addCorDelta delCorDelta)
+          _2 %== foldr (<=<) (cisDelete super) -- insert after
+                             (cisInsert <$> rems) -- dels first
+
+        superCI :: CI -> StateT (Cor :!: CIs) m (Maybe (Maybe (CI, [CI])))
+        superCI = CI.superCI dly (TS.member old_tst)
+                                 (return .: JT.member mutJT)
+
+    flip execStateT st0 $ forM_ mutCIsL $
+      \ci -> (superCI (traceShowId ci) >>=) $ \case
+        Nothing -> return () -- skip
+        Just Nothing -> procOldSuper ci []
+        Just (Just (super, rems)) -> procOldSuper super rems
+  where
+    ME mut _ _ _ (CIs mutJT _ mutCIsBhd _) = me
+    -- we modify the JT here, and do all the insert-deleting in the loop
+    st0 = M.empty :!:
+          over CIs.jointType (JT.appValidMut mut) typCIs
+
+    mutCIsL = IM.elems mutCIsBhd
+    notInMut = not .: JT.member mutJT
+    cisInsert = CIs.insertDisjoint dly
+    cisDelete = CIs.deleteExisting dly
+
+modifyM :: (Monad m) => (s -> m s) -> StateT s m ()
+modifyM f = StateT $ \ s -> do
+    s' <- f s
+    return ((), s')
+{-# INLINE modifyM #-}
+
+mutJointsCIs :: PrimMonad m => Mutation -> EvolutionT m (Joints CIs)
+mutJointsCIs mut = M.intersection <$> use jointCIs
+                   <*> (flip TS.jointsOf mut =<< use typeState)
+
+introMut :: PrimMonad m => Mutation -> EvolutionT m ()
 introMut mut = do
   tst <- use typeState
-  jts <- TS.jointsOf tst mut
-  allCIs <- use jointCIs
-  let mutCIs = mfoldTree $ M.elems $ M.intersection allCIs jts
+  mutCIs <- mfoldTree . M.elems <$> mutJointsCIs mut
 
   typCIs@(CIs jt ndns _ _) <- use typeCIs
   str <- D.toList =<< use doubly -- (debug)
