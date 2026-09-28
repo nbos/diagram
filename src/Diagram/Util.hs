@@ -532,13 +532,15 @@ infixr 8 .::
 {-# INLINE (.::) #-}
 
 -- five
-(.::.) :: (b -> c) -> (a1 -> a2 -> a3 -> a4 -> a5 -> b) -> a1 -> a2 -> a3 -> a4 -> a5 -> c
+(.::.) :: (b -> c) -> (a1 -> a2 -> a3 -> a4 -> a5 -> b) ->
+          a1 -> a2 -> a3 -> a4 -> a5 -> c
 (.::.) = (.).(.::)
 infixr 8 .::.
 {-# INLINE (.::.) #-}
 
 -- six
-(.:::) :: (b -> c) -> (a1 -> a2 -> a3 -> a4 -> a5 -> a6 -> b) -> a1 -> a2 -> a3 -> a4 -> a5 -> a6 -> c
+(.:::) :: (b -> c) -> (a1 -> a2 -> a3 -> a4 -> a5 -> a6 -> b) ->
+          a1 -> a2 -> a3 -> a4 -> a5 -> a6 -> c
 (.:::) = (.).(.::.)
 infixr 8 .:::
 {-# INLINE (.:::) #-}
@@ -564,7 +566,8 @@ flip5 fn b c d e f a = fn a b c d e f
 {-# INLINE flip5 #-}
 
 -- six
-flip6 :: (a -> b -> c -> d -> e -> f -> g -> h) -> b -> c -> d -> e -> f -> g -> a -> h
+flip6 :: (a -> b -> c -> d -> e -> f -> g -> h) ->
+         b -> c -> d -> e -> f -> g -> a -> h
 flip6 fn b c d e f g a = fn a b c d e f g
 {-# INLINE flip6 #-}
 
@@ -589,7 +592,8 @@ unflip5 fn f a b c d e = fn a b c d e f
 {-# INLINE unflip5 #-}
 
 -- six
-unflip6 :: (a -> b -> c -> d -> e -> f -> g -> h) -> g -> a -> b -> c -> d -> e -> f -> h
+unflip6 :: (a -> b -> c -> d -> e -> f -> g -> h) ->
+           g -> a -> b -> c -> d -> e -> f -> h
 unflip6 fn g a b c d e f = fn a b c d e f g
 {-# INLINE unflip6 #-}
 
@@ -694,22 +698,26 @@ f >==> g = \x y -> f x y >>= g
 {-# INLINE (>==>) #-}
 infixr 1 >==>
 
-(>===>) :: Monad m => (t1 -> t2 -> t3 -> m a) -> (a -> m b) -> t1 -> t2 -> t3 -> m b
+(>===>) :: Monad m => (t1 -> t2 -> t3 -> m a) -> (a -> m b) ->
+           t1 -> t2 -> t3 -> m b
 f >===> g = \x y z -> f x y z >>= g
 {-# INLINE (>===>) #-}
 infixr 1 >===>
 
-(>====>) :: Monad m => (t1 -> t2 -> t3 -> t4 -> m a) -> (a -> m b) -> t1 -> t2 -> t3 -> t4 -> m b
+(>====>) :: Monad m => (t1 -> t2 -> t3 -> t4 -> m a) -> (a -> m b) ->
+            t1 -> t2 -> t3 -> t4 -> m b
 f >====> g = \x y z w -> f x y z w >>= g
 {-# INLINE (>====>) #-}
 infixr 1 >====>
 
-(>=====>) :: Monad m => (t1 -> t2 -> t3 -> t4 -> t5 -> m a) -> (a -> m b) -> t1 -> t2 -> t3 -> t4 -> t5 -> m b
+(>=====>) :: Monad m => (t1 -> t2 -> t3 -> t4 -> t5 -> m a) -> (a -> m b) ->
+             t1 -> t2 -> t3 -> t4 -> t5 -> m b
 f >=====> g = \x y z w v -> f x y z w v >>= g
 {-# INLINE (>=====>) #-}
 infixr 1 >=====>
 
-(>======>) :: Monad m => (t1 -> t2 -> t3 -> t4 -> t5 -> t6 -> m a) -> (a -> m b) -> t1 -> t2 -> t3 -> t4 -> t5 -> t6 -> m b
+(>======>) :: Monad m => (t1 -> t2 -> t3 -> t4 -> t5 -> t6 -> m a) ->
+              (a -> m b) -> t1 -> t2 -> t3 -> t4 -> t5 -> t6 -> m b
 f >======> g = \x y z w v u -> f x y z w v u >>= g
 {-# INLINE (>======>) #-}
 infixr 1 >======>
@@ -719,22 +727,27 @@ g <==< f = \x y -> f x y >>= g
 {-# INLINE (<==<) #-}
 infixr 1 <==<
 
-(<===<) :: Monad m => (a -> m b) -> (t1 -> t2 -> t3 -> m a) -> t1 -> t2 -> t3 -> m b
+(<===<) :: Monad m => (a -> m b) -> (t1 -> t2 -> t3 -> m a) ->
+           t1 -> t2 -> t3 -> m b
 g <===< f = \x y z -> f x y z >>= g
 {-# INLINE (<===<) #-}
 infixr 1 <===<
 
-(<====<) :: Monad m => (a -> m b) -> (t1 -> t2 -> t3 -> t4 -> m a) -> t1 -> t2 -> t3 -> t4 -> m b
+(<====<) :: Monad m => (a -> m b) -> (t1 -> t2 -> t3 -> t4 -> m a) ->
+            t1 -> t2 -> t3 -> t4 -> m b
 g <====< f = \x y z w -> f x y z w >>= g
 {-# INLINE (<====<) #-}
 infixr 1 <====<
 
-(<=====<) :: Monad m => (a -> m b) -> (t1 -> t2 -> t3 -> t4 -> t5 -> m a) -> t1 -> t2 -> t3 -> t4 -> t5 -> m b
+(<=====<) :: Monad m => (a -> m b) -> (t1 -> t2 -> t3 -> t4 -> t5 -> m a) ->
+             t1 -> t2 -> t3 -> t4 -> t5 -> m b
 g <=====< f = \x y z w v -> f x y z w v >>= g
 {-# INLINE (<=====<) #-}
 infixr 1 <=====<
 
-(<=======<) :: Monad m => (a -> m b) -> (t1 -> t2 -> t3 -> t4 -> t5 -> t6 -> m a) -> t1 -> t2 -> t3 -> t4 -> t5 -> t6 -> m b
+(<=======<) :: Monad m => (a -> m b) ->
+               (t1 -> t2 -> t3 -> t4 -> t5 -> t6 -> m a) ->
+               t1 -> t2 -> t3 -> t4 -> t5 -> t6 -> m b
 g <=======< f = \x y z w v u -> f x y z w v u >>= g
 {-# INLINE (<=======<) #-}
 infixr 1 <=======<
@@ -770,12 +783,10 @@ uses3 :: MonadState s m =>
 uses3 a b c = uses a >=> uses b >=> uses c
 {-# INLINE uses3 #-}
 
--- | Monadic version of (%=)
--- Modifies the target(s) of a Traversal in MonadState using a monadic function.
---
--- (%==) :: (MonadState s m, Traversable t)
---       => Traversal' s a -> (a -> m a) -> m ()
-(%==) :: (MonadState s m) => LensLike (WrappedMonad m) s s a b -> (a -> m b) -> m ()
+-- | Monadic version of (%=) Modifies the target(s) of a Traversal in
+-- MonadState using a monadic function.
+(%==) :: (MonadState s m) =>
+  LensLike (WrappedMonad m) s s a b -> (a -> m b) -> m ()
 l %== f = do
   s  <- get
   s' <- unwrapMonad (l (WrapMonad . f) s)
@@ -785,17 +796,11 @@ infixr 4 %==
 
 -- | Monadic version of '%%='.
 --
--- Modifies the target of a Lens (or Traversal) in MonadState using a monadic
--- function that also produces an extra result, returning that result.
---
--- @
--- (%%==) :: MonadState s m => Lens      s s a b -> (a -> m (r, b)) -> m r
--- (%%==) :: MonadState s m => Traversal s s a b -> (a -> m (r, b)) -> m r
--- @
-(%%==) :: MonadState s m
-       => LensLike (Compose m ((,) r)) s s a b
-       -> (a -> m (r, b))
-       -> m r
+-- Modifies the target of a Lens (or Traversal) in MonadState using a
+-- monadic function that also produces an extra result, returning that
+-- result.
+(%%==) :: MonadState s m =>
+  LensLike (Compose m ((,) r)) s s a b -> (a -> m (r, b)) -> m r
 l %%== f = do
   s <- get
   -- Apply the lens/traversal, collecting the composed functor

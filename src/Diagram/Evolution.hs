@@ -238,14 +238,11 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
 
   dly <- use doubly
   CIs _ oldTypNdns _ _ <- use typeCIs -- (before we modify)
-  corDeltaDirty <- typeCIs %%== mutCorDelta dly old_tst new_tst me
-  let corDelta = case typeOfMut mut of
-        Add -> corDeltaDirty `M.withoutKeys` enabledMuts
-        Del -> corDeltaDirty `M.withoutKeys` expiredMuts
+  mutCorDeltaDirty <- typeCIs %%== getMutCorDelta dly old_tst new_tst me
+  let mutCorDelta = case typeOfMut mut of
+        Add -> mutCorDeltaDirty `M.withoutKeys` enabledMuts
+        Del -> mutCorDeltaDirty `M.withoutKeys` expiredMuts
 
-  ---------------------
-  -- INTRO/ELIM MUTS --
-  ---------------------
   zoom mutBooks $ -- DELETE EACH EXPIRED MUT
     mapM_ MB.delete $ Set.toList expiredMuts
   -- INSERT EACH NEWLY ENABLED MUTS
@@ -257,36 +254,19 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   -- UPDATE MUT BOOKS --
   ----------------------
   ns <- use symCounts
-  let countUpdateIntervals = IM.mergeWithKey
-        ( \s ndn ddn ->
-           let n = ns U.! s
-               old_n' = n - ndn
-               new_n' = old_n' + ddn
-               dLoss = logFact new_n' - logFact old_n'
-           in seq dLoss $ Just (old_n', new_n', dLoss) )
-        ( const IM.empty ) -- ndns only
-        ( IM.mapWithKey $ \s ddn ->
-            let n = ns U.! s
-                old_n' = n -- dn == 0 by abstentia
-                new_n' = old_n' + ddn
-                dLoss = logFact new_n' - logFact old_n'
-            in seq dLoss (old_n', new_n', dLoss) )
-        oldTypNdns mutDdns
-
   getAffectedMuts <- mutBooks `uses` MB.affectedMuts
-  let unionIl = M.unionWithKey $
-        const $ IM.unionWithKey
+  let countUpdateIntervals = getMutCountDelta ns oldTypNdns mutDdns
+      unionIl = M.unionWithKey $ const $ IM.unionWithKey
         (err' . ("duplicate sym count intervals: " ++) . show .:. (,,))
+
   countUpdateIlsByAffected <- fmap (fromMaybe M.empty . foldTree unionIl) $
-                              forM (IM.toList countUpdateIntervals) $
-                              \(s,ddn) -> M.fromSet (const $ IM.singleton s ddn)
-                                          <$> getAffectedMuts s
+    forM (IM.toList countUpdateIntervals) $ \(s,ddn) ->
+    M.fromSet (const $ IM.singleton s ddn) <$> getAffectedMuts s
 
   -- mutEntryUpdate :: COUNT_UPDATE * CORR_UPDATE
   let mutEntryUpdates = M.mergeWithKey (\_ -> Just .: (,))
                         ((,IM.empty) <$>) ((IM.empty,) <$>)
-                        countUpdateIlsByAffected corDelta
-
+                        countUpdateIlsByAffected mutCorDelta
   -- (debug)
   CIs jt ndns _ _ <- use typeCIs
   str <- use doubly >>= D.toList
@@ -344,10 +324,10 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
 -- all available mutations (may include erroneous corrections on newly
 -- enabled muts (Add case) or newly expired muts (Del case), which need
 -- to be computed explicitly anyway, but remember to filter them out)
-mutCorDelta :: forall m. PrimMonad m => Doubly (PrimState m) ->
+getMutCorDelta :: forall m. PrimMonad m => Doubly (PrimState m) ->
                TypeState (PrimState m) -> TypeState (PrimState m) ->
                MutEntry -> CIs -> m (Cor, CIs)
-mutCorDelta dly old_tst new_tst me typCIs = fmap toLazy $ case typeOfMut mut of
+getMutCorDelta dly old_tst new_tst me typCIs = fmap toLazy $ case typeOfMut mut of
   Add -> do
     let procNewSuper :: CI -> [CI] -> StateT (Cor :!: CIs) m ()
         procNewSuper super subs = do -- subs are adjacents to mut ci
@@ -425,15 +405,31 @@ mutCorDelta dly old_tst new_tst me typCIs = fmap toLazy $ case typeOfMut mut of
     cisInsert = CIs.insertDisjoint dly
     cisDelete = CIs.deleteExisting dly
 
-modifyM :: (Monad m) => (s -> m s) -> StateT s m ()
-modifyM f = StateT $ \ s -> do
-    s' <- f s
-    return ((), s')
-{-# INLINE modifyM #-}
+-- | (Part 2 of pushMut) Given a count vector (before intro, `n`),
+-- counts of the symbols in the type to be introduced (negative delta on
+-- counts, `-dn`), and deltas of sym counts on that type of a mut (delta
+-- delta, `ddn`), return the before/after values of delta on counts
+-- (n,n') as well as the delta on the dnsLoss that is incured by the
+-- change.
+getMutCountDelta :: U.Vector Count -> IntMap Int -> IntMap Int ->
+                    IntMap (Count, Count, Double)
+getMutCountDelta ns = IM.mergeWithKey col
+                      (const IM.empty) -- ndns only
+                      (IM.mapWithKey newDns)
+  where
+    col :: Int -> Count -> Count -> Maybe (Count, Count, Double)
+    col s ndn ddn = seq dLoss $ Just (old_n', new_n', dLoss)
+      where n = ns U.! s
+            old_n' = n - ndn
+            new_n' = old_n' + ddn
+            dLoss = logFact new_n' - logFact old_n'
 
-mutJointsCIs :: PrimMonad m => Mutation -> EvolutionT m (Joints CIs)
-mutJointsCIs mut = M.intersection <$> use jointCIs
-                   <*> (flip TS.jointsOf mut =<< use typeState)
+    newDns :: Int -> Count -> (Count, Count, Double)
+    newDns s ddn = seq dLoss (old_n', new_n', dLoss)
+      where n = ns U.! s
+            old_n' = n -- dn == 0 by abstentia
+            new_n' = old_n' + ddn
+            dLoss = logFact new_n' - logFact old_n'
 
 introMut :: PrimMonad m => Mutation -> EvolutionT m ()
 introMut mut = do
@@ -456,6 +452,10 @@ introMut mut = do
   where
     n'Of ns ndns s = maybe n (n-) $ IM.lookup s ndns
       where n = ns U.! s
+
+mutJointsCIs :: PrimMonad m => Mutation -> EvolutionT m (Joints CIs)
+mutJointsCIs mut = M.intersection <$> use jointCIs
+                   <*> (flip TS.jointsOf mut =<< use typeState)
 
 ----------
 -- INIT --
