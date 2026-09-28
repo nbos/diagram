@@ -231,20 +231,22 @@ getMutCountIntervals ddns = do
 -- | Apply a mutation, update books.
 pushMut :: forall m. PrimMonad m => MutEntry -> EvolutionT m ()
 pushMut me@(ME mut _ mutDdns mutDnm _) = do
+  (enabledMuts, expiredMuts) <- flip TS.deltaMutJoints mut =<< use typeState
 
-  old_tst <- TS.clone =<< use typeState -- for Cor delta, difficult otherwise
-  (enabledMuts, expiredMuts) <- zoom typeState $ TS.pushMut mut -- [APPLY]
+  -- clone entire state (for Cor delta, difficult otherwise) and apply mut
+  old_tst <- TS.clone =<< use typeState
+  zoom typeState $ TS.pushMut mut -- [APPLY]
   new_tst <- use typeState
+  --
 
   dly <- use doubly
-  CIs _ oldTypNdns _ _ <- use typeCIs -- (before we modify)
-  mutCorDeltaDirty <- typeCIs %%== getMutCorDelta dly old_tst new_tst me
-  let mutCorDelta = case typeOfMut mut of
-        Add -> mutCorDeltaDirty `M.withoutKeys` enabledMuts
-        Del -> mutCorDeltaDirty `M.withoutKeys` expiredMuts
+  CIs _ oldTypNdns _ _ <- use typeCIs -- (before getCorDelta modifies)
+  corDelta <- (<$> (typeCIs %%== getCorDelta dly old_tst new_tst me)) $
+    case typeOfMut mut of Add -> (`M.withoutKeys` enabledMuts)
+                          Del -> (`M.withoutKeys` expiredMuts)
 
-  zoom mutBooks $ -- DELETE EACH EXPIRED MUT
-    mapM_ MB.delete $ Set.toList expiredMuts
+  -- DELETE EACH EXPIRED MUT
+  zoom mutBooks $ mapM_ MB.delete $ Set.toList expiredMuts
   -- INSERT EACH NEWLY ENABLED MUTS
   mapM_ introMut $ Set.toList enabledMuts
   -- TODO: fish out recip of mut from enabledMuts and intro it directly
@@ -255,7 +257,7 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   ----------------------
   ns <- use symCounts
   getAffectedMuts <- mutBooks `uses` MB.affectedMuts
-  let countUpdateIntervals = getMutCountDelta ns oldTypNdns mutDdns
+  let countUpdateIntervals = getCountDelta ns oldTypNdns mutDdns
       unionIl = M.unionWithKey $ const $ IM.unionWithKey
         (err' . ("duplicate sym count intervals: " ++) . show .:. (,,))
 
@@ -266,7 +268,7 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   -- mutEntryUpdate :: COUNT_UPDATE * CORR_UPDATE
   let mutEntryUpdates = M.mergeWithKey (\_ -> Just .: (,))
                         ((,IM.empty) <$>) ((IM.empty,) <$>)
-                        countUpdateIlsByAffected mutCorDelta
+                        countUpdateIlsByAffected corDelta
   -- (debug)
   CIs jt ndns _ _ <- use typeCIs
   str <- use doubly >>= D.toList
@@ -324,10 +326,10 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
 -- all available mutations (may include erroneous corrections on newly
 -- enabled muts (Add case) or newly expired muts (Del case), which need
 -- to be computed explicitly anyway, but remember to filter them out)
-getMutCorDelta :: forall m. PrimMonad m => Doubly (PrimState m) ->
+getCorDelta :: forall m. PrimMonad m => Doubly (PrimState m) ->
                TypeState (PrimState m) -> TypeState (PrimState m) ->
                MutEntry -> CIs -> m (Cor, CIs)
-getMutCorDelta dly old_tst new_tst me typCIs = fmap toLazy $ case typeOfMut mut of
+getCorDelta dly old_tst new_tst me typCIs = fmap toLazy $ case typeOfMut mut of
   Add -> do
     let procNewSuper :: CI -> [CI] -> StateT (Cor :!: CIs) m ()
         procNewSuper super subs = do -- subs are adjacents to mut ci
@@ -411,11 +413,11 @@ getMutCorDelta dly old_tst new_tst me typCIs = fmap toLazy $ case typeOfMut mut 
 -- delta, `ddn`), return the before/after values of delta on counts
 -- (n,n') as well as the delta on the dnsLoss that is incured by the
 -- change.
-getMutCountDelta :: U.Vector Count -> IntMap Int -> IntMap Int ->
+getCountDelta :: U.Vector Count -> IntMap Int -> IntMap Int ->
                     IntMap (Count, Count, Double)
-getMutCountDelta ns = IM.mergeWithKey col
-                      (const IM.empty) -- ndns only
-                      (IM.mapWithKey newDns)
+getCountDelta ns = IM.mergeWithKey col
+                   (const IM.empty) -- ndns only
+                   (IM.mapWithKey newDns)
   where
     col :: Int -> Count -> Count -> Maybe (Count, Count, Double)
     col s ndn ddn = seq dLoss $ Just (old_n', new_n', dLoss)
@@ -431,6 +433,7 @@ getMutCountDelta ns = IM.mergeWithKey col
             new_n' = old_n' + ddn
             dLoss = logFact new_n' - logFact old_n'
 
+-- FIXME -- :: Mutation -> CIs -> EvolutionT m ()
 introMut :: PrimMonad m => Mutation -> EvolutionT m ()
 introMut mut = do
   tst <- use typeState

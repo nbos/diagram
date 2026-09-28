@@ -13,15 +13,14 @@ import Control.Lens hiding (both,last1,Index,(:>))
 import Control.Monad.State.Strict
 
 import Data.Maybe
-import Data.Strict.Tuple (Pair((:!:)),(:!:))
-import qualified Data.Strict.Tuple as Strict
 
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as M
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IS
 import qualified Data.IntMap.Strict as IM
-import qualified Data.Map.Strict as M
 import qualified Data.Vector as V
 import qualified Data.Vector.Mutable as MV
 
@@ -31,9 +30,11 @@ import Diagram.Primitive
 import Diagram.Joints (Joints)
 import qualified Diagram.UnionType as UT
 import Diagram.JointType (JointType(JT))
+import Diagram.ConstrIntervals (CIs)
 import Diagram.String
 
 import Diagram.Evolution.Mutation (Mutation(..))
+import qualified Diagram.Evolution.Mutation as Mut
 import Diagram.Evolution.SymEntry ( SymEntry(SE, _isMember, _coSymsIn),
                                     coSymsIn, coSymsOut, dependents, isMember )
 import qualified Diagram.Evolution.SymEntry as SE
@@ -77,6 +78,72 @@ jointsOf ts mut = case mut of
                  . fmap ((,()) . (,s1))
                  . IS.toAscList
                  . SE._coSymsIn <$> readRight_ ts s1
+
+-----------------
+-- BOILERPLATE --
+-----------------
+
+-- READ/WRITE
+
+readLeft :: PrimMonad m => Sym -> TypeT m SymEntry
+readLeft s = use leftSyms >>= lift . flip MV.read s
+
+readLeft_ :: PrimMonad m => TypeState (PrimState m) -> Sym -> m SymEntry
+readLeft_ = MV.read . _leftSyms
+
+readRight :: PrimMonad m => Sym -> TypeT m SymEntry
+readRight s = use rightSyms >>= lift . flip MV.read s
+
+readRight_ :: PrimMonad m => TypeState (PrimState m) -> Sym -> m SymEntry
+readRight_ = MV.read . _rightSyms
+
+writeLeft :: PrimMonad m => Sym -> SymEntry -> TypeT m ()
+writeLeft s e = use leftSyms >>= lift . flip2 MV.write s e
+
+writeRight :: PrimMonad m => Sym -> SymEntry -> TypeT m ()
+writeRight s e = use rightSyms >>= lift . flip2 MV.write s e
+
+modifyLeft :: PrimMonad m => (SymEntry -> SymEntry) ->
+              Sym -> TypeT m ()
+modifyLeft f s = use leftSyms >>= lift . flip2 MV.modify f s
+
+modifyRight :: PrimMonad m => (SymEntry -> SymEntry) ->
+               Sym -> TypeT m ()
+modifyRight f s = use rightSyms >>= lift . flip2 MV.modify f s
+
+-- PREDICATES
+
+leftMember :: PrimMonad m => TypeState (PrimState m) -> Sym -> m Bool
+leftMember (TS u0 _) s = _isMember <$> MV.read u0 s
+
+rightMember :: PrimMonad m => TypeState (PrimState m) -> Sym -> m Bool
+rightMember (TS _ u1) s = _isMember <$> MV.read u1 s
+
+member :: PrimMonad m => TypeState (PrimState m) -> Sym -> Sym -> m Bool
+member ts s0 s1 = liftA2 (&&) (leftMember ts s0) (rightMember ts s1)
+
+-- RELATIONS
+
+-- | Give the (possibly empty) set of available mutations that would
+-- switch the membership of the given joint in the type
+mutsOf :: PrimMonad m =>
+          TypeState (PrimState m) -> Sym -> Sym -> m [Mutation]
+mutsOf (TS u0 u1) s0 s1 = SE.mutsOf <$> sequence (s0, MV.read u0 s0)
+                                    <*> sequence (s1, MV.read u1 s1)
+
+-- | Give the (possibly missing) mutation that would make the given
+-- joint member of the type (assumes it's not)
+addMutOf :: PrimMonad m =>
+            TypeState (PrimState m) -> Sym -> Sym -> m (Maybe Mutation)
+addMutOf (TS u0 u1) s0 s1 = SE.addMutOf <$> sequence (s0, MV.read u0 s0)
+                                        <*> sequence (s1, MV.read u1 s1)
+
+-- | Give the (possibly empty) set of available Del mutations that would
+-- take the given joint out of the type (assumes it's in)
+delMutsOf :: PrimMonad m =>
+             TypeState (PrimState m) -> Sym -> Sym -> m [Mutation]
+delMutsOf (TS u0 u1) s0 s1 = SE.delMutsOf <$> sequence (s0, MV.read u0 s0)
+                                          <*> sequence (s1, MV.read u1 s1)
 
 ----------
 -- INIT --
@@ -125,20 +192,22 @@ init m allJoints (JT u0 u1) = do
 -- UPDATE --
 ------------
 
-pushMut :: PrimMonad m => Mutation -> TypeT m (Set Mutation, Set Mutation)
-pushMut mut = do
-  res <- lift =<< gets (`mutsChange` mut)
-  pushMut_ mut
-  return res
+data DeltaMutJointsState = DMJS
+  { _enabledMuts :: !(Set Mutation)
+  , _expiredMuts :: !(Set Mutation)
+  , _addedJoints :: !(Map Mutation CIs)
+  , _deletedJoints :: !(Map Mutation CIs) }
+  deriving (Show,Eq)
+makeLenses ''DeltaMutJointsState
 
 -- | Return the Mutations to be added (fst) or removed (snd) from the
 -- Books after a given Mutation is applied. This must be called
 -- **before** applying the mutation.
-mutsChange :: forall m. PrimMonad m => TypeState (PrimState m) ->
-              Mutation -> m (Set Mutation, Set Mutation)
-mutsChange tst mut = fmap (Strict.uncurry (,)) $ case mut of
+deltaMutJoints :: forall m. PrimMonad m => TypeState (PrimState m) ->
+                  Mutation -> m (Set Mutation, Set Mutation)
+deltaMutJoints tst mut = fmap toLazy $ flip execStateT st0 $ case mut of
 
-  AddLeft s0 -> flip execStateT (ss (DelLeft s0) :!: ss mut) $ do
+  AddLeft s0 -> do
     SE _ coIn _ coOut <- readL s0
     forM_ (IS.toList coOut) addAddRightsFromAddLeft --
 
@@ -159,7 +228,7 @@ mutsChange tst mut = fmap (Strict.uncurry (,)) $ case mut of
         addMut (DelLeft s0') --
 
   -- symmetric w/ above
-  AddRight s1 -> flip execStateT (ss (DelRight s1) :!: ss mut) $ do
+  AddRight s1 -> do
     SE _ coIn _ coOut <- readR s1
     forM_ (IS.toList coOut) addAddLeftsFromAddRight --
 
@@ -179,13 +248,13 @@ mutsChange tst mut = fmap (Strict.uncurry (,)) $ case mut of
       when lostAllDeps $ do
         addMut (DelRight s1') --
 
-  Add2 s0 s1 -> flip execStateT (ss (Del2 s0 s1) :!: ss mut) $ do
+  Add2 s0 s1 -> do
     SE _ _ _ coOut0 <- readL s0
     forM_ (IS.toList $ IS.delete s1 coOut0) addAddRightsFromAddLeft --
     SE _ _ _ coOut1 <- readR s1
     forM_ (IS.toList $ IS.delete s0 coOut1) addAddLeftsFromAddRight --
 
-  DelLeft s0 -> flip execStateT (ss (AddLeft s0) :!: ss mut) $ do
+  DelLeft s0 -> do
     SE _ coIn _ coOut <- readL s0
     forM_ (IS.toList coOut) delAddRightsFromDelLeft --
 
@@ -206,7 +275,7 @@ mutsChange tst mut = fmap (Strict.uncurry (,)) $ case mut of
             addMut (Del2 s0' s1) --
 
   -- symmetric w/ above
-  DelRight s1 -> flip execStateT (ss (AddRight s1) :!: ss mut) $ do
+  DelRight s1 -> do
     SE _ coIn _ coOut <- readR s1
     forM_ (IS.toList coOut) delAddLeftsFromDelRight --
 
@@ -226,7 +295,7 @@ mutsChange tst mut = fmap (Strict.uncurry (,)) $ case mut of
           when (coIn1' == IS.singleton s0) $
             addMut (Del2 s0 s1') --
 
-  Del2 s0 s1 -> flip execStateT (ss (Add2 s0 s1) :!: ss mut) $ do
+  Del2 s0 s1 -> do
     SE _ _ _ coOut0 <- readL s0
     forM_ (IS.toList coOut0) delAddRightsFromDelLeft --
     SE _ _ _ coOut1 <- readR s1
@@ -236,13 +305,16 @@ mutsChange tst mut = fmap (Strict.uncurry (,)) $ case mut of
     readL = readLeft_ tst
     readR = readRight_ tst
 
-    addMut :: Mutation -> StateT (Set Mutation :!: Set Mutation) m ()
-    addMut mu = _1 %= Set.insert mu
-    delMut :: Mutation -> StateT (Set Mutation :!: Set Mutation) m ()
-    delMut mu = _2 %= Set.insert mu
+    addMut :: Mutation -> StateT DeltaMutJointsState m ()
+    addMut mu = enabledMuts %= Set.insert mu
+    delMut :: Mutation -> StateT DeltaMutJointsState m ()
+    delMut mu = expiredMuts %= Set.insert mu
 
     ss :: Mutation -> Set Mutation
     ss = Set.singleton
+
+    st0 = DMJS (ss $ Mut.recip mut) (ss mut) M.empty M.empty
+    toLazy (DMJS m0 m1 _ _) = (m0, m1)
 
     -- | Add an `AddRight s1` mutation made available by the
     -- introduction of a neighbor `s0` to the left union
@@ -288,8 +360,8 @@ err :: String -> a
 err = error . ("TypeState." ++)
 
 -- | Apply a mutation to the type state
-pushMut_ :: PrimMonad m => Mutation -> TypeT m ()
-pushMut_ = \case
+pushMut :: PrimMonad m => Mutation -> TypeT m ()
+pushMut = \case
   AddLeft s0 -> do
     SE _ coIn _ _ <- readLeft s0
     when (IS.null coIn) $
@@ -454,72 +526,6 @@ pushMut_ = \case
 trySingleton :: IntSet -> Maybe Sym
 trySingleton is | [s] <- IS.toList is = Just s
                 | otherwise = Nothing
-
------------------
--- BOILERPLATE --
------------------
-
--- READ/WRITE
-
-readLeft :: PrimMonad m => Sym -> TypeT m SymEntry
-readLeft s = use leftSyms >>= lift . flip MV.read s
-
-readLeft_ :: PrimMonad m => TypeState (PrimState m) -> Sym -> m SymEntry
-readLeft_ = MV.read . _leftSyms
-
-readRight :: PrimMonad m => Sym -> TypeT m SymEntry
-readRight s = use rightSyms >>= lift . flip MV.read s
-
-readRight_ :: PrimMonad m => TypeState (PrimState m) -> Sym -> m SymEntry
-readRight_ = MV.read . _rightSyms
-
-writeLeft :: PrimMonad m => Sym -> SymEntry -> TypeT m ()
-writeLeft s e = use leftSyms >>= lift . flip2 MV.write s e
-
-writeRight :: PrimMonad m => Sym -> SymEntry -> TypeT m ()
-writeRight s e = use rightSyms >>= lift . flip2 MV.write s e
-
-modifyLeft :: PrimMonad m => (SymEntry -> SymEntry) ->
-              Sym -> TypeT m ()
-modifyLeft f s = use leftSyms >>= lift . flip2 MV.modify f s
-
-modifyRight :: PrimMonad m => (SymEntry -> SymEntry) ->
-               Sym -> TypeT m ()
-modifyRight f s = use rightSyms >>= lift . flip2 MV.modify f s
-
--- PREDICATES
-
-leftMember :: PrimMonad m => TypeState (PrimState m) -> Sym -> m Bool
-leftMember (TS u0 _) s = _isMember <$> MV.read u0 s
-
-rightMember :: PrimMonad m => TypeState (PrimState m) -> Sym -> m Bool
-rightMember (TS _ u1) s = _isMember <$> MV.read u1 s
-
-member :: PrimMonad m => TypeState (PrimState m) -> Sym -> Sym -> m Bool
-member ts s0 s1 = liftA2 (&&) (leftMember ts s0) (rightMember ts s1)
-
--- RELATIONS
-
--- | Give the (possibly empty) set of available mutations that would
--- switch the membership of the given joint in the type
-mutsOf :: PrimMonad m =>
-          TypeState (PrimState m) -> Sym -> Sym -> m [Mutation]
-mutsOf (TS u0 u1) s0 s1 = SE.mutsOf <$> sequence (s0, MV.read u0 s0)
-                                    <*> sequence (s1, MV.read u1 s1)
-
--- | Give the (possibly missing) mutation that would make the given
--- joint member of the type (assumes it's not)
-addMutOf :: PrimMonad m =>
-            TypeState (PrimState m) -> Sym -> Sym -> m (Maybe Mutation)
-addMutOf (TS u0 u1) s0 s1 = SE.addMutOf <$> sequence (s0, MV.read u0 s0)
-                                        <*> sequence (s1, MV.read u1 s1)
-
--- | Give the (possibly empty) set of available Del mutations that would
--- take the given joint out of the type (assumes it's in)
-delMutsOf :: PrimMonad m =>
-             TypeState (PrimState m) -> Sym -> Sym -> m [Mutation]
-delMutsOf (TS u0 u1) s0 s1 = SE.delMutsOf <$> sequence (s0, MV.read u0 s0)
-                                          <*> sequence (s1, MV.read u1 s1)
 
 -----------
 -- DEBUG --
