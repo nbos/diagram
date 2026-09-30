@@ -30,7 +30,6 @@ import Diagram.Primitive
 import Diagram.Joints (Joints)
 import qualified Diagram.UnionType as UT
 import Diagram.JointType (JointType(JT))
-import Diagram.ConstrIntervals (CIs)
 import Diagram.String
 
 import Diagram.Evolution.Mutation (Mutation(..))
@@ -195,76 +194,90 @@ init m allJoints (JT u0 u1) = do
 data DeltaMutJointsState = DMJS
   { _enabledMuts :: !(Set Mutation)
   , _expiredMuts :: !(Set Mutation)
-  , _addedJoints :: !(Map Mutation CIs)
-  , _deletedJoints :: !(Map Mutation CIs) }
+  , _addedJoints   :: !(Map Mutation (Joints ()))
+  , _deletedJoints :: !(Map Mutation (Joints ())) }
   deriving (Show,Eq)
 makeLenses ''DeltaMutJointsState
 
--- | Return the Mutations to be added (fst) or removed (snd) from the
--- Books after a given Mutation is applied. This must be called
--- **before** applying the mutation.
+-- | Return the Mutations that would be enabled (fst, with associated
+-- joints), or made invalid (snd), and the joints that would get added
+-- (thd), or deleted (fth) from existing mutations in the Books after a
+-- given Mutation is applied. This is to be called with a state where
+-- the mutation is valid (i.e. not yet applied).
 deltaMutJoints :: forall m. PrimMonad m => TypeState (PrimState m) ->
-                  Mutation -> m (Set Mutation, Set Mutation)
-deltaMutJoints tst mut = fmap toLazy $ flip execStateT st0 $ case mut of
+                  Mutation -> m ( Set Mutation, Set Mutation
+                                , Map Mutation (Joints ())
+                                , Map Mutation (Joints ()) )
+deltaMutJoints tst mut = fmap toLazy $
+  flip execStateT st0 $ case mut of
 
   AddLeft s0 -> do
     SE _ coIn _ coOut <- readL s0
-    forM_ (IS.toList coOut) addAddRightsFromAddLeft --
-
+    -- enable addRight for every coOut if s0 is their first coIn
+    forM_ (IS.toList coOut) $ procCoOutFromAddLeft s0 --
+    -- disable delRight of a coIn if s0 is its first dependent
     whenJust (trySingleton coIn) $ \s1 -> do
       SE _ _ deps1 _ <- readR s1
       when (IS.null deps1) $ delMut (DelRight s1) --
-
+    -- enable deLeft of the coIn of a coIn if it has no more deps
     depsLost <- fmap (IM.fromListWith IS.union . catMaybes) $
       forM (IS.toList coIn) $ \s1 -> do
-        SE _ coIn1 _ _ <- readR s1
+        SE _ coIn1 deps1 _ <- readR s1
+        -- include (s0,s1) in DelRight of coIn's if the muts exist
+        when (IS.null deps1) $ addMutJoint (DelRight s1) (s0,s1)
         return $ trySingleton coIn1 <&> (, IS.singleton s1)
-    forM_ (IM.toList depsLost) $ \(s0', deps) -> do
+    forM_ (IM.toList depsLost) $ \(s0', undeps) -> do
       SE _ coIn0' deps0' _ <- readL s0'
       whenJust (trySingleton coIn0') $ \s1 ->
         delMut (Del2 s0' s1) --
-      let lostAllDeps = deps0' == deps
+      let lostAllDeps = deps0' == undeps
       when lostAllDeps $ do
         addMut (DelLeft s0') --
 
   -- symmetric w/ above
   AddRight s1 -> do
     SE _ coIn _ coOut <- readR s1
-    forM_ (IS.toList coOut) addAddLeftsFromAddRight --
-
+    -- enable addLeft for every coOut if s1 is their first coIn
+    forM_ (IS.toList coOut) $ procCoOutFromAddRight s1 --
+    -- disable delLeft of a coIn if s1 is its first dependent
     whenJust (trySingleton coIn) $ \s0 -> do
       SE _ _ deps0 _ <- readL s0
       when (IS.null deps0) $ delMut (DelLeft s0) --
-
+    -- enable delRight of the coIn of a coIn if it has no more deps
     depsLost <- fmap (IM.fromListWith IS.union . catMaybes) $
       forM (IS.toList coIn) $ \s0 -> do
-        SE _ coIn0 _ _ <- readL s0
+        SE _ coIn0 deps0 _ <- readL s0
+        -- include (s0,s1) in DelLeft of coIn's if the muts exist
+        when (IS.null deps0) $ addMutJoint (DelLeft s0) (s0,s1)
         return $ trySingleton coIn0 <&> (, IS.singleton s0)
-    forM_ (IM.toList depsLost) $ \(s1', deps) -> do
+    forM_ (IM.toList depsLost) $ \(s1', undeps) -> do
       SE _ coIn1' deps1' _ <- readR s1'
       whenJust (trySingleton coIn1') $ \s0 ->
         delMut (Del2 s0 s1') --
-      let lostAllDeps = deps1' == deps
+      let lostAllDeps = deps1' == undeps
       when lostAllDeps $ do
         addMut (DelRight s1') --
 
   Add2 s0 s1 -> do
     SE _ _ _ coOut0 <- readL s0
-    forM_ (IS.toList $ IS.delete s1 coOut0) addAddRightsFromAddLeft --
+    forM_ (IS.toList $ IS.delete s1 coOut0) $ procCoOutFromAddLeft s0 --
     SE _ _ _ coOut1 <- readR s1
-    forM_ (IS.toList $ IS.delete s0 coOut1) addAddLeftsFromAddRight --
+    forM_ (IS.toList $ IS.delete s0 coOut1) $ procCoOutFromAddRight s1 --
 
   DelLeft s0 -> do
     SE _ coIn _ coOut <- readL s0
-    forM_ (IS.toList coOut) delAddRightsFromDelLeft --
-
+    -- disable addRight for every coOut if s0 was their last coIn
+    forM_ (IS.toList coOut) $ procCoOutFromDelLeft s0 --
+    -- enable delRight of a coIn if s0 was its last dependent
     whenJust (trySingleton coIn) $ \s1 -> do
       SE _ _ deps1 _ <- readR s1
       when (deps1 == IS.singleton s0) $ addMut (DelRight s1) --
-
+    -- disable delLeft of the coIn of a coIn if it gains a dependent
     depsGained <- fmap (IM.fromListWith IS.union . catMaybes) $
       forM (IS.toList coIn) $ \s1 -> do
-        SE _ coIn1 _ _ <- readR s1
+        SE _ coIn1 deps1 _ <- readR s1
+        -- remove (s0,s1) from DelRight of coIn's if the muts exist
+        when (IS.null deps1) $ delMutJoint (DelRight s1) (s0,s1)
         return $ trySingleton (IS.delete s0 coIn1) <&> (, IS.singleton s1)
     forM_ (IM.toList depsGained) $ \(s0', deps) -> do
       SE _ coIn0' deps0' _ <- readL s0'
@@ -274,18 +287,23 @@ deltaMutJoints tst mut = fmap toLazy $ flip execStateT st0 $ case mut of
           when (coIn0' == IS.singleton s1) $
             addMut (Del2 s0' s1) --
 
+  -- remove (s0,s1) from DelRight of s1's in coIn that don't have deps
+
   -- symmetric w/ above
   DelRight s1 -> do
     SE _ coIn _ coOut <- readR s1
-    forM_ (IS.toList coOut) delAddLeftsFromDelRight --
-
+    -- disable addLeft for every coOut if s1 was their last coIn
+    forM_ (IS.toList coOut) $ procCoOutFromDelRight s1 --
+    -- enable delLeft of a coIn if s1 was its last dependent
     whenJust (trySingleton coIn) $ \s0 -> do
       SE _ _ deps0 _ <- readL s0
       when (deps0 == IS.singleton s1) $ addMut (DelLeft s0) --
-
+    -- disable delLeft of the coIn of a coIn if it gains a dependent
     depsGained <- fmap (IM.fromListWith IS.union . catMaybes) $
       forM (IS.toList coIn) $ \s0 -> do
-        SE _ coIn0 _ _ <- readL s0
+        SE _ coIn0 deps0 _ <- readL s0
+        -- remove (s0,s1) from DelLeft of coIn's if the muts exist
+        when (IS.null deps0) $ delMutJoint (DelLeft s0) (s0,s1)
         return $ trySingleton (IS.delete s1 coIn0) <&> (, IS.singleton s0)
     forM_ (IM.toList depsGained) $ \(s1', deps) -> do
       SE _ coIn1' deps1' _ <- readR s1'
@@ -297,64 +315,79 @@ deltaMutJoints tst mut = fmap toLazy $ flip execStateT st0 $ case mut of
 
   Del2 s0 s1 -> do
     SE _ _ _ coOut0 <- readL s0
-    forM_ (IS.toList coOut0) delAddRightsFromDelLeft --
+    forM_ (IS.toList coOut0) $ procCoOutFromDelLeft s0 --
     SE _ _ _ coOut1 <- readR s1
-    forM_ (IS.toList coOut1) delAddLeftsFromDelRight --
+    forM_ (IS.toList coOut1) $ procCoOutFromDelRight s1 --
 
   where
     readL = readLeft_ tst
     readR = readRight_ tst
+    toLazy (DMJS m0 m1 m2 m3) = (m0, m1, m2, m3)
+    st0 = DMJS mutRecip (Set.singleton mut) M.empty M.empty
+    mutRecip = Set.singleton (Mut.recip mut)
 
     addMut :: Mutation -> StateT DeltaMutJointsState m ()
-    addMut mu = enabledMuts %= Set.insert mu
+    addMut = (enabledMuts %=) . Set.insert
     delMut :: Mutation -> StateT DeltaMutJointsState m ()
-    delMut mu = expiredMuts %= Set.insert mu
+    delMut = (expiredMuts %=) . Set.insert
+    addMutJoint :: Mutation -> (Sym, Sym) -> StateT DeltaMutJointsState m ()
+    addMutJoint = (addedJoints %=) .: jtInsert
+    delMutJoint :: Mutation -> (Sym, Sym) -> StateT DeltaMutJointsState m ()
+    delMutJoint = (deletedJoints %=) .: jtInsert
+    jtInsert mu ss = M.insertWith (const $ M.insert ss ())
+                     mu (M.singleton ss ())
 
-    ss :: Mutation -> Set Mutation
-    ss = Set.singleton
-
-    st0 = DMJS (ss $ Mut.recip mut) (ss mut) M.empty M.empty
-    toLazy (DMJS m0 m1 _ _) = (m0, m1)
-
-    -- | Add an `AddRight s1` mutation made available by the
-    -- introduction of a neighbor `s0` to the left union
-    addAddRightsFromAddLeft s1 = do
-      SE _ coIn _ coOut1 <- readR s1
-      when (IS.null coIn) $ do
+    -- | If s1 (which is a coOut of s0) already had at least one coIn,
+    -- add (s0,s1) to the joints of `AddRight s1`, otherwise, introduce
+    -- `AddRight s1` from scratch.
+    procCoOutFromAddLeft s0 s1 = do
+      SE _ coIn1 _ coOut1 <- readR s1
+      if IS.null coIn1 then do
         addMut (AddRight s1) --
         forM_ (IS.toList coOut1) $ \s0' -> do
           SE _ coIn0' _ _ <- readL s0'
           when (IS.null coIn0') $ delMut (Add2 s0' s1) --
+        else addMutJoint (AddRight s1) (s0,s1) --
 
-    -- | Delete `AddRight s1` mutations invalidated from the deltion of
-    -- its last left in-neighbor
-    delAddRightsFromDelLeft s1 = do
-      SE _ coIn _ coOut <- readR s1
-      whenJust (trySingleton coIn) $ \_ -> do
-        delMut (AddRight s1) --
-        forM_ (IS.toList coOut) $ \s0' -> do
-          SE _ coIn0' _ _ <- readL s0'
-          when (IS.null coIn0') $ addMut (Add2 s0' s1) --
-
-    -- | Add an `AddLeft s0` mutation made available by the introduction
-    -- of a neighbor `s1` to the left union
-    addAddLeftsFromAddRight s0 = do
-      SE _ coIn _ coOut <- readL s0
-      when (IS.null coIn) $ do
+    -- | If s0 (which is a coOut of s1) already had at least one coIn,
+    -- add (s0,s1) to the joints of `AddLeft s0`, otherwise, introduce
+    -- `AddLeft s0` from scratch. Arg order is `s1 s0`.
+    procCoOutFromAddRight s1 s0 = do
+      SE _ coIn0 _ coOut0 <- readL s0
+      if IS.null coIn0 then do
         addMut (AddLeft s0) --
-        forM_ (IS.toList coOut) $ \s1' -> do
+        forM_ (IS.toList coOut0) $ \s1' -> do
           SE _ coIn1' _ _ <- readR s1'
           when (IS.null coIn1') $ delMut (Add2 s0 s1') --
+        else addMutJoint (AddLeft s0) (s0,s1) --
 
-    -- | Delete `AddLeft s0` mutations invalidated from the deltion of
-    -- its last right in-neighbor
-    delAddLeftsFromDelRight s0 = do
-      SE _ coIn _ coOut <- readL s0
-      whenJust (trySingleton coIn) $ \_ -> do
-        delMut (AddLeft s0) --
-        forM_ (IS.toList coOut) $ \s1' -> do
-          SE _ coIn1' _ _ <- readR s1'
-          when (IS.null coIn1') $ addMut (Add2 s0 s1') --
+    -- | If s1 (which is coOut of s0) had only one coIn (s0), mark
+    -- `AddRight s1` as expired (disable), otherwise, remove the (s0,s1)
+    -- joint from `AddRight s1`.
+    procCoOutFromDelLeft s0 s1 = do
+      SE _ coIn1 _ coOut1 <- readR s1
+      case IS.toList coIn1 of
+        [_s0] -> do
+          delMut (AddRight s1) --
+          forM_ (IS.toList coOut1) $ \s0' -> do
+            SE _ coIn0' _ _ <- readL s0'
+            when (IS.null coIn0') $ addMut (Add2 s0' s1) --
+        (_:_:_) -> delMutJoint (AddRight s1) (s0,s1) --
+        [] -> error "impossible: s0 `mem` coIn1 is assumed"
+
+    -- | If s0 (which is coOut of s1) had only one coIn (s1), mark
+    -- `AddLeft s0` as expired (disable), otherwise, remove the (s1,s0)
+    -- joint from `AddLeft s0`. Arg order is `s0 s1`
+    procCoOutFromDelRight s1 s0 = do
+      SE _ coIn0 _ coOut0 <- readL s0
+      case IS.toList coIn0 of
+        [_s1] -> do
+          delMut (AddLeft s0) --
+          forM_ (IS.toList coOut0) $ \s1' -> do
+            SE _ coIn1' _ _ <- readR s1'
+            when (IS.null coIn1') $ addMut (Add2 s0 s1') --
+        (_:_:_) -> delMutJoint (AddLeft s0) (s0,s1) --
+        [] -> error "impossible: s1 `mem` coIn0 is assumed"
 
 err :: String -> a
 err = error . ("TypeState." ++)

@@ -230,8 +230,9 @@ getMutCountIntervals ddns = do
 
 -- | Apply a mutation, update books.
 pushMut :: forall m. PrimMonad m => MutEntry -> EvolutionT m ()
-pushMut me@(ME mut _ mutDdns mutDnm _) = do
-  (enabledMuts, expiredMuts) <- flip TS.deltaMutJoints mut =<< use typeState
+pushMut me@(ME mut _ mutDdns mutDnm mutCIs) = do
+  ( enabledMuts, expiredMuts,
+    addedJoints, deletedJoints ) <- use typeState >>= flip TS.deltaMutJoints mut
 
   -- clone entire state (for Cor delta, difficult otherwise) and apply mut
   old_tst <- TS.clone =<< use typeState
