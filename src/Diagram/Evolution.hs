@@ -53,6 +53,8 @@ import Diagram.Evolution.TypeState (TypeState)
 import qualified Diagram.Evolution.TypeState as TS
 import Diagram.Evolution.MutEntry (MutEntry(..))
 import qualified Diagram.Evolution.MutEntry as ME
+import Diagram.Evolution.MutEntry.Update (Update(..))
+import qualified Diagram.Evolution.MutEntry.Update as MEU
 import Diagram.Evolution.MutBooks (MutBooks(MutBooks), byMut)
 import qualified Diagram.Evolution.MutBooks as MB
 
@@ -230,7 +232,7 @@ getMutCountIntervals ddns = do
 
 -- | Apply a mutation, update books.
 pushMut :: forall m. PrimMonad m => MutEntry -> EvolutionT m ()
-pushMut me@(ME mut _ mutDdns mutDnm mutCIs) = do
+pushMut me@(ME mut _ mutDdns mutDnm _) = do
   ( enabledMuts, expiredMuts,
     addedJoints, deletedJoints ) <- use typeState >>= flip TS.deltaMutJoints mut
 
@@ -253,9 +255,7 @@ pushMut me@(ME mut _ mutDdns mutDnm mutCIs) = do
   es <- mapM mkMutEntry $ Set.toList $ Set.delete imut enabledMuts
   zoom mutBooks $ mapM_ MB.insert (ime:es)
 
-  ----------------------
   -- UPDATE MUT BOOKS --
-  ----------------------
   ns <- use symCounts
   getAffectedMuts <- mutBooks `uses` MB.affectedMuts
   let countUpdateIntervals = getCountDelta ns oldTypNdns mutDdns
@@ -266,52 +266,32 @@ pushMut me@(ME mut _ mutDdns mutDnm mutCIs) = do
     forM (IM.toList countUpdateIntervals) $ \(s,ddn) ->
     M.fromSet (const $ IM.singleton s ddn) <$> getAffectedMuts s
 
-  -- mutEntryUpdate :: COUNT_UPDATE * CORR_UPDATE
-  let mutEntryUpdates = M.mergeWithKey (\_ -> Just .: (,))
-                        ((,IM.empty) <$>) ((IM.empty,) <$>)
-                        countUpdateIlsByAffected corDelta
+  let mkmeu_0 nIl dc = MEU nIl dc CIs.empty CIs.empty
+      mutEntryUpdates_0 = M.mergeWithKey (const $ Just .: mkmeu_0)
+                          (MEU.fromDCounts <$>) (MEU.fromDCor <$>)
+                          countUpdateIlsByAffected corDelta
+  allCIs <- use jointCIs
+  let getCIs = mfoldTree . M.elems . M.intersection allCIs
+      mkmeu_1 = MEU IM.empty IM.empty
+      mutEntryUpdates_1 = M.mergeWithKey (const $ Just .: mkmeu_1)
+                          (MEU.fromAddCIs <$>) (MEU.fromDelCIs <$>)
+                          (getCIs <$> addedJoints) (getCIs <$> deletedJoints)
+
+      mutEntryUpdates = M.intersectionWith
+                        (\(MEU nIl dc _ _) (MEU _ _ add del) ->
+                            MEU nIl dc add del)
+                        mutEntryUpdates_0 mutEntryUpdates_1
   -- (debug)
   CIs jt ndns _ _ <- use typeCIs
   str <- use doubly >>= D.toList
   let n'Of s = maybe n (n-) $ IM.lookup s ndns
         where n = ns U.! s
   --
-
   mutEntries <- use $ mutBooks.byMut
-  sequence_ $ flip2 M.intersectionWith
-    mutEntries mutEntryUpdates $
-    \e@(ME eMut eDnsLoss eDdns eDnm _) (nsIls, deltaCor) -> do
-      let signedDeltaCor = case typeOfMut eMut of
-            Add -> negate <$> deltaCor
-            Del -> deltaCor
-          eDdnsIls = -- zip eDdns eDdns'
-            IM.mergeWithKey (\_ ddn c -> Just (ddn, ddn + c))
-            (const IM.empty) ((0,) <$>) eDdns signedDeltaCor
-          deDnsLoss = sum $ IM.mergeWithKey
-            ( \_ (old_n', new_n', dLoss) (eDdn, eDdn') -> Just $
-              let old_n'' = old_n' + eDdn
-                  -- old_loss = logFact old_n' - logFact old_n''
-                  new_n'' = new_n' + eDdn'
-                  -- new_loss = logFact new_n' - logFact new_n''
-              in dLoss - logFact new_n'' + logFact old_n'' )
-            ( const IM.empty ) -- no eDdn, no cor ==> no dnsLoss
-            ( IM.mapWithKey $ \s (eDdn, eDdn') -> -- cor only
-                let n       = ns U.! s
-                    ndn     = fromMaybe 0 $ IM.lookup s oldTypNdns
-                    n'      = n - ndn -- old == new
-                    old_n'' = n' + eDdn
-                    new_n'' = n' + eDdn'
-                in logFact old_n'' - logFact new_n'' )
-                nsIls eDdnsIls
-          deDnm = negate (sum signedDeltaCor) & \r ->
-            if even r then r `div` 2
-            else err' $ "expected even number: " ++ show (r,signedDeltaCor)
-      zoom mutBooks $ -- update state
-        MB.update $
-        ME.validate jt str n'Of $ -- (debug)
-        e{ _ddSymCountsLoss = eDnsLoss + deDnsLoss
-         , _ddSymCounts     = IM.union (snd <$> eDdnsIls) eDdns
-         , _dJointCount     = eDnm + deDnm }
+  zoom mutBooks $ sequence_ $ M.intersectionWith
+    ( ( ( MB.update . ME.validate jt str n'Of ) =<< ) -- [UPDATE]
+      .: MEU.apply (TS.member old_tst) n'Of dly )
+    mutEntries mutEntryUpdates
 
   jointCount += mutDnm -- delta nm
   get >>= validate -- debug
@@ -437,7 +417,9 @@ getCountDelta ns = IM.mergeWithKey col
 mkMutEntry :: PrimMonad m => Mutation -> EvolutionT m MutEntry
 mkMutEntry mut = do
   tst <- use typeState
-  mutCIs <- mfoldTree . M.elems <$> mutJointsCIs mut
+  allCIs <- use jointCIs
+  mutCIs <- mfoldTree . M.elems . M.intersection allCIs
+            <$> TS.jointsOf tst mut
 
   typCIs@(CIs jt ndns _ _) <- use typeCIs
   str <- D.toList =<< use doubly -- (debug)
@@ -455,10 +437,6 @@ mkMutEntry mut = do
   where
     n'Of ns ndns s = maybe n (n-) $ IM.lookup s ndns
       where n = ns U.! s
-
-mutJointsCIs :: PrimMonad m => Mutation -> EvolutionT m (Joints CIs)
-mutJointsCIs mut = M.intersection <$> use jointCIs
-                   <*> (flip TS.jointsOf mut =<< use typeState)
 
 ----------
 -- INIT --

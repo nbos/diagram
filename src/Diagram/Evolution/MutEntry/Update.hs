@@ -77,8 +77,8 @@ err = error . ("MutEntry.Update." ++)
 -- doesn't matter), and a reference string, apply the given
 -- MutEntryUpdate to the given MutEntry.
 apply :: PrimMonad m => (Sym -> Sym -> m Bool) -> (Sym -> Count) ->
-  Doubly (PrimState m) -> Update -> MutEntry -> m MutEntry
-apply old_mem n'Of dly (MEU n'Ils dCor addCIs delCIs) e = do
+  Doubly (PrimState m) -> MutEntry -> Update -> m MutEntry
+apply old_mem n'Of dly e (MEU n'Ils dCor addCIs delCIs) = do
   -- cis --
   new_cis' <- CIs.join addCIs . fst <$>
     CIs.difference dly (Just old_mem) Nothing old_cis delCIs
