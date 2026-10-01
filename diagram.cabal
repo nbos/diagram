@@ -76,9 +76,10 @@ executable diagram
                       Diagram.JointType.Random
                       Diagram.Evolution
                       Diagram.Evolution.Math
-                      Diagram.Evolution.MutEntry
-                      Diagram.Evolution.MutBooks
                       Diagram.Evolution.Mutation
+                      Diagram.Evolution.MutBooks
+                      Diagram.Evolution.MutEntry
+                      Diagram.Evolution.MutEntry.Update
                       Diagram.Evolution.SymEntry
                       Diagram.Evolution.TypeState
                       Diagram.Evolution.Correction

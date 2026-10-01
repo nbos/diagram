@@ -28,7 +28,21 @@ import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
 --------------------
 -- MUTATION ENTRY --
 --------------------
-
+--  +--------------[ mut :: {Add|Del} ]--------------+
+--  |                                                |
+--  |      ddns :: ns' -> ns''   dnm :: nm -> nm'    |
+--  |                                                |
+--  |      / .[forall sym]. \                        |
+--  |      | |  +--- n' ! | |       /  +--- nm ! \   |
+--  |  log | | ddn  ----- | | + log | dnm  ----- |   |
+--  |      | |  +--> n''! | |       \  +--> nm'! /   |
+--  |      \ +------------+ /                        |
+--  |                                                |
+--  |  where:                                        |
+--  |    ddn = sign[Add/Del] * (CIs.symCounts + cor) |
+--  |    dnm = (-1) * sum ddns `div` 2               |
+--  |                                                |
+--  +-----[ mutLoss = dnsLoss + dnmLoss ]------------+
 data MutEntry = ME
   { _mutation        :: !Mutation     -- mut
   , _ddSymCountsLoss :: !Double       -- ddnsLoss
