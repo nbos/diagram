@@ -21,6 +21,7 @@ import qualified Diagram.JointType as JT
 import Diagram.ConstrIntervals (CIs(..))
 import qualified Diagram.ConstrIntervals as CIs
 
+import qualified Diagram.Evolution.Mutation as Mut
 import Diagram.Evolution.Math (logFact)
 import qualified Diagram.Evolution.Math as Math
 import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
@@ -103,6 +104,11 @@ fromParamsWithDelta n'Of mut cis ddns =
       \s ddn -> let n' = n'Of s
                     n'' = n' + ddn
                 in logFact n' - logFact n''
+
+-- | Inverse of a given mut entry after that mut has been applied.
+recip :: MutEntry -> MutEntry
+recip (ME mut loss ddns dnm cis) =
+  ME (Mut.recip mut) (negate loss) (negate <$> ddns) (negate dnm) cis
 
 -----------
 -- DEBUG --

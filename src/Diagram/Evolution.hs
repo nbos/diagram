@@ -249,9 +249,9 @@ pushMut me@(ME mut _ mutDdns mutDnm mutCIs) = do
   -- DELETE EACH EXPIRED MUT
   zoom mutBooks $ mapM_ MB.delete $ Set.toList expiredMuts
   -- INSERT EACH NEWLY ENABLED MUTS
-  mapM_ introMut $ Set.toList enabledMuts
-  -- TODO: fish out recip of mut from enabledMuts and intro it directly
-  -- without going through introMut?
+  let ime@(ME imut _ _ _ _) = ME.recip me
+  es <- mapM mkMutEntry $ Set.toList $ Set.delete imut enabledMuts
+  zoom mutBooks $ mapM_ MB.insert (ime:es)
 
   ----------------------
   -- UPDATE MUT BOOKS --
@@ -434,9 +434,8 @@ getCountDelta ns = IM.mergeWithKey col
             new_n' = old_n' + ddn
             dLoss = logFact new_n' - logFact old_n'
 
--- FIXME -- :: Mutation -> CIs -> EvolutionT m ()
-introMut :: PrimMonad m => Mutation -> EvolutionT m ()
-introMut mut = do
+mkMutEntry :: PrimMonad m => Mutation -> EvolutionT m MutEntry
+mkMutEntry mut = do
   tst <- use typeState
   mutCIs <- mfoldTree . M.elems <$> mutJointsCIs mut
 
@@ -450,9 +449,9 @@ introMut mut = do
       fmap snd $ CIs.difference dly (Just $ TS.member tst)
          Nothing typCIs mutCIs
 
-  zoom mutBooks $ MB.insert $
-    ME.validate jt str (n'Of ns ndns) $ -- (debug)
+  return $ ME.validate jt str (n'Of ns ndns) $ -- (debug)
     ME.fromParamsWithCor (n'Of ns ndns) mut mutCIs cor
+
   where
     n'Of ns ndns s = maybe n (n-) $ IM.lookup s ndns
       where n = ns U.! s
