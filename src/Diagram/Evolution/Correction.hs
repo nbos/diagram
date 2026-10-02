@@ -3,8 +3,6 @@
 
 module Diagram.Evolution.Correction (module Diagram.Evolution.Correction) where
 
-import Debug.Trace
-
 import Prelude hiding (init)
 
 import Control.Monad
@@ -75,14 +73,7 @@ onAllMuts dly tst ci = do
 -- injective, with no `sub` predicate.
 onAddMuts :: PrimMonad m =>
   Doubly (PrimState m) -> TypeState (PrimState m) -> CI -> m Cor
-onAddMuts dly tst ci = do
-  traceM ""
-  traceM ("[ADD COR]: " ++ show ci)
-  res <- f dly tst ci
-  traceShowM res
-  return res
-  where
-    f = fmap (unions . fmap (uc onAddMuts_)) .:. composeAdds
+onAddMuts = fmap (unions . fmap (uc onAddMuts_)) .:. composeAdds
 
 -- WHERE --
 
@@ -337,15 +328,11 @@ onDelMuts :: PrimMonad m =>
   Doubly (PrimState m) -> TypeState (PrimState m) -> CI -> m Cor
 onDelMuts _ _ (CI _ _ 2 _ _) = return M.empty
 onDelMuts dly tst supCI@(CI _ _ supLen supTl supStl) = do
-  traceM ""
-  traceM $ "[DEL COR]: " ++ show supCI
-  res <- M.filter (not . IM.null) -- clean
-         . fmap (IM.filter (/= 0) .  go)
-         . M.fromListWith (<>)
-         . reverse -- preserve order through (<>)
-         . ffmap NE.singleton <$> decomposeIn dly tst supCI
-  traceShowM res
-  return res
+  M.filter (not . IM.null) -- clean
+    . fmap (IM.filter (/= 0) .  go)
+    . M.fromListWith (<>)
+    . reverse -- preserve order through (<>)
+    . ffmap NE.singleton <$> decomposeIn dly tst supCI
   where
     supLenEven = even supLen
     go :: NonEmpty (Bool, CI) -> IntMap Int

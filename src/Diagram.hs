@@ -112,15 +112,9 @@ main = do
   str <- D.toList dly
   putStrLn "String: " >> print str
   putStrLn ""
-  -- putStrLn "Symbol counts: " >> print (symCounts str)
-  -- putStrLn ""
 
   let top@(JT _tu0 _tu1) = JT.fromJoints allCIs
-  -- putStr "Top type: " >> print (UT.toList tu0)
-  -- putStr "          " >> print (UT.toList tu1)
-  -- putStrLn ""
-
-  let allCIs2s = Jts.sized $ Jts.doubleIndex 256 allCIs
+      allCIs2s = Jts.sized $ Jts.doubleIndex 256 allCIs
       m = 256 :: Int
 
   case () of
@@ -129,7 +123,7 @@ main = do
       where -- MAIN LOOP --
       go :: RandT StdGen IO ()
       go = do
-        (jt@(JT u0 u1), cis) <- JT.genRandom allCIs2s
+        (jt, cis) <- JT.genRandom allCIs2s
 
         -- report stats, verify properties/integrity
         let ind = (lift (putStr "  ") >>)
@@ -140,17 +134,6 @@ main = do
         ind $ printConservation (top, allCIs) (jt, cis)
         ind $ printMembership allCIs (jt, cis)
         lift $ putStrLn ""
-
-        lift $ putStr "Generated type: " >> print (UT.toAscList u0)
-        lift $ putStr "                " >> print (UT.toAscList u1)
-        lift $ putStrLn ""
-
-        -- let str' = subst jt 256 str
-        -- lift $ putStrLn "Chunked string: " >> print str'
-        -- lift $ putStrLn ""
-        -- lift $ putStrLn "New symbol counts: " >> print (symCounts str')
-        -- lift $ putStrLn ""
-        --
 
         (JT u0' u1') <- Evo.hillClimb m bigN dly ns allCIs (jt,cis)
         lift $ putStr "Minimal type: " >> print (UT.toAscList u0')

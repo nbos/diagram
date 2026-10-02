@@ -35,7 +35,8 @@ import Diagram.Pretty
 import Diagram.Primitive
 
 import Diagram.Joints (Joints)
-import Diagram.JointType (JointType)
+import qualified Diagram.UnionType as UT
+import Diagram.JointType (JointType(JT))
 import qualified Diagram.JointType as JT
 import Diagram.String
 import qualified Diagram.ConstrInterval as CI
@@ -165,8 +166,13 @@ step = do
   let (_, e) = L.minimumBy (compare `on` fst) es
       ME mut loss ddns dnm (CIs jt _ _ _) = e
 
+  CIs typJT@(JT u0 u1) _ _ _ <- use typeCIs
   traceM ""
-  traceM $ "  Mutation: " ++ pShow mut
+  traceM $ "Joint type: " ++ show (UT.toList u0)
+  traceM $ "            " ++ show (UT.toList u1)
+
+  traceM ""
+  traceM $ "  Best mutation: " ++ pShow mut
   traceM $ "  ddnsLoss: " ++ pShow loss
   traceM $ "  ddns: "     ++ pShow ddns
   traceM $ "  dnm: "      ++ pShow dnm
@@ -176,7 +182,6 @@ step = do
   traceM ""
 
   str <- D.toList =<< use doubly -- (debug)
-  CIs typJT _ _ _ <- use typeCIs
   let typJT' = JT.appMut mut typJT
   traceM $ "Constructions before:\n" ++ pShowStr typJT str ++ "\n\n"
     ++ "Delta:\n" ++ pShowStr jt str ++ "\n\n"
@@ -189,7 +194,7 @@ step = do
     else do
     traceM $ "Pushing mut " ++ pShow mut ++ "\n"
     pushMut e
-    traceM "----------------------------------------------------------"
+    traceM " -------------------- finished push --------------------"
     return True
 
 ddInformation :: PrimMonad m => MutEntry -> EvolutionT m Double
@@ -287,6 +292,11 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   let n'Of s = maybe n (n-) $ IM.lookup s ndns
         where n = ns U.! s
   --
+
+  traceM "Mut. Entry Udpdates:"
+  traceM $ pShow mutEntryUpdates
+  traceM ""
+
   mutEntries <- use $ mutBooks.byMut
   zoom mutBooks $ sequence_ $ M.intersectionWith
     ( ( ( MB.update . ME.validate jt str n'Of ) =<< ) -- [UPDATE]
@@ -340,7 +350,7 @@ getCorDelta dly old_tst new_tst me typCIs = fmap toLazy $ case typeOfMut mut of
                                  (return .: JT.member mutJT)
 
     flip execStateT st0 $ forM_ mutCIsL $
-      \ci -> (superCI (traceShowId ci) >>=) $ \case
+      \ci -> (superCI ci >>=) $ \case
         Nothing -> return () -- respect canonicity in superCI
         Just Nothing -> procNewSuper ci []
         Just (Just (super, subs)) -> procNewSuper super subs
@@ -373,7 +383,7 @@ getCorDelta dly old_tst new_tst me typCIs = fmap toLazy $ case typeOfMut mut of
                                  (return .: JT.member mutJT)
 
     flip execStateT st0 $ forM_ mutCIsL $
-      \ci -> (superCI (traceShowId ci) >>=) $ \case
+      \ci -> (superCI ci >>=) $ \case
         Nothing -> return () -- skip
         Just Nothing -> procOldSuper ci []
         Just (Just (super, rems)) -> procOldSuper super rems
@@ -462,7 +472,6 @@ init_ m bigN dly ns allCIs (jt, memJointCIs) = do
   cisByMut <- joinByMutM tst (CIs.debug_join dly) $ M.toList allCIs
   corByMut <- Cor.unions <$> mapM (Cor.onAllMuts dly tst) memCIsL
   str <- D.toList dly -- TODO: rm
-  traceM $ pShowStr jt str
 
   let es = M.mergeWithKey ( Just . ME.validate jt str n'Of
                                .:. ME.fromParamsWithCor n'Of ) -- CIs * cor
@@ -534,17 +543,17 @@ validate (EvolutionState bigN dly ns allCIs tst memCIs nm books) = do
     memCIs memCIs'
 
   let TS.TS u0 u1 = tst
-  e0s <- V.toList <$> V.freeze u0
-  e1s <- V.toList <$> V.freeze u1
+  se0s <- V.toList <$> V.freeze u0
+  se1s <- V.toList <$> V.freeze u1
   let TS.TS u0' u1' = tst'
-  e0s' <- V.toList <$> V.freeze u0'
-  e1s' <- V.toList <$> V.freeze u1'
-  forM_ (zip [0::Int ..] $ zip e0s e0s') $ \(s, (e0, e0')) ->
-    unless (e0 == e0') $
-    err'' ("sym entries for " ++ show s ++ " (left)") (e0,e0')
-  forM_ (zip [0::Int ..] $ zip e1s e1s') $ \(s, (e1, e1')) ->
-    unless (e1 == e1') $
-    err'' ("sym entries for " ++ show s ++ " (right)") (e1,e1')
+  se0s' <- V.toList <$> V.freeze u0'
+  se1s' <- V.toList <$> V.freeze u1'
+  forM_ (zip [0::Int ..] $ zip se0s se0s') $ \(s, (se0, se0')) ->
+    unless (se0 == se0') $
+    err'' ("sym entries for " ++ show s ++ " (left)") (se0,se0')
+  forM_ (zip [0::Int ..] $ zip se1s se1s') $ \(s, (se1, se1')) ->
+    unless (se1 == se1') $
+    err'' ("sym entries for " ++ show s ++ " (right)") (se1,se1')
 
   return $ fold $ M.mergeWithKey -- fold :: Foldable t => t () -> ()
     (\mut (ME _ _ ddns dnm cis) (ME _ _ ddns' dnm' cis') -> case () of

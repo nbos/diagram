@@ -22,7 +22,6 @@ import qualified Data.IntMap as IM
 import Streaming (Of(..), Stream)
 import qualified Streaming.Prelude as S
 
-import Diagram.Pretty
 import Diagram.String
 import Diagram.Primitive
 
@@ -378,7 +377,7 @@ debug_join_ dly cisA cisB = do
       ++ "right: " ++ show cisB ++ "\n\n"
       ++ "join: " ++ show cisC ++ "\n"
     checkIntegrity dly cisC
-  traceM' $ "CIs join OK: " ++ pShow (toList cisC)
+  -- traceM' $ "CIs join OK: " ++ pShow (toList cisC)
   return res
   where
     res@(cisC,_) = join_ cisA cisB
