@@ -279,7 +279,7 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
                           (MEU.fromAddCIs <$>) (MEU.fromDelCIs <$>)
                           (getCIs <$> addedJoints) (getCIs <$> deletedJoints)
 
-      mutEntryUpdates = M.intersectionWith
+      mutEntryUpdates = M.unionWith
                         (\(MEU nIl dc _ _) (MEU _ _ add del) ->
                             MEU nIl dc add del)
                         mutEntryUpdates_0 mutEntryUpdates_1
