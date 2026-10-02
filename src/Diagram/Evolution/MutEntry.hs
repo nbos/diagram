@@ -17,7 +17,6 @@ import Diagram.Pretty
 import Diagram.String
 import qualified Diagram.Simple as Simple
 import Diagram.JointType (JointType)
-import qualified Diagram.JointType as JT
 import Diagram.ConstrIntervals (CIs(..))
 import qualified Diagram.ConstrIntervals as CIs
 
@@ -181,7 +180,7 @@ validate jt str n'Of e@(ME mut loss ddns dnm (CIs mutJT mutCounts _ _))
     ns    = Simple.symCounts str
     str'  = Simple.subst jt 256 str
     ns'   = Simple.symCounts str'
-    jt'   = JT.appMut mut jt
+    jt'   = Mut.apply mut jt
     str'' = Simple.subst jt' 256 str
     ns''  = Simple.symCounts str''
     err' = err . ("validate: " ++)

@@ -47,6 +47,7 @@ import qualified Diagram.Doubly as D
 import Diagram.Evolution.Math (logFact)
 import qualified Diagram.Evolution.Math as Math
 import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
+import qualified Diagram.Evolution.Mutation as Mut
 import Diagram.Evolution.Correction (Cor)
 import qualified Diagram.Evolution.Correction as Cor
 import Diagram.Evolution.TypeState (TypeState)
@@ -162,8 +163,8 @@ hillClimb = init_ >======> execStateT (whileM step)
 step :: PrimMonad m => EvolutionT m Bool
 step = do
   es <- evalAll
-  let (_, e) = L.minimumBy (compare `on` fst) es
-      ME mut loss ddns dnm (CIs jt _ _ _) = e
+  let (_, e@(ME mut loss ddns dnm (CIs mutJT _ _ _))) =
+        L.minimumBy (compare `on` fst) es
 
   CIs typJT@(JT u0 u1) _ _ _ <- use typeCIs
   traceM ""
@@ -181,10 +182,7 @@ step = do
   traceM ""
 
   str <- D.toList =<< use doubly -- (debug)
-  let typJT' = JT.appMut mut typJT
-  traceM $ "Constructions before:\n" ++ pShowStr typJT str ++ "\n\n"
-    ++ "Delta:\n" ++ pShowStr jt str ++ "\n\n"
-    ++ "Constructions after:\n" ++ pShowStr typJT' str ++ "\n"
+  traceM $ pShowStrMut mut mutJT typJT str
 
   if ddInfo > 0
     then do
@@ -390,7 +388,7 @@ getCorDelta dly old_tst new_tst me typCIs = fmap toLazy $ case typeOfMut mut of
     ME mut _ _ _ (CIs mutJT _ mutCIsBhd _) = me
     -- we modify the JT here, and do all the insert-deleting in the loop
     st0 = M.empty :!:
-          over CIs.jointType (JT.appValidMut mut) typCIs
+          over CIs.jointType (Mut.unsafeApply mut) typCIs
 
     mutCIsL = IM.elems mutCIsBhd
     notInMut = not .: JT.member mutJT
@@ -554,21 +552,27 @@ validate (EvolutionState bigN dly ns allCIs tst memCIs nm books) = do
     unless (se1 == se1') $
     err'' ("sym entries for " ++ show s ++ " (right)") (se1,se1')
 
-  forM_ (M.toList $ books^.MB.byMut) $ \(mut, ME _ _ ddns dnm cis) ->
-    case M.lookup mut (books'^.MB.byMut) of
-      Nothing -> err' ("extra mut entry found: " ++ show mut)
-      Just (ME _ _ ddns' dnm' cis') -> do
-        when (ddns /= ddns') $
-          err'' ("fields ddns for mut entry " ++ show mut) (ddns, ddns')
-        when (dnm /= dnm') $
-          err'' ("fields dnm for mut entry " ++ show mut) (dnm, dnm')
-        return $ validateCIs
-          ("Evolution.validate: mismatch in CIs for mut " ++ show mut ++ ": ")
-          cis cis'
+  str <- D.toList dly
+  forM_ (M.toList $ books^.MB.byMut) $
+    \(mut, ME _ _ ddns dnm cis@(CIs mutJT _ _ _)) ->
+      case M.lookup mut (books'^.MB.byMut) of
+        Nothing -> err' ("extra mut entry found: " ++ pShow mut)
+        Just (ME _ _ ddns' dnm' cis') -> do
+          when (ddns /= ddns') $
+            err' $ "fields ddns for mut entry " ++ pShow mut
+            ++ "\ndon't check out: " ++ pShow (ddns, ddns')
+            ++ "\n\n" ++ pShowStrMut mut mutJT jt str
+          when (dnm /= dnm') $
+            err' $ "fields dnm for mut entry " ++ pShow mut
+            ++ "\ndon't check out: " ++ pShow (dnm, dnm')
+            ++ "\n\n" ++ pShowStrMut mut mutJT jt str
+          return $ validateCIs
+            ("Evolution.validate: mismatch in CIs for mut "
+             ++ pShow mut ++ ": ") cis cis'
 
   forM_ (M.toList $ books'^.MB.byMut) $ \(mut, _) ->
     case M.lookup mut (books^.MB.byMut) of
-      Nothing -> err' ("missing mut entry: " ++ show mut)
+      Nothing -> err' ("missing mut entry: " ++ pShow mut)
       Just _  -> return ()
 
   where

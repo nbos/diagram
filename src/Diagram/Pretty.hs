@@ -1,11 +1,13 @@
 module Diagram.Pretty (module Diagram.Pretty) where
 
-import Text.Pretty.Simple
+import Text.Pretty.Simple hiding (pShow)
 import Data.Text.Lazy (unpack)
 
 import Diagram.String
 import Diagram.JointType (JointType)
 import qualified Diagram.JointType as JT
+import Diagram.Evolution.Mutation (Mutation)
+import qualified Diagram.Evolution.Mutation as Mut
 
 pShow :: Show a => a -> [Char]
 pShow = unpack . pShowOpt defaultOutputOptionsDarkBg
@@ -14,6 +16,14 @@ pShow = unpack . pShowOpt defaultOutputOptionsDarkBg
   , outputOptionsIndentAmount  = 2
   }
 
+pShowStrMut :: Mutation -> JointType -> JointType -> [Sym] -> [Char]
+pShowStrMut mut mutJT typJT str =
+  "Constructions before:\n" ++ pShowStr typJT str ++ "\n\n"
+  ++ "Delta (" ++ pShow mut ++ "):\n" ++ pShowStr mutJT str ++ "\n\n"
+  ++ "Constructions after:\n" ++ pShowStr typJT' str ++ "\n"
+  where
+    typJT' = Mut.apply mut typJT
+
 pShowStr :: JointType -> [Sym] -> [Char]
 pShowStr = pShowStrMark $ const False
 
@@ -21,7 +31,6 @@ pShowStrMark :: (Sym -> Bool) -> JointType -> [Sym] -> [Char]
 pShowStrMark _ _ [] = []
 pShowStrMark mark jt (hd:tl) = goOut hd tl
   where
-
     -- s0 not yet printed
     goOut s0 [] = show' red s0 -- end
     goOut s0 (s1:ss)
