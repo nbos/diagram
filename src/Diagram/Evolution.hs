@@ -17,7 +17,6 @@ import Control.Monad.State.Strict
 
 import Data.Maybe
 import Data.Function
-import Data.Foldable (fold)
 import qualified Data.List as L
 import Data.Strict.Tuple (Pair(..),(:!:))
 import Data.Strict.Classes (toLazy)
@@ -555,24 +554,29 @@ validate (EvolutionState bigN dly ns allCIs tst memCIs nm books) = do
     unless (se1 == se1') $
     err'' ("sym entries for " ++ show s ++ " (right)") (se1,se1')
 
-  return $ fold $ M.mergeWithKey -- fold :: Foldable t => t () -> ()
-    (\mut (ME _ _ ddns dnm cis) (ME _ _ ddns' dnm' cis') -> case () of
-        () | ddns /= ddns' ->
-               err'' ("fields ddns for mut entry " ++ show mut) (ddns, ddns')
-           | dnm /= dnm' ->
-               err'' ("fields dnm for mut entry " ++ show mut) (dnm, dnm')
-           | otherwise -> Just $ validateCIs
-             ( "Evolution.validate: mismatch in CIs for mut "
-               ++ show mut ++ ": " ) cis cis' )
-    (fmap $ err' . ("extra mut entry found: " ++) . show)
-    (fmap $ err' . ("missing mut entry: " ++) . show)
-    (books^.MB.byMut) (books'^.MB.byMut)
+  forM_ (M.toList $ books^.MB.byMut) $ \(mut, ME _ _ ddns dnm cis) ->
+    case M.lookup mut (books'^.MB.byMut) of
+      Nothing -> err' ("extra mut entry found: " ++ show mut)
+      Just (ME _ _ ddns' dnm' cis') -> do
+        when (ddns /= ddns') $
+          err'' ("fields ddns for mut entry " ++ show mut) (ddns, ddns')
+        when (dnm /= dnm') $
+          err'' ("fields dnm for mut entry " ++ show mut) (dnm, dnm')
+        return $ validateCIs
+          ("Evolution.validate: mismatch in CIs for mut " ++ show mut ++ ": ")
+          cis cis'
+
+  forM_ (M.toList $ books'^.MB.byMut) $ \(mut, _) ->
+    case M.lookup mut (books^.MB.byMut) of
+      Nothing -> err' ("missing mut entry: " ++ show mut)
+      Just _  -> return ()
 
   where
     CIs jt _ _ _ = memCIs
     m = U.length ns
     err' = err . ("validate: " ++)
-    err'' name vals = err' $ name ++ " don't check out: " ++ show vals
+    err'' name vals = err' $ name ++ " don't check out:\n"
+                      ++ pShow vals
 
 validateCIs :: String -> CIs -> CIs -> ()
 validateCIs msg (CIs jt ndns bhd btl) (CIs jt' ndns' bhd' btl')
