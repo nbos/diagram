@@ -6,6 +6,7 @@ module Diagram.ConstrIntervals (module Diagram.ConstrIntervals) where
 
 import Debug.Trace
 import GHC.Utils.Monad
+import GHC.Show
 
 import Control.Monad hiding (join)
 import Control.Lens hiding (Index,(:>))
@@ -43,9 +44,22 @@ data CIs = CIs
   , _symCounts :: !(IntMap Count) -- :: s  --> n
   , _byHead    :: !(IntMap CI)    -- :: hd --> (hd, shd, len, tl, stl)
   , _byTail    :: !(IntMap CI) }  -- :: tl --> (hd, shd, len, tl, stl)
-  deriving(Show,Eq) -- TODO: joint count?
-
+  deriving(Eq) -- TODO: joint count?
 makeLenses ''CIs
+
+instance Show CIs where
+  showsPrec :: Int -> CIs -> ShowS
+  showsPrec p cis@(CIs jt ns bhd btl)
+    | cis == empty = showString "empty"
+    | otherwise = showParen (p >= 11) $
+                  showString "CIs {"
+                  . showString "_jointType = " . showsPrec 0 jt
+                  . showCommaSpace
+                  . showString "_symCounts = " . showsPrec 0 ns
+                  . showCommaSpace
+                  . showString "_byHead = " . showsPrec 0 bhd
+                  . showCommaSpace
+                  . showString "_byTail = " . showsPrec 0 btl . showString "}"
 
 toList :: CIs -> [CI]
 toList = IM.elems . _byHead
@@ -323,8 +337,8 @@ difference dly memSuper_ memSub_ cisA (CIs jtB _ bhdB _) = do
 -- DEBUG --
 -----------
 
-checkIntegrity :: PrimMonad m => Doubly (PrimState m) -> CIs -> m ()
-checkIntegrity dly (CIs jt ns bhd btl)
+checkIntegrityM :: PrimMonad m => Doubly (PrimState m) -> CIs -> m ()
+checkIntegrityM dly (CIs jt ns bhd btl)
   | odd (sum ns) = err' $ "sum of counts is odd: " ++ show ns
   | bhdCIs /= btlCIs =
       err' $ "byHead and byTail don't contain the same CI's: " ++ show (bhd,btl)
@@ -343,6 +357,27 @@ checkIntegrity dly (CIs jt ns bhd btl)
     bhdCIs = L.sort $ IM.elems bhd
     btlCIs = L.sort $ IM.elems btl
     cisL = bhdCIs
+
+-- | Pure version of checkIntegrityM, almost as good
+checkIntegrity :: CIs -> a -> a
+checkIntegrity (CIs jt ns bhd btl)
+  | odd (sum ns) = err' $ "sum of counts is odd: " ++ show ns
+  | bhdCIs /= btlCIs =
+      err' $ "byHead and byTail don't contain the same CI's: " ++ show (bhd,btl)
+  | not (and (IM.intersectionWith (<=) minCounts ns)) =
+      err' $ "recorded symbol counts impossibly low: "
+      ++ show ((cisL,ns),minCounts)
+  | otherwise = foldr (.) id $ (<$> cisL) $ \ci@(CI _ shd _ _ stl) ->
+      if JT.member jt shd stl then id
+      else err' $ "edges of interval " ++ show ci
+           ++ " don't fit in type " ++ show jt
+  where
+    err' = err . ("checkIntegrity: " ++)
+    bhdCIs = L.sort $ IM.elems bhd
+    btlCIs = L.sort $ IM.elems btl
+    cisL = bhdCIs
+    minCounts = L.foldl' (\m s -> IM.insertWith (+) s (1::Int) m) IM.empty $
+                foldr (\(CI _ shd _ _ stl) l -> shd:stl:l) [] cisL
 
 -- | Errorless version of @checkIntegrity@
 valid :: PrimMonad m => Doubly (PrimState m) -> CIs -> m Bool
@@ -367,16 +402,16 @@ debug_join_ :: PrimMonad m => Doubly (PrimState m) ->
 debug_join_ dly cisA cisB = do
   unlessM (valid dly cisA) $ do
     traceM' $ "supplied CIs not valid (left): \n" ++ show cisA
-    checkIntegrity dly cisA
+    checkIntegrityM dly cisA
   unlessM (valid dly cisB) $ do
     traceM' $ "supplied CIs not valid (right): \n" ++ show cisB
-    checkIntegrity dly cisB
+    checkIntegrityM dly cisB
   unlessM (valid dly cisC) $ do
     traceM' $ "join CIs not valid. \n\n"
       ++ "left: " ++ show cisA ++ "\n\n"
       ++ "right: " ++ show cisB ++ "\n\n"
       ++ "join: " ++ show cisC ++ "\n"
-    checkIntegrity dly cisC
+    checkIntegrityM dly cisC
   -- traceM' $ "CIs join OK: " ++ pShow (toList cisC)
   return res
   where
