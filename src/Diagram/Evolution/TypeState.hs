@@ -194,19 +194,21 @@ init m allJoints (JT u0 u1) = do
 data DeltaMutJointsState = DMJS
   { _enabledMuts :: !(Set Mutation)
   , _expiredMuts :: !(Set Mutation)
-  , _addedJoints   :: !(Map Mutation (Joints ()))
-  , _deletedJoints :: !(Map Mutation (Joints ())) }
+  , _deltaJoints :: !(Map Mutation (Joints ())) }
   deriving (Show,Eq)
 makeLenses ''DeltaMutJointsState
 
--- | Return the Mutations that would be enabled (fst, with associated
--- joints), or made invalid (snd), and the joints that would get added
--- (thd), or deleted (fth) from existing mutations in the Books after a
--- given Mutation is applied. This is to be called with a state where
--- the mutation is valid (i.e. not yet applied).
+-- | Return the Mutations that would be enabled (fst3), or made invalid
+-- (snd3), and the joints that would get added or deleted (thd3) from
+-- existing mutations in the books after a given Mutation is
+-- applied. This is to be called with a state where the mutation is
+-- valid (i.e. not yet applied). When given mutation is an Add
+-- mutations, the returned joints are to be **added** to the respective
+-- mutation entries. Conversely, when the given mutation is a Del
+-- mutation, the returned joints are to be **removed** from the
+-- respective mutation entries.
 deltaMutJoints :: forall m. PrimMonad m => TypeState (PrimState m) ->
                   Mutation -> m ( Set Mutation, Set Mutation
-                                , Map Mutation (Joints ())
                                 , Map Mutation (Joints ()) )
 deltaMutJoints tst mut = fmap toLazy $
   flip execStateT st0 $ case mut of
@@ -322,8 +324,8 @@ deltaMutJoints tst mut = fmap toLazy $
   where
     readL = readLeft_ tst
     readR = readRight_ tst
-    toLazy (DMJS m0 m1 m2 m3) = (m0, m1, m2, m3)
-    st0 = DMJS mutRecip (Set.singleton mut) M.empty M.empty
+    toLazy (DMJS m0 m1 m2) = (m0, m1, m2)
+    st0 = DMJS mutRecip (Set.singleton mut) M.empty
     mutRecip = Set.singleton (Mut.recip mut)
 
     addMut :: Mutation -> StateT DeltaMutJointsState m ()
@@ -331,9 +333,9 @@ deltaMutJoints tst mut = fmap toLazy $
     delMut :: Mutation -> StateT DeltaMutJointsState m ()
     delMut = (expiredMuts %=) . Set.insert
     addMutJoint :: Mutation -> (Sym, Sym) -> StateT DeltaMutJointsState m ()
-    addMutJoint = (addedJoints %=) .: jtInsert
+    addMutJoint = (deltaJoints %=) .: jtInsert
     delMutJoint :: Mutation -> (Sym, Sym) -> StateT DeltaMutJointsState m ()
-    delMutJoint = (deletedJoints %=) .: jtInsert
+    delMutJoint = (deltaJoints %=) .: jtInsert
     jtInsert mu ss = M.insertWith (const $ M.insert ss ())
                      mu (M.singleton ss ())
 
