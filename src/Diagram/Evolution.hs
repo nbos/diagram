@@ -266,20 +266,16 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
     forM (IM.toList countUpdateIntervals) $ \(s,ddn) ->
     M.fromSet (const $ IM.singleton s ddn) <$> getAffectedMuts s
 
-  let mkmeu_0 nIl dc = MEU nIl dc CIs.empty CIs.empty
+  let mkmeu_0 nIl dc = MEU nIl dc CIs.empty
       mutEntryUpdates_0 = M.mergeWithKey (const $ Just .: mkmeu_0)
                           (MEU.fromDCounts <$>) (MEU.fromDCor <$>)
                           countUpdateIlsByAffected corDelta
   allCIs <- use jointCIs
   let getCIs = mfoldTree . M.elems . M.intersection allCIs
-      mutEntryUpdates_1 = case typeOfMut of
-        Add -> MEU.fromAddCIs . getCIs <$> deltaJoints
-        Del -> MEU.fromDelCIs . getCIs <$> deltaJoints
-
-      mutEntryUpdates = M.unionWith
-                        (\(MEU nIl dc _ _) (MEU _ _ add del) ->
-                            MEU nIl dc add del)
-                        mutEntryUpdates_0 mutEntryUpdates_1
+      mutEntryUpdates = M.mergeWithKey
+                        (\_ (MEU nIl dcor _) dcis -> Just $ MEU nIl dcor dcis)
+                        id (MEU.fromDCIs <$>)
+                        mutEntryUpdates_0 (getCIs <$> deltaJoints)
   -- (debug)
   CIs newTypJT ndns _ _ <- use typeCIs
   str <- use doubly >>= D.toList
@@ -294,7 +290,7 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   mutEntries <- use $ mutBooks.byMut
   zoom mutBooks $ sequence_ $ M.intersectionWith
     ( ( ( MB.update . ME.validate newTypJT str n'Of ) =<< ) -- [UPDATE]
-      .: MEU.apply oldTypJT newTypJT (TS.member old_tst) n'Of dly )
+      .: MEU.apply oldTypJT typeOfMut newTypJT (TS.member old_tst) n'Of dly )
     mutEntries mutEntryUpdates
 
   jointCount += mutDnm -- delta nm
@@ -428,7 +424,7 @@ getCountDelta ns = IM.mergeWithKey col
     newDns :: Int -> Count -> (Count, Count, Double)
     newDns s ddn = seq dLoss (old_n', new_n', dLoss)
       where n = ns U.! s
-            old_n' = n -- dn == 0 by abstentia
+            old_n' = n -- dn == 0
             new_n' = old_n' + ddn
             dLoss = logFact new_n' - logFact old_n'
 
