@@ -8,6 +8,7 @@ import Prelude hiding (init)
 import Control.Monad
 import Control.Monad.State.Strict
 
+import Data.Maybe
 import qualified Data.List as L
 import Data.List.NonEmpty (NonEmpty(..),(<|))
 import qualified Data.List.NonEmpty as NE
@@ -54,9 +55,9 @@ unions :: [Cor] -> Cor
 unions [] = empty
 unions (c:cs) = L.foldl' union c cs -- (use foldTree?)
 
------------------
--- ENTRY POINT --
------------------
+------------------
+-- ENTRY POINTS --
+------------------
 
 onAllMuts :: PrimMonad m =>
   Doubly (PrimState m) -> TypeState (PrimState m) -> CI -> m Cor
@@ -64,6 +65,33 @@ onAllMuts dly tst ci = do
   onAdd <- onAddMuts dly tst ci
   onDel <- onDelMuts dly tst ci
   return $ M.unionWith (error "impossible") onAdd onDel
+
+-- | Where a mutation contains CIs (not represented besides `notInMut`
+-- predicate) that join with a set of adjacent in-CIs `rems` in a type
+-- state `old_tst` to produce a superCI `super` in a type state
+-- `new_tst`, return the update to the Cor (on all muts) required by
+-- changing the type from `old_tst` to `new_tst` (`old_tst` + mut),
+-- i.e. an Add mutation. For a Del mutation (going from `super` to
+-- `rems`), reverse the `_tst` arguments and negate the result.
+getDelta :: PrimMonad m => (Sym -> Sym -> Bool) -> Doubly (PrimState m) ->
+  (CI, TypeState (PrimState m)) -> ([CI], TypeState (PrimState m)) -> m Cor
+getDelta notInMut dly (super, new_tst) (rems, old_tst) = do
+  -- Del Cor
+  newDelCor <- onDelMuts dly new_tst super
+  oldDelCor <- forM rems $ onDelMuts dly old_tst
+  let delCorDelta = foldr union newDelCor $ negate <<<$>>> oldDelCor
+  -- Add Cor
+  (mSuperAddChains, subs) <- composeAddsSub notInMut dly new_tst super
+  subsNewAddCor <- forM subs $ onAddMuts dly new_tst
+  newAddCor <- case mSuperAddChains of
+    Nothing -> (:subsNewAddCor) <$> onAddMuts dly new_tst super
+    Just superAddChains -> return $
+      (uc onAddMuts_ <$> superAddChains) ++ subsNewAddCor
+  oldAddCor <- forM (rems ++ subs) $ onAddMuts dly old_tst
+  let addCorDelta = fromMaybe M.empty $ foldTree union $
+                    newAddCor ++ (negate <<<$>>> oldAddCor)
+
+  return $ M.unionWith (error "impossible") addCorDelta delCorDelta
 
 ----------------------
 -- ON ADD MUTATIONS --
