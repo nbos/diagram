@@ -119,11 +119,13 @@ apply (old_typJT, old_mem) prevMutType (new_typJT, new_mem) n'Of dly me meu = do
   traceM $ pShow meu
   --
 
-  let super s0 s1 = new_mem s0 s1
+  let super s0 s1 = (JT.member new_mutJT s0 s1 ||) <$> new_mem s0 s1
       sub = return .: JT.member dcis_jt
   dCor' <- fromMaybe IM.empty . foldTree imUnion
-           . fmap Cor.onAddMut_ . catMaybes . catMaybes
+           . fmap Cor.onAddMut_ . catMaybes . catMaybes . traceShowId
            <$> mapM (compose super sub dly) (IM.elems dcis_bhd)
+  traceM $ pShow dCor'
+
   let
     -- ddns --
     new_ddns = IM.mergeWithKey (\_ (_, ddn') _ -> nothingIf (==0) ddn')
@@ -153,7 +155,13 @@ apply (old_typJT, old_mem) prevMutType (new_typJT, new_mem) n'Of dly me meu = do
                    let n'      = n'Of s -- old == new
                        old_n'' = n' + ddn
                        new_n'' = n' + ddn'
-                   in logFact old_n'' - logFact new_n'' )
+                   in trace (pShow ("s",s)) $
+                      trace (pShow ("ddn",ddn)) $
+                      trace (pShow ("ddn'",ddn')) $
+                      trace (pShow ("n'",n')) $
+                      trace (pShow ("old_n''",old_n'')) $
+                      trace (pShow ("new_n''",new_n'')) $
+                      logFact old_n'' - logFact new_n'' )
                n'Ils ddnsIls
 
     -- dnm --
@@ -181,9 +189,9 @@ compose :: PrimMonad m => (Sym -> Sym -> m Bool) -> (Sym -> Sym -> m Bool) ->
            Doubly (PrimState m) -> CI -> m (Maybe (Maybe (NonEmpty CI)))
 compose super sub dly ci = (<$> liftA2 (,) prev next) $ \case
   (Nothing, _) -> Nothing -- cancelled (rare)
-  (Just Nothing, mnxt) -> Just mnxt
+  (Just Nothing, mnxt) -> Just $ (ci <|) <$> mnxt
   (Just (Just prv), mnxt) -> Just $ Just $
-                             maybe (NE.singleton prv) (prv <|) mnxt
+                             maybe (prv:|[ci]) ((prv:|[ci]) <>) mnxt
   where
     prev = prevCI  super sub dly ci
     next = nextCIs super sub dly ci
