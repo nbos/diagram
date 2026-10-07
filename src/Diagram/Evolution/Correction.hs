@@ -31,11 +31,15 @@ import qualified Diagram.Evolution.TypeState as TS
 
 import Diagram.Util
 
--- Here we compute, for constructive intervals (CIs) and mutations, the
--- difference between the symbol counts of the union/join of the CIs &
--- those of the mutation's (i.e. (cis U mut.cis).ns) and the sum of the
--- symbol counts of the CIs and those of the mutation's (i.e. (cis.ns +
--- mut.cis.ns)).
+-- Here we compute, for a pair of constructive intervals (CIs), the
+-- difference between the symbol counts of their join and the sum of
+-- their symbol counts. Each available mutation corresponding to a CIs,
+-- for Add mutations, the type state starts as one of the disjuncts and
+-- will mutate into the join, whereas for Del mutations, the type state
+-- starts as the join and will mutate into one of the disjuncts. For the
+-- CIs of the current joint type, we can produce the set of corrections
+-- for all available mutations on a single pass over each member CI,
+-- using a reference to the string.
 
 ---------
 -- Cor --
@@ -86,7 +90,7 @@ getDelta notInMut dly (super, new_tst) (rems, old_tst) = do
   newAddCor <- case mSuperAddChains of
     Nothing -> (:subsNewAddCor) <$> onAddMuts dly new_tst super
     Just superAddChains -> return $
-      (uc onAddMuts_ <$> superAddChains) ++ subsNewAddCor
+      (uc onAddMut <$> superAddChains) ++ subsNewAddCor
   oldAddCor <- forM (rems ++ subs) $ onAddMuts dly old_tst
   let addCorDelta = fromMaybe M.empty $ foldTree union $
                     newAddCor ++ (negate <<<$>>> oldAddCor)
@@ -101,7 +105,7 @@ getDelta notInMut dly (super, new_tst) (rems, old_tst) = do
 -- injective, with no `sub` predicate.
 onAddMuts :: PrimMonad m =>
   Doubly (PrimState m) -> TypeState (PrimState m) -> CI -> m Cor
-onAddMuts = fmap (unions . fmap (uc onAddMuts_)) .:. composeAdds
+onAddMuts = fmap (unions . fmap (uc onAddMut)) .:. composeAdds
 
 -- WHERE --
 
@@ -113,18 +117,24 @@ onAddMuts = fmap (unions . fmap (uc onAddMuts_)) .:. composeAdds
 -- this is not checked. Correction values are signed in order to be
 -- added to the mut's CIs' counts *before* they are added/subtracted
 -- from the type's or string's counts.
-onAddMuts_ :: Mutation -> NonEmpty CI -> Cor
-onAddMuts_ mut cis | IM.null cor = M.empty
-                   | otherwise   = M.singleton mut cor
+onAddMut :: Mutation -> NonEmpty CI -> Cor
+onAddMut mut cis | IM.null cor = M.empty
+                 | otherwise   = M.singleton mut cor
+  where cor = onAddMut_ cis
+
+-- | Fundamental correction calculation on a set of successive
+-- (colliding) CIs, alternating between two disjoint types
+onAddMut_ :: NonEmpty CI -> IntMap Int
+onAddMut_ cis = clean $ flip execState IM.empty $ do
+  forM_ (NE.init cis) $ \(CI _ _ len _ stl) ->
+    when (even len) $ modify $ IM.insertWith (+) stl (-1)
+  when (d /= 0) $ modify $ IM.insertWith (+) tailSym d
   where
-    cor = IM.filter (/= 0) $ flip execState IM.empty $ do
-      forM_ (NE.init cis) $ \(CI _ _ len _ stl) ->
-        when (even len) $ modify $ IM.insertWith (+) stl (-1)
-      let CI _ _ oldLen _ tailSym = NE.last cis
-          newLen = sum (_ciLength <$> cis) -- constituents lengths
-                   - (length cis - 1) -- overlaps
-          d = fromEnum (even newLen) - fromEnum (even oldLen)
-      when (d /= 0) $ modify $ IM.insertWith (+) tailSym d
+    clean = IM.filter (/= 0)
+    CI _ _ oldLen _ tailSym = NE.last cis
+    newLen = sum (_ciLength <$> cis) -- constituents lengths
+             - (length cis - 1) -- overlaps
+    d = fromEnum (even newLen) - fromEnum (even oldLen)
 
 -- TODO: factor/optimize case order
 -- | Grab the maximal [in-]add-in-add-etc. chains surrounding a given
