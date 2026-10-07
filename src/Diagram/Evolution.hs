@@ -288,9 +288,11 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   -- traceM ""
 
   mutEntries <- use $ mutBooks.byMut
+  let old_mem = TS.member old_tst
+      new_mem = TS.member new_tst
   zoom mutBooks $ sequence_ $ M.intersectionWith
     ( ( ( MB.update . ME.validate newTypJT str n'Of ) =<< ) -- [UPDATE]
-      .: MEU.apply oldTypJT typeOfMut newTypJT (TS.member old_tst) n'Of dly )
+      .: MEU.apply (oldTypJT, old_mem) typeOfMut (newTypJT, new_mem) n'Of dly)
     mutEntries mutEntryUpdates
 
   jointCount += mutDnm -- apply delta nm
