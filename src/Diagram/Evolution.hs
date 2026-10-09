@@ -246,7 +246,7 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   --
 
   dly <- use doubly
-  CIs oldTypJT oldTypNdns _ _ <- use typeCIs -- (before getCorDelta modifies)
+  CIs _oldTypJT oldTypNdns _ _ <- use typeCIs -- (before getCorDelta modifies)
   let mutsFlipped = enabledMuts `Set.union` expiredMuts
   corDelta <- (typeCIs %%== pushMut_CIs dly old_tst new_tst me)
               <&> (`M.withoutKeys` mutsFlipped)
@@ -286,7 +286,7 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
       update :: MutEntry -> Update -> StateT (MutBooks (PrimState m)) m ()
       update = MB.update . ME.validate newTypJT str n'Of <==< apply
       apply :: MutEntry -> Update -> StateT (MutBooks (PrimState m)) m MutEntry
-      apply = MEU.apply (oldTypJT, old_mem) typeOfMut (newTypJT, new_mem)
+      apply = MEU.apply old_mem typeOfMut new_mem
               n'Of dly
 
   zoom mutBooks $ sequence_ $ M.intersectionWith update

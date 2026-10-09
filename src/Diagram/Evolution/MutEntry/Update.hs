@@ -4,7 +4,6 @@
 module Diagram.Evolution.MutEntry.Update (
   module Diagram.Evolution.MutEntry.Update ) where
 
-import Debug.Trace
 import Control.Lens hiding (Index, (<|))
 
 import Data.Maybe
@@ -13,7 +12,6 @@ import qualified Data.IntMap.Strict as IM
 import Data.List.NonEmpty (NonEmpty(..),(<|))
 import qualified Data.List.NonEmpty as NE
 
-import Diagram.Pretty
 import Diagram.String
 import Diagram.Primitive
 
@@ -22,7 +20,6 @@ import qualified Diagram.JointType as JT
 import Diagram.ConstrInterval (CI(..))
 import Diagram.ConstrIntervals (CIs(..))
 import qualified Diagram.ConstrIntervals as CIs
-import Diagram.JointType (JointType)
 
 import Diagram.Evolution.Math (logFact)
 import Diagram.Evolution.Mutation (MutType(..))
@@ -92,10 +89,10 @@ fromDCIs cis = empty{ _onCIs = cis }
 -- whether it's from the TypeState before or after the application
 -- doesn't matter), and a reference string, apply the given
 -- MutEntryUpdate to the given MutEntry.
-apply :: PrimMonad m => (JointType, Sym -> Sym -> m Bool) -> MutType ->
-  (JointType, Sym -> Sym -> m Bool) -> (Sym -> Count) -> Doubly (PrimState m)
-  -> MutEntry -> Update -> m MutEntry
-apply (_old_typJT, old_mem) prevMutType (_new_typJT, new_mem) n'Of dly me meu = do
+apply :: PrimMonad m => (Sym -> Sym -> m Bool) -> MutType ->
+         (Sym -> Sym -> m Bool) -> (Sym -> Count) -> Doubly (PrimState m) ->
+         MutEntry -> Update -> m MutEntry
+apply old_mem prevMutType new_mem n'Of dly me meu = do
   let ME mut old_dnsLoss old_ddns old_dnm old_cis@(CIs _old_mutJT _ _ _) = me
       MEU n'Ils dCor dCIs@(CIs dcis_jt dcis_ns dcis_bhd _) = meu
 
@@ -107,16 +104,6 @@ apply (_old_typJT, old_mem) prevMutType (_new_typJT, new_mem) n'Of dly me meu = 
     -- from scratch (dCor')
     Add -> return $ CIs.join_ old_cis dCIs
     Del -> CIs.difference dly (Just old_mem) Nothing old_cis dCIs
-
-  -- (debug)
-  -- str <- D.toList dly
-  -- traceM "\nOld:"
-  -- traceM $ pShowStrMut mut old_mutJT old_typJT str
-  -- traceM "\nNew:"
-  -- traceM $ pShowStrMut mut new_mutJT new_typJT str
-  traceM $ pShow me
-  traceM $ pShow meu
-  --
 
   let super s0 s1 = (JT.member new_mutJT s0 s1 ||) <$> new_mem s0 s1
       sub = return .: JT.member dcis_jt
@@ -139,7 +126,7 @@ apply (_old_typJT, old_mem) prevMutType (_new_typJT, new_mem) n'Of dly me meu = 
     dcis_ns' = dcis_ns `imUnion` dCor'
 
     -- dnsLoss --
-    new_dnsLoss = old_dnsLoss + trace "dDnsLos:" traceShowId (dDnsLoss)
+    new_dnsLoss = old_dnsLoss + dDnsLoss
     dDnsLoss = sum $ IM.mergeWithKey
                ( \_ ((old_n', new_n', dLoss), _) (ddn, ddn') -> Just $
                  let old_n'' = old_n' + ddn
