@@ -15,7 +15,6 @@ import Control.Monad.Extra
 import Control.Lens hiding (both,last1,Index,(:>),index)
 import Control.Monad.State.Strict
 
-import Data.Maybe
 import Data.Function
 import qualified Data.List as L
 import Data.Strict.Tuple (Pair(..))
@@ -242,17 +241,15 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   new_tst <- use typeState
   --
 
-  dly <- use doubly
-  CIs oldTypJT oldTypNdns _ _ <- use typeCIs -- (before getCorDelta modifies)
-  corDelta <- (typeCIs %%== pushMut_CIs dly old_tst new_tst me)
-              <&> (`M.withoutKeys` (enabledMuts `Set.union` expiredMuts))
-
   -- DELETE EACH EXPIRED MUT
   zoom mutBooks $ mapM_ MB.delete $ Set.toList expiredMuts
-  -- INSERT EACH NEWLY ENABLED MUTS
-  let ime@(ME imut _ _ _ _) = ME.recip me
-  es <- mapM mkMutEntry $ Set.toList $ Set.delete imut enabledMuts
-  zoom mutBooks $ mapM_ MB.insert (ime:es)
+  --
+
+  dly <- use doubly
+  CIs oldTypJT oldTypNdns _ _ <- use typeCIs -- (before getCorDelta modifies)
+  let mutsFlipped = enabledMuts `Set.union` expiredMuts
+  corDelta <- (typeCIs %%== pushMut_CIs dly old_tst new_tst me)
+              <&> (`M.withoutKeys` mutsFlipped)
 
   -- UPDATE MUT BOOKS --
   ns <- use symCounts
@@ -261,12 +258,13 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
       unionIl = M.unionWithKey $ const $ IM.unionWithKey
         (err' . ("duplicate sym count intervals: " ++) . show .:. (,,))
 
-  n'IlsByAffected <- fmap (fromMaybe M.empty . foldTree unionIl) $
+  n'IlsByAffected <- fmap ( maybe M.empty (flip M.withoutKeys mutsFlipped)
+                           . foldTree unionIl ) $
     forM (IM.toList n'Ils) $ \(s, n'Il) ->
     M.fromSet (const $ IM.singleton s n'Il) <$> getAffectedMuts s
 
-  let mkmeu_01 nIl dc = MEU nIl dc CIs.empty
-      mutEntryUpdates_01 = M.mergeWithKey (const $ Just .: mkmeu_01)
+  let mkMEU_01 nIl dc = MEU nIl dc CIs.empty
+      mutEntryUpdates_01 = M.mergeWithKey (const $ Just .: mkMEU_01)
                            (MEU.fromDCounts <$>) (MEU.fromDCor <$>)
                            n'IlsByAffected corDelta
   allCIs <- use jointCIs
@@ -293,6 +291,13 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
 
   zoom mutBooks $ sequence_ $ M.intersectionWith update
     mutEntries mutEntryUpdates
+  -- </UPDATE MUT BOOKS>
+
+  -- INSERT EACH NEWLY ENABLED MUTS
+  let ime@(ME imut _ _ _ _) = ME.recip me
+  es <- mapM mkMutEntry $ Set.toList $ Set.delete imut enabledMuts
+  zoom mutBooks $ mapM_ MB.insert (ime:es)
+  --
 
   jointCount += mutDnm -- apply delta nm
   get >>= validate -- (debug)
