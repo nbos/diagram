@@ -5,7 +5,6 @@ module Diagram.Evolution.MutEntry.Update (
   module Diagram.Evolution.MutEntry.Update ) where
 
 import Debug.Trace
-
 import Control.Lens hiding (Index, (<|))
 
 import Data.Maybe
@@ -94,10 +93,10 @@ fromDCIs cis = empty{ _onCIs = cis }
 -- doesn't matter), and a reference string, apply the given
 -- MutEntryUpdate to the given MutEntry.
 apply :: PrimMonad m => (JointType, Sym -> Sym -> m Bool) -> MutType ->
-         (JointType, Sym -> Sym -> m Bool) -> (Sym -> Count) -> Doubly (PrimState m)
+  (JointType, Sym -> Sym -> m Bool) -> (Sym -> Count) -> Doubly (PrimState m)
   -> MutEntry -> Update -> m MutEntry
-apply (old_typJT, old_mem) prevMutType (new_typJT, new_mem) n'Of dly me meu = do
-  let ME mut old_dnsLoss old_ddns old_dnm old_cis@(CIs old_mutJT _ _ _) = me
+apply (_old_typJT, old_mem) prevMutType (_new_typJT, new_mem) n'Of dly me meu = do
+  let ME mut old_dnsLoss old_ddns old_dnm old_cis@(CIs _old_mutJT _ _ _) = me
       MEU n'Ils dCor dCIs@(CIs dcis_jt dcis_ns dcis_bhd _) = meu
 
   -- cis --
@@ -110,11 +109,11 @@ apply (old_typJT, old_mem) prevMutType (new_typJT, new_mem) n'Of dly me meu = do
     Del -> CIs.difference dly (Just old_mem) Nothing old_cis dCIs
 
   -- (debug)
-  str <- D.toList dly
-  traceM "\nOld:"
-  traceM $ pShowStrMut mut old_mutJT old_typJT str
-  traceM "\nNew:"
-  traceM $ pShowStrMut mut new_mutJT new_typJT str
+  -- str <- D.toList dly
+  -- traceM "\nOld:"
+  -- traceM $ pShowStrMut mut old_mutJT old_typJT str
+  -- traceM "\nNew:"
+  -- traceM $ pShowStrMut mut new_mutJT new_typJT str
   traceM $ pShow me
   traceM $ pShow meu
   --
@@ -122,10 +121,8 @@ apply (old_typJT, old_mem) prevMutType (new_typJT, new_mem) n'Of dly me meu = do
   let super s0 s1 = (JT.member new_mutJT s0 s1 ||) <$> new_mem s0 s1
       sub = return .: JT.member dcis_jt
   dCor' <- fromMaybe IM.empty . foldTree imUnion
-           . fmap Cor.onAddMut_ . catMaybes . catMaybes . traceShowId
+           . fmap Cor.onAddMut_ . catMaybes . catMaybes
            <$> mapM (compose super sub dly) (IM.elems dcis_bhd)
-  traceM $ pShow dCor'
-
   let
     -- ddns --
     new_ddns = IM.mergeWithKey (\_ (_, ddn') _ -> nothingIf (==0) ddn')
@@ -142,27 +139,28 @@ apply (old_typJT, old_mem) prevMutType (new_typJT, new_mem) n'Of dly me meu = do
     dcis_ns' = dcis_ns `imUnion` dCor'
 
     -- dnsLoss --
-    new_dnsLoss = old_dnsLoss + dDnsLoss
+    new_dnsLoss = old_dnsLoss + trace "dDnsLos:" traceShowId (dDnsLoss)
     dDnsLoss = sum $ IM.mergeWithKey
-               ( \_ (old_n', new_n', dLoss) (ddn, ddn') -> Just $
+               ( \_ ((old_n', new_n', dLoss), _) (ddn, ddn') -> Just $
                  let old_n'' = old_n' + ddn
                  -- old_loss = logFact old_n' - logFact old_n''
                      new_n'' = new_n' + ddn'
                  -- new_loss = logFact new_n' - logFact new_n''
                  in dLoss - logFact new_n'' + logFact old_n'' )
-               ( const IM.empty ) -- no n' change, no ddn ==> no dnsLoss
+               ( fmap $ \((old_n', new_n', dLoss), ddn) -> -- n'Il only
+                   let old_n'' = old_n' + ddn
+                       new_n'' = new_n' + ddn
+                   in dLoss - logFact new_n'' + logFact old_n'' )
                ( IM.mapWithKey $ \s (ddn, ddn') -> -- ddns only
-                   let n'      = n'Of s -- old == new
+                   let n'      = n'Of s -- old_n' == new_n'
                        old_n'' = n' + ddn
                        new_n'' = n' + ddn'
-                   in trace "" trace (pShow ("s",s)) $
-                      trace (pShow ("ddn",ddn)) $
-                      trace (pShow ("ddn'",ddn')) $
-                      trace (pShow ("n'",n')) $
-                      trace (pShow ("old_n''",old_n'')) $
-                      trace (pShow ("new_n''",new_n'')) $
-                      logFact old_n'' - logFact new_n'' )
-               n'Ils ddnsIls
+                   in logFact old_n'' - logFact new_n'' )
+               n'IlDdns ddnsIls
+    n'IlDdns = IM.mergeWithKey (const $ Just .: (,))
+               (error "informed of a n' update that is not in ddns")
+               (const $ IM.empty)
+               n'Ils old_ddns
 
     -- dnm --
     new_dnm = old_dnm + dDnm

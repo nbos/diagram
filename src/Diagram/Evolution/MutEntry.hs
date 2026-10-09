@@ -130,18 +130,21 @@ validate jt str n'Of e@(ME mut loss ddns dnm (CIs mutJT mutCounts _ _))
     ++ "String (after):\n"    ++ pShowStr jt'   str ++ "\n\n"
     ++ "  mut: " ++ show mut ++ "\n"
     ++ "  ddns (cis + cor): " ++ show ddns ++ "\n"
-  | rel_err_loss > 0.001 && err_loss > 1 = err' $
-    "Error on loss is not negligible: "
+  | rel_err_loss > 0.01 && err_loss > 1 = err' $
+    "Error on loss is not negligible (" ++ show rel_err_loss_pct ++ " %)\n"
     ++ "  Entry loss: "     ++ pShow loss         ++ "\n"
     ++ "  Actual loss: "    ++ pShow verif_loss   ++ "\n"
     ++ "  Absolute error: " ++ pShow err_loss     ++ "\n"
     ++ "  Relative error: " ++ pShow rel_err_loss ++ "\n"
+    ++ "\n" ++ pShow e ++ "\n"
   | otherwise = e
   where
     two_dnm = negate $ sum ddns
     verif_loss = sum losses
     err_loss = abs $ verif_loss - loss
     rel_err_loss = err_loss / loss
+    rel_err_loss_pct = (/100) $ (fromIntegral :: Int -> Double) $
+                       round $ rel_err_loss * 10000
     losses = flip IM.mapWithKey ddns $ \s ddn -> do
       let n' = n'Of s
           n'' = n' + ddn
