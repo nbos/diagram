@@ -244,9 +244,8 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
 
   dly <- use doubly
   CIs oldTypJT oldTypNdns _ _ <- use typeCIs -- (before getCorDelta modifies)
-  corDelta <- ( ((typeCIs %%== pushMut_CIs dly old_tst new_tst me) <&>) $
-                case typeOfMut of Add -> (`M.withoutKeys` enabledMuts)
-                                  Del -> (`M.withoutKeys` expiredMuts) )
+  corDelta <- (typeCIs %%== pushMut_CIs dly old_tst new_tst me)
+              <&> (`M.withoutKeys` (enabledMuts `Set.union` expiredMuts))
 
   -- DELETE EACH EXPIRED MUT
   zoom mutBooks $ mapM_ MB.delete $ Set.toList expiredMuts
@@ -283,16 +282,16 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
         where n = ns U.! s
   --
 
-  -- traceM "Mut. Entry Udpdates:"
-  -- traceM $ pShow mutEntryUpdates
-  -- traceM ""
-
   mutEntries <- use $ mutBooks.byMut
   let old_mem = TS.member old_tst
       new_mem = TS.member new_tst
-  zoom mutBooks $ sequence_ $ M.intersectionWith
-    ( ( ( MB.update . ME.validate newTypJT str n'Of ) =<< ) -- [UPDATE]
-      .: MEU.apply (oldTypJT, old_mem) typeOfMut (newTypJT, new_mem) n'Of dly)
+      update :: MutEntry -> Update -> StateT (MutBooks (PrimState m)) m ()
+      update = MB.update . ME.validate newTypJT str n'Of <==< apply
+      apply :: MutEntry -> Update -> StateT (MutBooks (PrimState m)) m MutEntry
+      apply = MEU.apply (oldTypJT, old_mem) typeOfMut (newTypJT, new_mem)
+              n'Of dly
+
+  zoom mutBooks $ sequence_ $ M.intersectionWith update
     mutEntries mutEntryUpdates
 
   jointCount += mutDnm -- apply delta nm

@@ -155,7 +155,7 @@ apply (old_typJT, old_mem) prevMutType (new_typJT, new_mem) n'Of dly me meu = do
                    let n'      = n'Of s -- old == new
                        old_n'' = n' + ddn
                        new_n'' = n' + ddn'
-                   in trace (pShow ("s",s)) $
+                   in trace "" trace (pShow ("s",s)) $
                       trace (pShow ("ddn",ddn)) $
                       trace (pShow ("ddn'",ddn')) $
                       trace (pShow ("n'",n')) $
