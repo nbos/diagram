@@ -289,8 +289,6 @@ deltaMutJoints tst mut = fmap toLazy $
           when (coIn0' == IS.singleton s1) $
             addMut (Del2 s0' s1) --
 
-  -- remove (s0,s1) from DelRight of s1's in coIn that don't have deps
-
   -- symmetric w/ above
   DelRight s1 -> do
     SE _ coIn _ coOut <- readR s1
@@ -317,9 +315,15 @@ deltaMutJoints tst mut = fmap toLazy $
 
   Del2 s0 s1 -> do
     SE _ _ _ coOut0 <- readL s0
-    forM_ (IS.toList coOut0) $ procCoOutFromDelLeft s0 --
+    forM_ (IS.toList coOut0) $ \s1' -> do
+      procCoOutFromDelLeft s0 s1' --
+      SE _ coIn1' _ _ <- readR s1'
+      when (coIn1' == IS.singleton s0) $ addMut (Add2 s0 s1') --
     SE _ _ _ coOut1 <- readR s1
-    forM_ (IS.toList coOut1) $ procCoOutFromDelRight s1 --
+    forM_ (IS.toList coOut1) $ \s0' -> do
+      procCoOutFromDelRight s1 s0' --
+      SE _ coIn0' _ _ <- readL s0'
+      when (coIn0' == IS.singleton s1) $ addMut (Add2 s0' s1) --
 
   where
     readL = readLeft_ tst
