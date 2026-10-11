@@ -42,6 +42,7 @@ data MutBooks s = MutBooks
   , _byMut      :: !(Map Mutation MutEntry) -- by mutation
   , _byAffected :: !(MV.MVector s (Set Mutation)) } -- by each sym in ddns
 makeLenses ''MutBooks
+-- TODO: [{IntMap|Map (Int,Int)}/Map Mutation]
 
 affectedMuts :: PrimMonad m => MutBooks (PrimState m) -> Sym -> m (Set Mutation)
 affectedMuts mb = MV.read (mb^.byAffected)

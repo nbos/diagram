@@ -157,7 +157,7 @@ validate jt str n'Of e@(ME mut loss ddns dnm (CIs mutJT mutCounts _ _))
             ++ "\nString (before):\n" ++ pShowStrMark (==s) jt    str ++ "\n\n"
             ++ "String (delta):\n"    ++ pShowStrMark (==s) mutJT str ++ "\n\n"
             ++ "String (after):\n"    ++ pShowStrMark (==s) jt'   str ++ "\n\n"
-            ++ "  mut: " ++ show mut ++ "\n"
+            ++ "  mut: " ++ pShow mut ++ "\n"
             ++ "  sym: " ++ show s   ++ "\n"
             ++ "  n': "  ++ show n'  ++ "\n"
             ++ "  verif_n': " ++ show verif_n' ++ "\n"
@@ -167,7 +167,7 @@ validate jt str n'Of e@(ME mut loss ddns dnm (CIs mutJT mutCounts _ _))
             ++ "\nString (before):\n" ++ pShowStrMark (==s) jt    str ++ "\n\n"
             ++ "String (delta):\n"    ++ pShowStrMark (==s) mutJT str ++ "\n\n"
             ++ "String (after):\n"    ++ pShowStrMark (==s) jt'   str ++ "\n\n"
-            ++ "  mut: " ++ show mut ++ "\n"
+            ++ "  mut: " ++ pShow mut ++ "\n"
             ++ "  sym: " ++ show s   ++ "\n"
             ++ "  n': "  ++ show n'  ++ "\n"
             ++ "  n'': " ++ show n''

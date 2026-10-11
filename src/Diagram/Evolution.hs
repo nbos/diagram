@@ -190,7 +190,7 @@ step = do
     else do
     traceM $ "Pushing mut " ++ pShow mut ++ "\n"
     pushMut e
-    traceM " -------------------- finished push --------------------"
+    trace "" traceM " -------------------- finished push --------------------"
     return True
 
 ddInformation :: PrimMonad m => MutEntry -> EvolutionT m Double
@@ -234,45 +234,66 @@ getMutCountIntervals ddns = do
 -- | Apply a mutation, update books.
 pushMut :: forall m. PrimMonad m => MutEntry -> EvolutionT m ()
 pushMut me@(ME mut _ mutDdns mutDnm _) = do
-  -- clone entire state (for Cor delta, difficult otherwise) and apply mut
+
+  -- Application of a Mutation affects other MutEntries in three ways:
+  -- (1) the post-intro count of symbols (n') changes, affecting mut
+  -- entries' post-application symbol counts (n''), both of which
+  -- dnsLoss is a function of; (2) changes to correction terms from the
+  -- inclusion/exclusion of the muts CIs, affecting mut entries'
+  -- post-application symbol counts (n''); and (3) inclusion/exclusion
+  -- of new joints into mut CIs, again affecting count n'' and the
+  -- dnsLoss. Diagram.Evolution.MutEntry.Update (MEU) makes the three
+  -- into update "entries" to be applied together for each affected
+  -- mutation.
+
+  -- clone entire type state (mainly for Cor delta; difficult otherwise)
   old_tst <- TS.clone =<< use typeState
-  (enabledMuts, expiredMuts, deltaJoints) <- TS.deltaMutJoints old_tst mut
-  zoom typeState $ TS.pushMut mut -- [APPLY]
+  zoom typeState $ TS.pushMut mut -- [APPLY] on TypeState
   new_tst <- use typeState
   --
 
-  -- DELETE EACH EXPIRED MUT
+  -- (3/3): Joint coverage changes
+  (enabledMuts, expiredMuts, deltaJoints) <- TS.deltaMutJoints old_tst mut
+
+  -- DELETE EXPIRED MUTS
   zoom mutBooks $ mapM_ MB.delete $ Set.toList expiredMuts
   --
 
-  dly <- use doubly
-  CIs _oldTypJT oldTypNdns _ _ <- use typeCIs -- (before getCorDelta modifies)
-  let mutsFlipped = enabledMuts `Set.union` expiredMuts
-  corDelta <- (typeCIs %%== pushMut_CIs dly old_tst new_tst me)
-              <&> (`M.withoutKeys` mutsFlipped)
-
-  -- UPDATE MUT BOOKS --
+  -- (1/3): Pre-mut symbol count changes (n')
+  CIs _ oldTypNdns _ _ <- use typeCIs -- (before getCorDelta modifies)
   ns <- use symCounts
-  getAffectedMuts <- mutBooks `uses` MB.affectedMuts
-  let n'Ils = pushMut_n'Ils ns oldTypNdns mutDdns
+  let mutsFlipped = enabledMuts `Set.union` expiredMuts
+      n'Ils = pushMut_n'Ils ns oldTypNdns mutDdns
       unionIl = M.unionWithKey $ const $ IM.unionWithKey
         (err' . ("duplicate sym count intervals: " ++) . show .:. (,,))
+  getAffectedMuts <- mutBooks `uses` MB.affectedMuts
 
   n'IlsByAffected <- fmap ( maybe M.empty (flip M.withoutKeys mutsFlipped)
                            . foldTree unionIl ) $
     forM (IM.toList n'Ils) $ \(s, n'Il) ->
     M.fromSet (const $ IM.singleton s n'Il) <$> getAffectedMuts s
+  --
 
+  -- (2/3): Correction terms changes
+  dly <- use doubly
+  deltaCor <- (typeCIs %%== pushMut_CIs dly old_tst new_tst me)
+              <&> (`M.withoutKeys` mutsFlipped)
+  --
+
+  -- MAKE UPDATES
   let mkMEU_01 nIl dc = MEU nIl dc CIs.empty
       mutEntryUpdates_01 = M.mergeWithKey (const $ Just .: mkMEU_01)
                            (MEU.fromDCounts <$>) (MEU.fromDCor <$>)
-                           n'IlsByAffected corDelta
+                           n'IlsByAffected deltaCor
   allCIs <- use jointCIs
   let getCIs = mfoldTree . M.elems . M.intersection allCIs
       mutEntryUpdates = M.mergeWithKey
                         (\_ (MEU nIl dcor _) dcis -> Just $ MEU nIl dcor dcis)
                         id (MEU.fromDCIs <$>)
                         mutEntryUpdates_01 (getCIs <$> deltaJoints)
+
+  trace "" traceM $ "Updates: " ++ pShow mutEntryUpdates
+
   -- (debug)
   CIs newTypJT ndns _ _ <- use typeCIs
   str <- use doubly >>= D.toList
@@ -280,6 +301,7 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
         where n = ns U.! s
   --
 
+  -- APPLY UPDATES
   mutEntries <- use $ mutBooks.byMut
   let old_mem = TS.member old_tst
       new_mem = TS.member new_tst
@@ -291,9 +313,8 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
 
   zoom mutBooks $ sequence_ $ M.intersectionWith update
     mutEntries mutEntryUpdates
-  -- </UPDATE MUT BOOKS>
 
-  -- INSERT EACH NEWLY ENABLED MUTS
+  -- INSERT NEWLY ENABLED MUTS
   let ime@(ME imut _ _ _ _) = ME.recip me
   es <- mapM mkMutEntry $ Set.toList $ Set.delete imut enabledMuts
   zoom mutBooks $ mapM_ MB.insert (ime:es)
@@ -316,7 +337,7 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
 -- to be computed explicitly anyway, but remember to filter them out)
 pushMut_CIs :: forall m. PrimMonad m => Doubly (PrimState m) ->
                TypeState (PrimState m) -> TypeState (PrimState m) ->
-               MutEntry -> CIs -> m (Cor, CIs)
+               MutEntry -> CIs -> m (Map Mutation (IntMap Int), CIs)
 pushMut_CIs dly old_tst new_tst me typCIs = fmap toLazy $ case typeOfMut of
   Add -> do
     let superCI :: CI -> m (Maybe (Maybe (CI, [CI])))
@@ -325,7 +346,7 @@ pushMut_CIs dly old_tst new_tst me typCIs = fmap toLazy $ case typeOfMut of
                 sub = fmap not .: TS.member old_tst
                 -- (return .: JT.member mutJT)
 
-        getDelta :: CI -> [CI] -> m Cor
+        getDelta :: CI -> [CI] -> m (Map Mutation (IntMap Int))
         getDelta super subs =
           Cor.getDelta notInMut dly (super, new_tst) (subs, old_tst)
 
@@ -345,7 +366,7 @@ pushMut_CIs dly old_tst new_tst me typCIs = fmap toLazy $ case typeOfMut of
                 sub = fmap not .: TS.member new_tst
                 -- return .: JT.member mutJT
 
-        getDelta :: CI -> [CI] -> m Cor
+        getDelta :: CI -> [CI] -> m (Map Mutation (IntMap Int))
         getDelta super rems = negate <<<$>>>
           Cor.getDelta notInMut dly (super, old_tst) (rems, new_tst)
 
