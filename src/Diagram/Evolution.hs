@@ -47,7 +47,6 @@ import Diagram.Evolution.Math (logFact)
 import qualified Diagram.Evolution.Math as Math
 import Diagram.Evolution.Mutation (Mutation(..), MutType(..))
 import qualified Diagram.Evolution.Mutation as Mut
-import Diagram.Evolution.Correction (Cor)
 import qualified Diagram.Evolution.Correction as Cor
 import Diagram.Evolution.TypeState (TypeState)
 import qualified Diagram.Evolution.TypeState as TS
@@ -246,8 +245,7 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   -- into update "entries" to be applied together for each affected
   -- mutation.
 
-  -- clone entire type state (mainly for Cor delta; difficult otherwise)
-  old_tst <- TS.clone =<< use typeState
+  old_tst <- TS.clone =<< use typeState -- clone entire type state
   zoom typeState $ TS.pushMut mut -- [APPLY] on TypeState
   new_tst <- use typeState
   --
@@ -255,7 +253,7 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   -- (3/3): Joint coverage changes
   (enabledMuts, expiredMuts, deltaJoints) <- TS.deltaMutJoints old_tst mut
 
-  -- DELETE EXPIRED MUTS
+  -- DELETE EXPIRED ENTRIES
   zoom mutBooks $ mapM_ MB.delete $ Set.toList expiredMuts
   --
 
@@ -275,12 +273,13 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   --
 
   -- (2/3): Correction terms changes
+  let outCond = (not .:) $ curry $ flip M.member $ mconcat $ M.elems deltaJoints
   dly <- use doubly
-  deltaCor <- (typeCIs %%== pushMut_CIs dly old_tst new_tst me)
+  deltaCor <- (typeCIs %%== pushMut_CIs outCond dly old_tst new_tst me)
               <&> (`M.withoutKeys` mutsFlipped)
   --
 
-  -- MAKE UPDATES
+  -- MAKE ENTRY UPDATES
   let mkMEU_01 nIl dc = MEU nIl dc CIs.empty
       mutEntryUpdates_01 = M.mergeWithKey (const $ Just .: mkMEU_01)
                            (MEU.fromDCounts <$>) (MEU.fromDCor <$>)
@@ -301,7 +300,7 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
         where n = ns U.! s
   --
 
-  -- APPLY UPDATES
+  -- APPLY ENTRY UPDATES
   mutEntries <- use $ mutBooks.byMut
   let old_mem = TS.member old_tst
       new_mem = TS.member new_tst
@@ -314,7 +313,7 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   zoom mutBooks $ sequence_ $ M.intersectionWith update
     mutEntries mutEntryUpdates
 
-  -- INSERT NEWLY ENABLED MUTS
+  -- INSERT NEWLY ENABLED ENTRIES
   let ime@(ME imut _ _ _ _) = ME.recip me
   es <- mapM mkMutEntry $ Set.toList $ Set.delete imut enabledMuts
   zoom mutBooks $ mapM_ MB.insert (ime:es)
@@ -329,16 +328,17 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
 
 -- WHERE --
 
--- | (Part 1 of pushMut) Given the string, before and after type states
--- of the given mut as well as the CIs of the type before application of
--- the mut, apply the difference on the type CIs and the delta on Cor of
--- all available mutations (may include erroneous corrections on newly
--- enabled muts (Add case) or newly expired muts (Del case), which need
--- to be computed explicitly anyway, but remember to filter them out)
-pushMut_CIs :: forall m. PrimMonad m => Doubly (PrimState m) ->
-               TypeState (PrimState m) -> TypeState (PrimState m) ->
-               MutEntry -> CIs -> m (Map Mutation (IntMap Int), CIs)
-pushMut_CIs dly old_tst new_tst me typCIs = fmap toLazy $ case typeOfMut of
+-- | Given the string, before and after type states of the given mut as
+-- well as the CIs of the type before application of the mut, apply the
+-- difference on the type CIs and the delta on Cor of all available
+-- mutations (may include erroneous corrections on newly enabled muts
+-- (Add case) or newly expired muts (Del case), which need to be
+-- computed explicitly anyway, but remember to filter them out)
+pushMut_CIs :: forall m. PrimMonad m => (Sym -> Sym -> Bool) ->
+  Doubly (PrimState m) -> TypeState (PrimState m) -> TypeState (PrimState m) ->
+  MutEntry -> CIs -> m (Map Mutation (IntMap Int), CIs)
+pushMut_CIs outCond dly old_tst new_tst me typCIs = fmap toLazy $
+  case typeOfMut of
   Add -> do
     let superCI :: CI -> m (Maybe (Maybe (CI, [CI])))
         superCI = CI.superCI dly super sub
@@ -348,7 +348,7 @@ pushMut_CIs dly old_tst new_tst me typCIs = fmap toLazy $ case typeOfMut of
 
         getDelta :: CI -> [CI] -> m (Map Mutation (IntMap Int))
         getDelta super subs =
-          Cor.getDelta notInMut dly (super, new_tst) (subs, old_tst)
+          Cor.getDelta outCond notInMut dly (super, new_tst) (subs, old_tst)
 
     flip execStateT st0 $ forM_ mutCIsL $
       \ci -> (lift (superCI ci) >>=) $ flip whenJust $ \case
@@ -368,7 +368,7 @@ pushMut_CIs dly old_tst new_tst me typCIs = fmap toLazy $ case typeOfMut of
 
         getDelta :: CI -> [CI] -> m (Map Mutation (IntMap Int))
         getDelta super rems = negate <<<$>>>
-          Cor.getDelta notInMut dly (super, old_tst) (rems, new_tst)
+          Cor.getDelta outCond notInMut dly (super, old_tst) (rems, new_tst)
 
     flip execStateT st0 $ forM_ mutCIsL $
       \ci -> (lift (superCI ci) >>=) $ flip whenJust $ \case
@@ -390,12 +390,11 @@ pushMut_CIs dly old_tst new_tst me typCIs = fmap toLazy $ case typeOfMut of
     cisInsert = CIs.insertDisjoint dly
     cisDelete = CIs.deleteExisting dly
 
--- | (Part 2 of pushMut) Given a count vector (before intro, `n`),
--- counts of the symbols in the type to be introduced (negative delta on
--- counts, `-dn`), and deltas of sym counts on that type of a mut (delta
--- delta, `ddn`), return the before/after values of delta on counts
--- (n,n') as well as the delta on the dnsLoss that is incured by the
--- change.
+-- | Given a count vector (before intro, `n`), counts of the symbols in
+-- the type to be introduced (negative delta on counts, `-dn`), and
+-- deltas of sym counts on that type of a mut (delta delta, `ddn`),
+-- return the before/after values of delta on counts (n,n') as well as
+-- the delta on the dnsLoss that is incured by the change.
 pushMut_n'Ils :: U.Vector Count -> IntMap Int -> IntMap Int ->
                   IntMap (Count, Count, Double)
 pushMut_n'Ils ns = IM.mergeWithKey col

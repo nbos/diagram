@@ -102,10 +102,10 @@ jointExtension str (CI hd shd len _ _)
 -- extension within the super-type), but only if this super-CI doesn't
 -- contain another sub-CI on the left of the given CI (for injectivity).
 --
--- Explicitly: returns `Nothing` if the superCI is canonically mapped on
--- by another CI on its left (canceled), `Just Nothing` if the superCI
--- is itself (doesn't extend further), and `Just (Just _)` if there is a
--- strictly larger CI in the super-type to return.
+-- Returns `Nothing` if the superCI is uniquely mapped on by another CI
+-- to its left (canceled). Returns `Just Nothing` if the superCI is
+-- itself (doesn't extend further). Returns `Just (Just _)` if there is
+-- a strictly larger CI in the super-type to return.
 --
 -- Returns the superCI (fst) as well as the remainder CIs from taking
 -- aways all of the given JointType's intervals from the superCI (snd),
