@@ -205,13 +205,14 @@ makeLenses ''DiffState
 difference :: PrimMonad m => Doubly (PrimState m) ->
   Maybe (Sym -> Sym -> m Bool) -> Maybe (Sym -> Sym -> m Bool) ->
   CIs -> CIs -> m (CIs, IntMap Int)
-difference dly memSuper_ memSub_ cisA cisB@(CIs jtB _ bhdB _) = do
+difference dly memSuper_ memSub_ cisA cisB = do
   checkIntegrity_ cisA -- (debug)
   checkIntegrity_ cisB -- (debug)
   traceM $ "\n  CIs.difference called, args  = " ++ pShow (cisA, cisB)
 
-  DiffState bhdA' btlA' dnsA <- flip execStateT (DiffState bhdA btlA IM.empty) $
-    forM_ (IM.elems bhdB) $ \ci@(CI subHd _ _ subTl _) -> (getSuper (traceShowId ci) >>=) $ \case
+  DiffState bhdC btlC cor <- flip execStateT (DiffState bhdA btlA IM.empty) $
+    forM_ (IM.elems bhdB) $ \ci@(CI subHd _ _ subTl _) ->
+    (getSuper (traceShowId ci) >>=) $ \case
       Nothing -> do -- super doesn't start here, but ci is inside it
         traceM "super doesn't start here\n"
         ((diffCor %=) . imUnion) =<< CI.symCounts dly ci
@@ -225,21 +226,26 @@ difference dly memSuper_ memSub_ cisA cisB@(CIs jtB _ bhdB _) = do
         byTailRes %= IM.delete superTl
         ciCounts <- CI.symCounts dly ci
         supCounts <- CI.symCounts dly super
+        traceShowM ("negate <$> ciCounts",negate <$> ciCounts)
+        traceShowM ("supCounts",supCounts)
         diffCor %= imUnion ((negate <$> ciCounts) `imUnion` supCounts)
         forM_ rems $ \r@(CI remHd _ _ remTl _) -> do
           byHeadRes %= IM.insert remHd r
           byTailRes %= IM.insert remTl r
           remCounts <- CI.symCounts dly r
+          traceShowM ("negate <$> remCounts",negate <$> remCounts)
           diffCor %= imUnion (negate <$> remCounts)
 
-  let nsA' = imUnion nsA dnsA
-      res = CIs jtA nsA' bhdA' btlA'
+  traceShowM ("cor",cor)
+  let nsC = nsA `imUnion` (negate <$> (nsB `imUnion` cor))
+      res = CIs jtA nsC bhdC btlC
   traceM $ "  res = " ++ pShow res
   checkIntegrity_ res -- (debug)
-  return (res, dnsA)
+  return (res, cor)
 
   where
     CIs jtA nsA bhdA btlA = cisA
+    CIs jtB nsB bhdB _    = cisB
     memSuper = fromMaybe (return .: JT.member jtA) memSuper_
     memSub   = fromMaybe (return .: JT.member jtB) memSub_
     getSuper = lift . CI.superCI dly memSuper memSub
