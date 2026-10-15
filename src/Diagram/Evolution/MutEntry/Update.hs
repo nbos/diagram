@@ -155,6 +155,8 @@ apply old_mem prevMutType new_mem n'Of dly me meu = do
       if even r then r `div` 2
       else err' $ "expected even number: " ++ show (r, dddns)
 
+  CIs.checkIntegrityM dly new_cis -- (debug)
+
   return $ ME mut new_dnsLoss new_ddns new_dnm new_cis
 
   where

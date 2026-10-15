@@ -160,7 +160,8 @@ validate jt str n'Of e@(ME mut loss ddns dnm (CIs mutJT mutCounts _ _))
             ++ "  mut: " ++ pShow mut ++ "\n"
             ++ "  sym: " ++ show s   ++ "\n"
             ++ "  n': "  ++ show n'  ++ "\n"
-            ++ "  verif_n': " ++ show verif_n' ++ "\n"
+            ++ "  verif_n': " ++ show verif_n' ++ "\n\n"
+            ++ "Full entry:\n" ++ pShow e ++ "\n"
 
           | n'' /= verif_n'' -> err' $
             "Count after mut (n'') is not what it should be\n"
@@ -176,7 +177,8 @@ validate jt str n'Of e@(ME mut loss ddns dnm (CIs mutJT mutCounts _ _))
             ++ ", cor: " ++ show (ddn - fromMaybe 0 (mutCounts IM.!? s)) ++ "))\n"
             ++ "  verif_n: "   ++ show verif_n   ++ "\n"
             ++ "  verif_n': "  ++ show verif_n'  ++ "\n"
-            ++ "  verif_n'': " ++ show verif_n'' ++ "\n"
+            ++ "  verif_n'': " ++ show verif_n'' ++ "\n\n"
+            ++ "Full entry:\n" ++ pShow e ++ "\n"
 
           | otherwise -> logFact n' - logFact n''
 

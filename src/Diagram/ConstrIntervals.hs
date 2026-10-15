@@ -69,11 +69,11 @@ join = fst .: join_
 join_ :: CIs -> CIs -> (CIs, IntMap Int)
 join_ ciAs ciBs = flip evalState (JoinState ciAs ciBs IM.empty) $ do
   traceM "Called join_"
-  traceM $ "ciAs = " ++ pShow ciAs
   checkIntegrity_ ciAs
+  traceM $ "ciAs (valid) = " ++ pShow ciAs
 
-  traceM $ "ciBs = " ++ pShow ciBs
   checkIntegrity_ ciBs
+  traceM $ "ciBs (valid) = " ++ pShow ciBs
 
   unless (uB0 `UT.disjoint` uA1) $ -- short-circuit intersection (O(m) <<< O(N))
     uses2 (_B.byHead) (_A.byTail) IM.intersection
@@ -92,8 +92,10 @@ join_ ciAs ciBs = flip evalState (JoinState ciAs ciBs IM.empty) $ do
   let ns' = -- L.foldl' (flip $ uc alter) ns (IM.toList dns)
         IM.mergeWithKey (\_ n dn -> nothingIf (==0) (n + dn))
         id id ns cor
+      res = CIs jt ns' bhd btl
 
-  return ( checkIntegrityId $ CIs jt ns' bhd btl -- (debug)
+  traceM $ "res = " ++ pShow res
+  return ( checkIntegrityId res -- (debug)
          , cor )
 
   where

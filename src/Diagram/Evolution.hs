@@ -187,7 +187,13 @@ step = do
     return False
 
     else do
-    traceM $ "Pushing mut " ++ pShow mut ++ "\n"
+    let msg = "-- Pushing mut " ++ show mut ++ " --"
+        bar = replicate (length msg) '-'
+    traceM bar
+    traceM msg
+    traceM bar
+    traceM ""
+
     pushMut e
     trace "" traceM " -------------------- finished push --------------------"
     return True
@@ -253,6 +259,15 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   -- (3/3): Joint coverage changes
   (enabledMuts, expiredMuts, deltaJoints) <- TS.deltaMutJoints old_tst mut
 
+  traceM $ "Enabled muts: " ++ pShow enabledMuts
+  traceM ""
+
+  traceM $ "Expired muts: " ++ pShow expiredMuts
+  traceM ""
+
+  traceM $ "Moved joints: " ++ pShow (M.keys <$> deltaJoints)
+  traceM ""
+
   -- DELETE EXPIRED ENTRIES
   zoom mutBooks $ mapM_ MB.delete $ Set.toList expiredMuts
   --
@@ -273,7 +288,8 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   --
 
   -- (2/3): Correction terms changes
-  let outCond = (not .:) $ curry $ flip M.member $ mconcat $ M.elems deltaJoints
+  let movedJoints = mconcat $ M.elems deltaJoints
+      outCond = (not .:) $ curry $ flip M.member movedJoints
   dly <- use doubly
   deltaCor <- (typeCIs %%== pushMut_CIs outCond dly old_tst new_tst me)
               <&> (`M.withoutKeys` mutsFlipped)
@@ -338,6 +354,7 @@ pushMut_CIs :: forall m. PrimMonad m => (Sym -> Sym -> Bool) ->
   Doubly (PrimState m) -> TypeState (PrimState m) -> TypeState (PrimState m) ->
   MutEntry -> CIs -> m (Map Mutation (IntMap Int), CIs)
 pushMut_CIs outCond dly old_tst new_tst me typCIs = fmap toLazy $
+  trace ("mutCIs: " ++ pShow mutCIs) $
   case typeOfMut of
   Add -> do
     let superCI :: CI -> m (Maybe (Maybe (CI, [CI])))
@@ -380,7 +397,7 @@ pushMut_CIs outCond dly old_tst new_tst me typCIs = fmap toLazy $
           _2 %== foldr (<=<) (cisDelete super) -- del first
                              (cisInsert <$> rems) -- inserts after
   where
-    ME mut _ _ _ (CIs mutJT _ mutCIsBhd _) = me
+    ME mut _ _ _ mutCIs@(CIs mutJT _ mutCIsBhd _) = me
     typeOfMut = Mut.typeOfMut mut
     -- we modify the JT here, and do all the insert-deleting in the loop
     st0 = M.empty :!: over CIs.jointType (Mut.unsafeApply mut) typCIs

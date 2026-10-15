@@ -232,7 +232,8 @@ checkIntegrity (CIs jt ns bhd btl)
     btlCIs = L.sort $ IM.elems btl
     cisL = bhdCIs
     minCounts = L.foldl' (\m s -> IM.insertWith (+) s (1::Int) m) IM.empty $
-                foldr (\(CI _ shd _ _ stl) l -> shd:stl:l) [] cisL
+                foldr (\(CI _ shd len _ stl) l ->
+                         if even len then shd:stl:l else shd:l) [] cisL
 
 -- | Errorless version of @checkIntegrity@
 valid :: PrimMonad m => Doubly (PrimState m) -> CIs -> m Bool
