@@ -116,10 +116,13 @@ superCI :: forall m. PrimMonad m => Doubly (PrimState m) ->
 superCI dly super sub (CI hd0 shd0 len0 tl0 stl0) = do
 
   bwd <- (D.prev dly hd0 >>=) $ \case
-    Nothing -> return $ Just Nothing -- same
+    Nothing -> -- trace ("nothing before " ++ show hd0)
+               return $ Just Nothing -- same
     Just (phd, sphd) -> (super sphd shd0 >>=) $ \case
-      False -> return $ Just Nothing -- same
-      True -> goBwd hd0 shd0 phd sphd 2 -- tl first
+      False -> -- trace ("not super " ++ show (sphd,shd0))
+               return $ Just Nothing -- same
+      True -> -- trace ("super " ++ show (sphd,shd0))
+              goBwd hd0 shd0 phd sphd 2 -- tl first
 
   case bwd of
     Nothing -> return Nothing -- canceled (escaladed from expandBwd)
@@ -145,12 +148,17 @@ superCI dly super sub (CI hd0 shd0 len0 tl0 stl0) = do
     goBwd tl stl = go
       where
         go hd shd !len = (D.prev dly hd >>=) $ \case
-          Nothing -> return $ Just $ Just ci -- eos
+          Nothing -> -- trace ("bwd:nothing before " ++ show hd)
+                     return $ Just $ Just ci -- eos
           Just (phd, sphd) -> (super sphd shd >>=) $ \case
-            False -> return $ Just $ Just ci -- end
-            True -> (sub sphd shd >>=) $ \case
-              True -> return Nothing -- canceled
-              False -> go phd sphd (len+1) -- continue
+            False -> -- trace ("bwd:not super " ++ show (sphd,shd))
+                     return $ Just $ Just ci -- end
+            True -> -- trace ("bwd:super " ++ show (sphd,shd))
+                    (sub sphd shd >>=) $ \case
+              True -> -- trace ("bwd:sub " ++ show (sphd,shd))
+                      return Nothing -- canceled
+              False -> -- trace ("bwd:not sub " ++ show (sphd,shd))
+                       go phd sphd (len+1) -- continue
           where ci = CI hd shd len tl stl
 
     goFwd hd shd = goRem [] 1 hd shd -- (len+remLen-1) overlap logic
@@ -158,22 +166,32 @@ superCI dly super sub (CI hd0 shd0 len0 tl0 stl0) = do
         goRem rems len remHd remShd = go
           where -- a remainder is inside TypeState but outside jt
             go !remLen tl stl = (D.next dly tl >>=) $ \case
-              Nothing -> return res -- eos
+              Nothing -> -- trace ("rem:nothing before " ++ show tl)
+                         return res -- eos
               Just (ntl, sntl) -> (super stl sntl >>=) $ \case
-                True -> (sub stl sntl >>=) $ \case
-                  True -> goJT rems' (len+remLen-1) ntl sntl -- switch
-                  False -> go (remLen+1) ntl sntl -- cont.
-                False -> return res -- end
+                True -> -- trace ("rem:super " ++ show (stl,sntl))
+                        (sub stl sntl >>=) $ \case
+                  True -> -- trace ("rem:sub " ++ show (stl,sntl))
+                          goJT rems' (len+remLen-1) ntl sntl -- switch
+                  False -> -- trace ("rem:not sub " ++ show (stl,sntl))
+                           go (remLen+1) ntl sntl -- cont.
+                False -> -- trace ("rem:not super " ++ show (stl,sntl))
+                         return res -- end
               where res = ( CI hd shd (len+remLen-1) tl stl
                           , reverse rems' )
                     rems' = (CI remHd remShd remLen tl stl):rems
 
         goJT rems !len tl stl = (D.next dly tl >>=) $ \case
-          Nothing -> return res -- eos
+          Nothing -> -- trace ("jt:nothing before " ++ show tl)
+                     return res -- eos
           Just (ntl, sntl) -> (super stl sntl >>=) $ \case
-            True -> (sub stl sntl >>=) $ \case
-              True -> goJT rems (len+1) ntl sntl -- cont.
-              False -> goRem rems len tl stl 2 ntl sntl -- switch
-            False -> return res -- end
+            True -> -- trace ("jt:super " ++ show (stl,sntl))
+                    (sub stl sntl >>=) $ \case
+              True -> -- trace ("jt:sub " ++ show (stl,sntl))
+                      goJT rems (len+1) ntl sntl -- cont.
+              False -> -- trace ("jt:not sub " ++ show (stl,sntl))
+                       goRem rems len tl stl 2 ntl sntl -- switch
+            False -> -- trace ("jt:not super " ++ show (stl,sntl))
+                     return res -- end
           where res = ( CI hd shd len tl stl
                       , reverse rems )

@@ -68,11 +68,11 @@ join = fst .: join_
 -- of the returned set of intervals (snd)
 join_ :: CIs -> CIs -> (CIs, IntMap Int)
 join_ ciAs ciBs = flip evalState (JoinState ciAs ciBs IM.empty) $ do
-  traceM "Called join_"
+  traceM "  CIs.join_ called"
   checkIntegrity_ ciAs
-  traceM $ "ciAs (valid) = " ++ pShow ciAs
+  traceM $ "  ciAs (valid) = " ++ pShow ciAs
   checkIntegrity_ ciBs
-  traceM $ "ciBs (valid) = " ++ pShow ciBs
+  traceM $ "  ciBs (valid) = " ++ pShow ciBs
 
   -- short-circuit intersection (O(m) <<< O(N)) --
   unless (uB0 `UT.disjoint` uA1) $
@@ -188,8 +188,8 @@ debug_join_ dly cisA cisB = do
 ----------------
 
 data DiffState = DiffState
-  { _byHeadRes :: IntMap CI
-  , _byTailRes :: IntMap CI
+  { _byHeadRes :: IntMap CI -- sometimes diff is only called for the delta
+  , _byTailRes :: IntMap CI -- sometimes diff is only called for the delta
   , _diffCor :: !(IntMap Int) -- sym count delta accumulator
 } deriving (Show,Eq)
 makeLenses ''DiffState
@@ -208,16 +208,19 @@ difference :: PrimMonad m => Doubly (PrimState m) ->
 difference dly memSuper_ memSub_ cisA cisB@(CIs jtB _ bhdB _) = do
   checkIntegrity_ cisA -- (debug)
   checkIntegrity_ cisB -- (debug)
-  traceM $ " CIs.difference called, args  = " ++ pShow (cisA, cisB)
+  traceM $ "\n  CIs.difference called, args  = " ++ pShow (cisA, cisB)
 
   DiffState bhdA' btlA' dnsA <- flip execStateT (DiffState bhdA btlA IM.empty) $
-    forM_ (IM.elems bhdB) $ \ci@(CI subHd _ _ subTl _) -> (getSuper ci >>=) $ \case
+    forM_ (IM.elems bhdB) $ \ci@(CI subHd _ _ subTl _) -> (getSuper (traceShowId ci) >>=) $ \case
       Nothing -> do -- super doesn't start here, but ci is inside it
+        traceM "super doesn't start here\n"
         ((diffCor %=) . imUnion) =<< CI.symCounts dly ci
       Just Nothing -> do -- super is identical, remove indexes, cor is 0
+        traceM "super is self\n"
         byHeadRes %= IM.delete subHd
         byTailRes %= IM.delete subTl
       Just (Just (super@(CI superHd _ _ superTl _), rems)) -> do -- case super
+        traceM $ "super = " ++ pShow super ++ "\n"
         byHeadRes %= IM.delete superHd
         byTailRes %= IM.delete superTl
         ciCounts <- CI.symCounts dly ci
@@ -231,7 +234,7 @@ difference dly memSuper_ memSub_ cisA cisB@(CIs jtB _ bhdB _) = do
 
   let nsA' = imUnion nsA dnsA
       res = CIs jtA nsA' bhdA' btlA'
-  traceM $ " res = " ++ pShow res
+  traceM $ "  res = " ++ pShow res
   checkIntegrity_ res -- (debug)
   return (res, dnsA)
 

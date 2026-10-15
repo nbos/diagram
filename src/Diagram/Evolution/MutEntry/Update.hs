@@ -89,10 +89,9 @@ fromDCIs cis = empty{ _onCIs = cis }
 -- whether it's from the TypeState before or after the application
 -- doesn't matter), and a reference string, apply the given
 -- MutEntryUpdate to the given MutEntry.
-apply :: PrimMonad m => (Sym -> Sym -> m Bool) -> MutType ->
-         (Sym -> Sym -> m Bool) -> (Sym -> Count) -> Doubly (PrimState m) ->
-         MutEntry -> Update -> m MutEntry
-apply old_mem prevMutType new_mem n'Of dly me meu = do
+apply :: PrimMonad m => MutType -> (Sym -> Sym -> m Bool) -> (Sym -> Count) ->
+         Doubly (PrimState m) -> MutEntry -> Update -> m MutEntry
+apply prevMutType new_mem n'Of dly me meu = do
   let ME mut old_dnsLoss old_ddns old_dnm old_cis@(CIs _old_mutJT _ _ _) = me
       MEU n'Ils dCor dCIs@(CIs dcis_jt dcis_ns dcis_bhd _) = meu
 
@@ -103,7 +102,7 @@ apply old_mem prevMutType new_mem n'Of dly me meu = do
     -- so the cor on the introduced/eliminated joints has to be computed
     -- from scratch (dCor')
     Add -> return $ CIs.join_ old_cis dCIs
-    Del -> CIs.difference dly (Just old_mem) Nothing old_cis dCIs
+    Del -> CIs.difference dly Nothing Nothing old_cis dCIs
 
   let super s0 s1 = (JT.member new_mutJT s0 s1 ||) <$> new_mem s0 s1
       sub = return .: JT.member dcis_jt
