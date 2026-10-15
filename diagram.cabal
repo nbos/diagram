@@ -86,6 +86,7 @@ executable diagram
                       Diagram.Information
                       Diagram.ConstrInterval
                       Diagram.ConstrIntervals
+                      Diagram.ConstrIntervals.Internal
                       Diagram.Util
 
     -- LANGUAGE extensions used by modules in this package.
