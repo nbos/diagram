@@ -211,15 +211,16 @@ infixr 2 >.>
 -- Lists --
 -----------
 
--- | Balanced reduce `f (f a b) (f c d)` instead of foldr `f a (f b (f c
--- d))` or foldl `f a (f b (f c d))`
+-- | Balanced, strict, reduce `f (f a b) (f c d)` instead of foldr `f a
+-- (f b (f c d))` or foldl `f a (f b (f c d))`
 foldTree :: (a -> a -> a) -> [a] -> Maybe a
 foldTree _ [] = Nothing
 foldTree _ [a] = Just a
 foldTree f as  = foldTree f (pairs as)
   where pairs []         = []
         pairs [a]        = [a]
-        pairs (a:b:rest) = f a b : pairs rest
+        pairs (a:b:rest) = let !res = f a b
+                           in res : pairs rest
 
 -- | Balanced reduce `f (f a b) (f c d)` instead of foldr `f a (f b (f c
 -- d))` or foldl `f a (f b (f c d))`. Returns `mempty` if the list is

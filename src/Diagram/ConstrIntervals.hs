@@ -32,7 +32,6 @@ import Diagram.Util
 
 import Diagram.ConstrIntervals.Internal
 
-
 -- This module only contains the join and difference operations, with
 -- their state structs and lenses. CIs struct, construction and debug
 -- functions are in Diagram.ConstrIntervals.Internal.
@@ -69,6 +68,12 @@ join = fst .: join_
 -- of the returned set of intervals (snd)
 join_ :: CIs -> CIs -> (CIs, IntMap Int)
 join_ ciAs ciBs = flip evalState (JoinState ciAs ciBs IM.empty) $ do
+  traceM "Called join_"
+  traceM $ "ciAs = " ++ pShow ciAs
+  checkIntegrity_ ciAs
+
+  traceM $ "ciBs = " ++ pShow ciBs
+  checkIntegrity_ ciBs
 
   unless (uB0 `UT.disjoint` uA1) $ -- short-circuit intersection (O(m) <<< O(N))
     uses2 (_B.byHead) (_A.byTail) IM.intersection
@@ -88,7 +93,8 @@ join_ ciAs ciBs = flip evalState (JoinState ciAs ciBs IM.empty) $ do
         IM.mergeWithKey (\_ n dn -> nothingIf (==0) (n + dn))
         id id ns cor
 
-  return (CIs jt ns' bhd btl, cor)
+  return ( checkIntegrityId $ CIs jt ns' bhd btl -- (debug)
+         , cor )
 
   where
     JT uA0 uA1 = ciAs^.jointType
