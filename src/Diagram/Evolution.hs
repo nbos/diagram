@@ -73,6 +73,7 @@ data EvolutionState s = EvolutionState
   , _jointCIs  :: !(Joints CIs) -- allCIs :: (s0,s1) -> CIs
 
   -- current Type state (evolves/mutates)
+  , _generation :: !Int -- number of mutations applied
   , _typeState  :: !(TypeState s) -- sym entries :: [(mem, coIn, deps, coOut)]
   , _typeCIs    :: !CIs -- joint type CIs
   , _jointCount :: !Int -- nm (dnm)
@@ -182,20 +183,32 @@ step = do
   str <- D.toList =<< use doubly -- (debug)
   traceM $ pShowStrMut mut mutJT typJT str
 
+  n <- use generation
+
   if ddInfo > 0
     then do
     return False
 
     else do
     let msg = "-- Pushing mut " ++ show mut ++ " --"
-        bar = replicate (length msg) '-'
-    traceM bar
-    traceM msg
-    traceM bar
+        msg_len = length msg
+        bot_bar = replicate msg_len '-'
+        top_bar_label = '[' : show n ++ [']']
+        label_len = length top_bar_label
+        top_bar_left_side_len = (msg_len - label_len) `div` 2
+        top_bar_left_side = replicate top_bar_left_side_len '-'
+        top_bar_right_side = replicate (msg_len - label_len
+                                        - top_bar_left_side_len) '-'
+
+    traceM $ ' ':(top_bar_left_side ++ top_bar_label ++ top_bar_right_side)
+    traceM $ ' ':msg
+    traceM $ ' ':bot_bar
     traceM ""
 
     pushMut e
-    trace "" traceM " -------------------- finished push --------------------"
+    generation += 1 -- inc
+    trace "" traceM $ " -------------------- Finished push "
+      ++ top_bar_label ++ " --------------------"
     return True
 
 ddInformation :: PrimMonad m => MutEntry -> EvolutionT m Double
@@ -494,6 +507,7 @@ init_ m bigN dly ns allCIs (jt, memJointCIs) = do
                           , _doubly     = dly
                           , _symCounts  = ns
                           , _jointCIs   = allCIs
+                          , _generation = 0
                           , _typeState  = tst
                           , _typeCIs    = memCIs
                           , _jointCount = nm
@@ -541,9 +555,9 @@ err :: String -> a
 err = error . ("Evolution." ++)
 
 validate :: PrimMonad m => EvolutionState (PrimState m) -> m ()
-validate (EvolutionState bigN dly ns allCIs tst memCIs nm books) = do
+validate (EvolutionState bigN dly ns allCIs _ tst memCIs nm books) = do
   st' <- init m bigN dly ns allCIs jt
-  let EvolutionState _ _ _ _ tst' memCIs' nm' books' = st'
+  let EvolutionState _ _ _ _ _ tst' memCIs' nm' books' = st'
 
   unless (nm == nm') $
     err'' "joint counts (total)" (nm, nm')
