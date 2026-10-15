@@ -136,7 +136,7 @@ fromStream_0 is0@(i0,s0) ss !m = (S.next ss >>=) $ \case
 -- the joint type.
 deleteExisting :: PrimMonad m => Doubly (PrimState m) -> CI -> CIs -> m CIs
 deleteExisting dly (CI hd shd 2 tl stl) (CIs jt ns bhd btl) = do
-  checkIntegrityM dly res -- (debug)
+  checkIntervalsIntegrity dly res -- (debug)
   pure res
   where
     res = CIs{ _jointType = jt
@@ -152,7 +152,7 @@ deleteExisting dly ci@(CI hd _ _ tl _) (CIs jt ns bhd btl) = do
                               nothingIf (== 0) .: (-)
                , _byHead = IM.delete hd bhd
                , _byTail = IM.delete tl btl }
-  checkIntegrityM dly res -- (debug)
+  checkIntervalsIntegrity dly res -- (debug)
   return res
 
 -- | Insert a CI which is not present, nor overlapping with any interval
@@ -161,7 +161,7 @@ deleteExisting dly ci@(CI hd _ _ tl _) (CIs jt ns bhd btl) = do
 -- the joint type.
 insertDisjoint :: PrimMonad m => Doubly (PrimState m) -> CI -> CIs -> m CIs
 insertDisjoint dly ci@(CI hd shd 2 tl stl) (CIs jt ns bhd btl) = do
-  checkIntegrityM dly res -- (debug)
+  checkIntervalsIntegrity dly res -- (debug)
   pure res
   where
     res = CIs{ _jointType = jt
@@ -175,7 +175,7 @@ insertDisjoint dly ci@(CI hd _ _ tl _) (CIs jt ns bhd btl) = do
                , _symCounts = IM.unionWith (+) dns ns
                , _byHead = IM.insert hd ci bhd
                , _byTail = IM.insert tl ci btl }
-  checkIntegrityM dly res -- (debug)
+  checkIntervalsIntegrity dly res -- (debug)
   return res
 
 err :: String -> a
@@ -185,47 +185,17 @@ err = error . ("ConstrIntervals." ++)
 -- DEBUG --
 -----------
 
-checkIntegrityM :: PrimMonad m => Doubly (PrimState m) -> CIs -> m ()
-checkIntegrityM dly (CIs jt ns bhd btl)
-  | odd (sum ns) = err' $ "sum of counts is odd: " ++ show ns
-  | bhdCIs /= btlCIs =
-      err' $ "byHead and byTail don't contain the same CI's: " ++ show (bhd,btl)
-  | otherwise = do
-      ijts <- concat <$> mapM (CI.jointExtension dly) cisL
-      let (s0s, s1s) = unzip $ snd <$> ijts
-          jt_verif = JT.fromLists s0s s1s
-      when (jt /= jt_verif) $
-        err' $ "type doesn't correspond to member joints:\nis:\n"
-        ++ show jt ++ "\nshould be:\n" ++ show jt_verif ++ "\n"
-      --
-      ns_verif <- IM.unionsWith (+) <$> mapM (CI.symCounts dly) cisL
-      when (ns /= ns_verif) $
-        err' $ "sym counts don't match extension's: " ++ show (ns, ns_verif)
-  where
-    err' = err . ("checkIntegrity: " ++)
-    bhdCIs = L.sort $ IM.elems bhd
-    btlCIs = L.sort $ IM.elems btl
-    cisL = bhdCIs
-
-checkIntegrityId :: CIs -> CIs
-checkIntegrityId cis = checkIntegrity cis cis
-
-checkIntegrity_ :: Monad m => CIs -> m ()
-checkIntegrity_ cis = checkIntegrity cis $ return ()
-
+-- PURE --
 -- | Pure version of checkIntegrityM, doesn't check against a string.
 checkIntegrity :: CIs -> a -> a
-checkIntegrity (CIs jt ns bhd btl)
+checkIntegrity cis@(CIs _ ns bhd btl)
   | odd (sum ns) = err' $ "sum of counts is odd: " ++ show ns
   | bhdCIs /= btlCIs =
       err' $ "byHead and byTail don't contain the same CI's: " ++ show (bhd,btl)
   | not (and (IM.intersectionWith (<=) minCounts ns)) =
       err' $ "recorded symbol counts impossibly low: "
       ++ show ((cisL,ns),minCounts)
-  | otherwise = foldr (.) id $ (<$> cisL) $ \ci@(CI _ shd _ _ stl) ->
-      if JT.member jt shd stl then id
-      else err' $ "edges of interval " ++ show ci
-           ++ " don't fit in type " ++ show jt
+  | otherwise = checkIntervalsAgainstType cis
   where
     err' = err . ("checkIntegrity: " ++)
     bhdCIs = L.sort $ IM.elems bhd
@@ -235,6 +205,53 @@ checkIntegrity (CIs jt ns bhd btl)
                 foldr (\(CI _ shd len _ stl) l ->
                          if even len then shd:stl:l else shd:l) [] cisL
 
+checkIntegrityId :: CIs -> CIs
+checkIntegrityId cis = checkIntegrity cis cis
+
+checkIntegrity_ :: Monad m => CIs -> m ()
+checkIntegrity_ cis = checkIntegrity cis $ return ()
+
+checkIntervalsAgainstType :: CIs -> a -> a
+checkIntervalsAgainstType (CIs jt _ bhd _) = foldr (.) id $
+  (<$> IM.elems bhd) $ \ci@(CI _ shd _ _ stl) ->
+                 if JT.member jt shd stl then id
+                 else err $ "checkIntervalsAgainstType: edges of interval "
+                      ++ show ci ++ " don't fit in type " ++ show jt
+
+-- MONADIC --
+checkIntegrityM :: PrimMonad m => Doubly (PrimState m) -> CIs -> m ()
+checkIntegrityM dly cis = checkIntervalsIntegrity dly cis
+                          >> checkJointsAgainstType dly cis
+-- where --
+
+-- | Don't check against type, so this can be used before/after manual
+-- editing of the interval set before/after updating the type
+checkIntervalsIntegrity :: PrimMonad m => Doubly (PrimState m) -> CIs -> m ()
+checkIntervalsIntegrity dly (CIs _ ns bhd btl)
+  | odd (sum ns) = err' $ "sum of counts is odd: " ++ show ns
+  | bhdCIs /= btlCIs =
+      err' $ "byHead and byTail don't contain the same CI's: " ++ show (bhd,btl)
+  | otherwise = do
+      ns_verif <- IM.unionsWith (+) <$> mapM (CI.symCounts dly) cisL
+      when (ns /= ns_verif) $
+        err' $ "sym counts don't match extension's: " ++ show (ns, ns_verif)
+  where
+    err' = err . ("checkIntegrity: " ++)
+    bhdCIs = L.sort $ IM.elems bhd
+    btlCIs = L.sort $ IM.elems btl
+    cisL = bhdCIs
+
+-- | Check against the type
+checkJointsAgainstType :: PrimMonad m => Doubly (PrimState m) -> CIs -> m ()
+checkJointsAgainstType dly (CIs jt _ bhd _) = do
+  ijts <- concat <$> mapM (CI.jointExtension dly) (IM.elems bhd)
+  let (s0s, s1s) = unzip $ snd <$> ijts
+      jt_verif = JT.fromLists s0s s1s
+  when (jt /= jt_verif) $
+    err $ "checkJointsAgainstType: type doesn't correspond to member joints:"
+    ++ "\nis:\n" ++ show jt ++ "\nshould be:\n" ++ show jt_verif ++ "\n"
+
+-- BOOLEAN --
 -- | Errorless version of @checkIntegrity@
 valid :: PrimMonad m => Doubly (PrimState m) -> CIs -> m Bool
 valid dly (CIs jt ns bhd btl) = do

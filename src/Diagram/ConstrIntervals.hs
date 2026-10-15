@@ -71,19 +71,22 @@ join_ ciAs ciBs = flip evalState (JoinState ciAs ciBs IM.empty) $ do
   traceM "Called join_"
   checkIntegrity_ ciAs
   traceM $ "ciAs (valid) = " ++ pShow ciAs
-
   checkIntegrity_ ciBs
   traceM $ "ciBs (valid) = " ++ pShow ciBs
 
-  unless (uB0 `UT.disjoint` uA1) $ -- short-circuit intersection (O(m) <<< O(N))
+  -- short-circuit intersection (O(m) <<< O(N)) --
+  unless (uB0 `UT.disjoint` uA1) $
     uses2 (_B.byHead) (_A.byTail) IM.intersection
     >>= mapM_ go
+  --
 
-  unless (uA0 `UT.disjoint` uB1) $ do -- short-circuit intersection (O(m) <<< O(N))
+  -- short-circuit intersection (O(m) <<< O(N)) --
+  unless (uA0 `UT.disjoint` uB1) $ do
     cols <- uses2 (_A.byHead) (_B.byTail) IM.intersection
     modify $ \(JoinState a b d) -> JoinState b a d -- A <--> B
     mapM_ go cols
     modify $ \(JoinState b a d) -> JoinState a b d -- B <--> A
+  --
 
   -- fold new sym count deltas into the counts map
   cor <- use joinCor

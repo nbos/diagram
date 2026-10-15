@@ -371,11 +371,11 @@ pushMut_CIs outCond dly old_tst new_tst me typCIs = fmap toLazy $
       \ci -> (lift (superCI ci) >>=) $ flip whenJust $ \case
         Nothing -> do -- super == ci
           (_1 %=) . Cor.union =<< lift (getDelta ci [])
-          _2 %== cisInsert ci
+          _2 %== insert1 ci
         Just (super, subs) -> do -- super > ci
           (_1 %=) . Cor.union =<< lift (getDelta super subs)
-          _2 %== foldr (>=>) (cisInsert super) -- insert after
-                             (cisDelete <$> subs) -- dels first
+          _2 %== foldr (>=>) (insert1 super) -- insert after
+                             (delete1 <$> subs) -- dels first
   Del -> do
     let superCI :: CI -> m (Maybe (Maybe (CI, [CI])))
         superCI = CI.superCI dly super sub
@@ -391,11 +391,11 @@ pushMut_CIs outCond dly old_tst new_tst me typCIs = fmap toLazy $
       \ci -> (lift (superCI ci) >>=) $ flip whenJust $ \case
         Nothing -> do -- super == ci
           (_1 %=) . Cor.union =<< lift (getDelta ci [])
-          _2 %== cisDelete ci
+          _2 %== delete1 ci
         Just (super, rems) -> do -- super > ci
           (_1 %=) . Cor.union =<< lift (getDelta super rems)
-          _2 %== foldr (<=<) (cisDelete super) -- del first
-                             (cisInsert <$> rems) -- inserts after
+          _2 %== foldr (<=<) (delete1 super) -- del first
+                             (insert1 <$> rems) -- inserts after
   where
     ME mut _ _ _ mutCIs@(CIs mutJT _ mutCIsBhd _) = me
     typeOfMut = Mut.typeOfMut mut
@@ -404,8 +404,8 @@ pushMut_CIs outCond dly old_tst new_tst me typCIs = fmap toLazy $
 
     mutCIsL = IM.elems mutCIsBhd
     notInMut = not .: JT.member mutJT
-    cisInsert = CIs.insertDisjoint dly
-    cisDelete = CIs.deleteExisting dly
+    insert1 = CIs.insertDisjoint dly
+    delete1 = CIs.deleteExisting dly
 
 -- | Given a count vector (before intro, `n`), counts of the symbols in
 -- the type to be introduced (negative delta on counts, `-dn`), and
