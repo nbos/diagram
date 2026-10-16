@@ -96,9 +96,10 @@ fromDCIs is cis = empty{ _onCIsJT = is
 -- whether it's from the TypeState before or after the application
 -- doesn't matter), and a reference string, apply the given
 -- MutEntryUpdate to the given MutEntry.
-apply :: PrimMonad m => MutType -> (Sym -> Sym -> m Bool) -> (Sym -> Count) ->
-         Doubly (PrimState m) -> MutEntry -> Update -> m MutEntry
-apply prevMutType new_mem n'Of dly me meu = do
+apply :: PrimMonad m => (Sym -> Sym -> m Bool) -> MutType ->
+  (Sym -> Sym -> m Bool) -> (Sym -> Count) -> Doubly (PrimState m) ->
+  MutEntry -> Update -> m MutEntry
+apply _old_mem prevMutType new_mem n'Of dly me meu = do
   let ME mut old_dnsLoss old_ddns old_dnm old_cis@(CIs _old_mutJT _ _ _) = me
       MEU n'Ils dCor cis_djt dCIs@(CIs dcis_jt dcis_ns dcis_bhd _) = meu
 
@@ -115,16 +116,19 @@ apply prevMutType new_mem n'Of dly me meu = do
       let deletes :: UnionType -> UnionType
           deletes = foldr (.) id $ UT.deleteMember <$> IS.toList cis_djt
       in _1.CIs.jointType %~ case mut of
-                               DelLeft _ -> JT.right %~ deletes
-                               DelRight _ -> JT.left %~ deletes
+                               AddLeft  _ -> JT.right %~ deletes
+                               DelLeft  _ -> JT.right %~ deletes
+                               AddRight _ -> JT.left  %~ deletes
+                               DelRight _ -> JT.left  %~ deletes
                                _else -> id
 
-  let super s0 s1 = -- /!\ FIXME: not true coming from a Del mut
+  let super s0 s1 = -- FIXME: not true coming from a Del mut, right?
         (JT.member new_mutJT s0 s1 ||) <$> new_mem s0 s1
       sub = return .: JT.member dcis_jt
-  dCor' <- fromMaybe IM.empty . foldTree imUnion
-           . fmap Cor.onAddMut_ . catMaybes . catMaybes
-           <$> mapM (compose super sub dly) (IM.elems dcis_bhd)
+  dCor' <- fromMaybe IM.empty . foldTree imUnion -- join
+           . fmap Cor.onAddMut_ -- get Cor
+           . catMaybes . catMaybes <$> mapM (compose super sub dly)
+                                            (IM.elems dcis_bhd)
   let
     -- ddns --
     new_ddns = IM.mergeWithKey (\_ (_, ddn') _ -> nothingIf (==0) ddn')

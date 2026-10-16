@@ -346,11 +346,12 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
 
   -- APPLY ENTRY UPDATES
   mutEntries <- use $ mutBooks.byMut
-  let new_mem = TS.member new_tst
+  let old_mem = TS.member old_tst
+      new_mem = TS.member new_tst
       update :: MutEntry -> Update -> StateT (MutBooks (PrimState m)) m ()
       update = MB.update . ME.validate newTypJT str n'Of <==< apply
       apply :: MutEntry -> Update -> StateT (MutBooks (PrimState m)) m MutEntry
-      apply = MEU.apply typeOfMut new_mem n'Of dly
+      apply = MEU.apply old_mem typeOfMut new_mem n'Of dly
 
   zoom mutBooks $ sequence_ $ M.intersectionWith update
     mutEntries mutEntryUpdates
