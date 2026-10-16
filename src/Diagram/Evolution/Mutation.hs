@@ -38,6 +38,20 @@ recip (DelLeft s0)  = AddLeft s0
 recip (DelRight s1) = AddRight s1
 recip (Del2 s0 s1)  = Add2 s0 s1
 
+------------
+-- JOINTS --
+------------
+
+mutJoint :: Mutation -> Sym -> (Sym, Sym)
+mutJoint (AddLeft  s0) s1 = (s0,s1)
+mutJoint (AddRight s1) s0 = (s0,s1)
+mutJoint (DelLeft  s0) s1 = (s0,s1)
+mutJoint (DelRight s1) s0 = (s0,s1)
+mutJoint (Add2  s0 s1) s2 =
+  error $ "mutJoint: Add2" ++ show (s0,s1) ++ " " ++ show s2
+mutJoint (Del2  s0 s1) s2 =
+  error $ "mutJoint: Del2" ++ show (s0,s1) ++ " " ++ show s2
+
 -----------
 -- APPLY --
 -----------

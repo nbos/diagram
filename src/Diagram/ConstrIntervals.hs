@@ -206,8 +206,8 @@ difference :: PrimMonad m => Doubly (PrimState m) ->
   Maybe (Sym -> Sym -> m Bool) -> Maybe (Sym -> Sym -> m Bool) ->
   CIs -> CIs -> m (CIs, IntMap Int)
 difference dly memSuper_ memSub_ cisA cisB = do
-  checkIntegrity_ cisA -- (debug)
-  checkIntegrity_ cisB -- (debug)
+  checkIntervalsIntegrity dly cisA -- (debug)
+  checkIntervalsIntegrity dly cisB -- (debug)
   traceM $ "\n  CIs.difference called, args  = " ++ pShow (cisA, cisB)
 
   DiffState bhdC btlC cor <- flip execStateT (DiffState bhdA btlA IM.empty) $
@@ -240,7 +240,7 @@ difference dly memSuper_ memSub_ cisA cisB = do
   let nsC = nsA `imUnion` (negate <$> (nsB `imUnion` cor))
       res = CIs jtA nsC bhdC btlC
   traceM $ "  res = " ++ pShow res
-  checkIntegrity_ res -- (debug)
+  checkIntervalsIntegrity dly res -- (debug)
   return (res, cor)
 
   where

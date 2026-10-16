@@ -1,5 +1,5 @@
 {-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ScopedTypeVariables, TypeOperators #-}
 {-# LANGUAGE LambdaCase, BangPatterns, TupleSections #-}
 module Diagram.Evolution.MutEntry.Update (
   module Diagram.Evolution.MutEntry.Update ) where
@@ -8,6 +8,8 @@ import Control.Lens hiding (Index, (<|))
 
 import Data.Maybe
 import Data.IntMap.Strict (IntMap)
+import Data.IntSet (IntSet)
+import qualified Data.IntSet as IS
 import qualified Data.IntMap.Strict as IM
 import Data.List.NonEmpty (NonEmpty(..),(<|))
 import qualified Data.List.NonEmpty as NE
@@ -16,13 +18,15 @@ import Diagram.String
 import Diagram.Primitive
 
 import qualified Diagram.Doubly as D
+import Diagram.UnionType (UnionType)
+import qualified Diagram.UnionType as UT
 import qualified Diagram.JointType as JT
 import Diagram.ConstrInterval (CI(..))
 import Diagram.ConstrIntervals (CIs(..))
 import qualified Diagram.ConstrIntervals as CIs
 
 import Diagram.Evolution.Math (logFact)
-import Diagram.Evolution.Mutation (MutType(..))
+import Diagram.Evolution.Mutation (Mutation(..),MutType(..))
 import qualified Diagram.Evolution.Mutation as Mut
 import Diagram.Evolution.MutEntry (MutEntry(..))
 import qualified Diagram.Evolution.Correction as Cor
@@ -41,6 +45,8 @@ data Update = MEU
     -- the introduction or removal of joints into the CIs of the
     -- MutEntry.
 
+  , _onCIsJT :: !IntSet -- for Del (because change on CIs' joint type is
+    -- not the joint type of the change on CIs', side determined by mut)
   , _onCIs :: !CIs } -- CIs to be added or removed. Always only added
     -- following an Add mutation. Always only removed following a Del
     -- mutation.
@@ -53,7 +59,7 @@ makeLenses ''Update
 ------------------
 
 empty :: Update
-empty = MEU IM.empty IM.empty CIs.empty
+empty = MEU IM.empty IM.empty IS.empty CIs.empty
 
 fromDCounts :: IntMap (Count, Count, Double) -> Update
 fromDCounts dnIls = empty{ _onSymCounts = dnIls }
@@ -61,8 +67,9 @@ fromDCounts dnIls = empty{ _onSymCounts = dnIls }
 fromDCor :: IntMap Int -> Update
 fromDCor ddnIls = empty{ _onCorrection = ddnIls }
 
-fromDCIs :: CIs -> Update
-fromDCIs cis = empty{ _onCIs = cis }
+fromDCIs :: IntSet -> CIs -> Update
+fromDCIs is cis = empty{ _onCIsJT = is
+                       , _onCIs = cis }
 
 -----------
 -- APPLY --
@@ -93,7 +100,7 @@ apply :: PrimMonad m => MutType -> (Sym -> Sym -> m Bool) -> (Sym -> Count) ->
          Doubly (PrimState m) -> MutEntry -> Update -> m MutEntry
 apply prevMutType new_mem n'Of dly me meu = do
   let ME mut old_dnsLoss old_ddns old_dnm old_cis@(CIs _old_mutJT _ _ _) = me
-      MEU n'Ils dCor dCIs@(CIs dcis_jt dcis_ns dcis_bhd _) = meu
+      MEU n'Ils dCor cis_djt dCIs@(CIs dcis_jt dcis_ns dcis_bhd _) = meu
 
   -- cis --
   (new_cis@(CIs new_mutJT _ _ _), _some_cor) <- case prevMutType of
@@ -102,9 +109,18 @@ apply prevMutType new_mem n'Of dly me meu = do
     -- so the cor on the introduced/eliminated joints has to be computed
     -- from scratch (dCor')
     Add -> return $ CIs.join_ old_cis dCIs
-    Del -> CIs.difference dly Nothing Nothing old_cis dCIs
+    Del -> (<$> CIs.difference dly Nothing Nothing old_cis dCIs) $
+      -- NOTE: have to manually fix the JointType in CIs because
+      -- difference doesn't have the information to do so (in general)
+      let deletes :: UnionType -> UnionType
+          deletes = foldr (.) id $ UT.deleteMember <$> IS.toList cis_djt
+      in _1.CIs.jointType %~ case mut of
+                               DelLeft _ -> JT.right %~ deletes
+                               DelRight _ -> JT.left %~ deletes
+                               _else -> id
 
-  let super s0 s1 = (JT.member new_mutJT s0 s1 ||) <$> new_mem s0 s1
+  let super s0 s1 = -- /!\ FIXME: not true coming from a Del mut
+        (JT.member new_mutJT s0 s1 ||) <$> new_mem s0 s1
       sub = return .: JT.member dcis_jt
   dCor' <- fromMaybe IM.empty . foldTree imUnion
            . fmap Cor.onAddMut_ . catMaybes . catMaybes

@@ -20,7 +20,10 @@ import qualified Data.List as L
 import Data.Strict.Tuple (Pair(..))
 import Data.Strict.Classes (toLazy)
 
+import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.IntSet (IntSet)
+import qualified Data.IntSet as IS
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.IntMap.Strict (IntMap)
@@ -270,7 +273,7 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   --
 
   -- (3/3): Joint coverage changes
-  (enabledMuts, expiredMuts, deltaJoints) <- TS.deltaMutJoints old_tst mut
+  (enabledMuts, expiredMuts, movedJoints) <- TS.deltaMutJoints old_tst mut
 
   traceM $ "Enabled muts: " ++ pShow enabledMuts
   traceM ""
@@ -278,7 +281,7 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   traceM $ "Expired muts: " ++ pShow expiredMuts
   traceM ""
 
-  traceM $ "Moved joints: " ++ pShow (M.keys <$> deltaJoints)
+  traceM $ "Moved joints: " ++ pShow movedJoints
   traceM ""
 
   -- DELETE EXPIRED ENTRIES
@@ -301,24 +304,36 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   --
 
   -- (2/3): Correction terms changes
-  let movedJoints = mconcat $ M.elems deltaJoints
-      outCond = (not .:) $ curry $ flip M.member movedJoints
+  let movedJointss :: Map Mutation (IntSet, Set (Sym, Sym))
+      movedJointss = flip M.mapWithKey movedJoints $ \mu ss ->
+        ( ss, Set.fromDistinctAscList $
+              Mut.mutJoint mu <$> IS.toAscList ss )
+      allMovedJoints :: Set (Sym, Sym)
+      allMovedJoints = mconcat $ snd <$> M.elems movedJointss
+
+      -- don't touch intervals of moved joints, they have to be processed
+      -- in their entirety separately
+      outCond = (not .:) $ curry $ flip Set.member allMovedJoints
+
   dly <- use doubly
   deltaCor <- (typeCIs %%== pushMut_CIs outCond dly old_tst new_tst me)
               <&> (`M.withoutKeys` mutsFlipped)
   --
 
   -- MAKE ENTRY UPDATES
-  let mkMEU_01 nIl dc = MEU nIl dc CIs.empty
+  let mkMEU_01 nIl dc = MEU nIl dc IS.empty CIs.empty
       mutEntryUpdates_01 = M.mergeWithKey (const $ Just .: mkMEU_01)
                            (MEU.fromDCounts <$>) (MEU.fromDCor <$>)
                            n'IlsByAffected deltaCor
   allCIs <- use jointCIs
-  let getCIs = mfoldTree . M.elems . M.intersection allCIs
-      mutEntryUpdates = M.mergeWithKey
-                        (\_ (MEU nIl dcor _) dcis -> Just $ MEU nIl dcor dcis)
-                        id (MEU.fromDCIs <$>)
-                        mutEntryUpdates_01 (getCIs <$> deltaJoints)
+  let mkMEU_23 is dcis = MEU IM.empty IM.empty is dcis
+      getCIs = mfoldTree . M.elems . M.restrictKeys allCIs
+      mutEntryUpdates_23 = (<$> movedJointss) $
+        \(ss, jts) -> mkMEU_23 ss $ getCIs jts
+
+      mutEntryUpdates = M.unionWith
+        (\(MEU nIl dcor _ _) (MEU _ _ is dcis) -> MEU nIl dcor is dcis)
+        mutEntryUpdates_01 mutEntryUpdates_23
 
   trace "" traceM $ "Updates: " ++ pShow mutEntryUpdates
 

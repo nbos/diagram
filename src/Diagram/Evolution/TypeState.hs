@@ -194,7 +194,7 @@ init m allJoints (JT u0 u1) = do
 data DeltaMutJointsState = DMJS
   { _enabledMuts :: !(Set Mutation)
   , _expiredMuts :: !(Set Mutation)
-  , _deltaJoints :: !(Map Mutation (Joints ())) }
+  , _deltaJoints :: !(Map Mutation IntSet) }
   deriving (Show,Eq)
 makeLenses ''DeltaMutJointsState
 
@@ -209,7 +209,7 @@ makeLenses ''DeltaMutJointsState
 -- respective mutation entries.
 deltaMutJoints :: forall m. PrimMonad m => TypeState (PrimState m) ->
                   Mutation -> m ( Set Mutation, Set Mutation
-                                , Map Mutation (Joints ()) )
+                                , Map Mutation IntSet )
 deltaMutJoints tst mut = fmap toLazy $
   flip execStateT st0 $ case mut of
 
@@ -226,7 +226,7 @@ deltaMutJoints tst mut = fmap toLazy $
       forM (IS.toList coIn) $ \s1 -> do
         SE _ coIn1 deps1 _ <- readR s1
         -- include (s0,s1) in DelRight of coIn's if the muts exist
-        when (IS.null deps1) $ addMutJoint (DelRight s1) (s0,s1)
+        when (IS.null deps1) $ addMutJoint (DelRight s1) s0
         return $ trySingleton coIn1 <&> (, IS.singleton s1)
     forM_ (IM.toList depsLost) $ \(s0', undeps) -> do
       SE _ coIn0' deps0' _ <- readL s0'
@@ -250,7 +250,7 @@ deltaMutJoints tst mut = fmap toLazy $
       forM (IS.toList coIn) $ \s0 -> do
         SE _ coIn0 deps0 _ <- readL s0
         -- include (s0,s1) in DelLeft of coIn's if the muts exist
-        when (IS.null deps0) $ addMutJoint (DelLeft s0) (s0,s1)
+        when (IS.null deps0) $ addMutJoint (DelLeft s0) s1
         return $ trySingleton coIn0 <&> (, IS.singleton s0)
     forM_ (IM.toList depsLost) $ \(s1', undeps) -> do
       SE _ coIn1' deps1' _ <- readR s1'
@@ -279,7 +279,7 @@ deltaMutJoints tst mut = fmap toLazy $
       forM (IS.toList coIn) $ \s1 -> do
         SE _ coIn1 deps1 _ <- readR s1
         -- remove (s0,s1) from DelRight of coIn's if the muts exist
-        when (IS.null deps1) $ delMutJoint (DelRight s1) (s0,s1)
+        when (IS.null deps1) $ delMutJoint (DelRight s1) s0
         return $ trySingleton (IS.delete s0 coIn1) <&> (, IS.singleton s1)
     forM_ (IM.toList depsGained) $ \(s0', deps) -> do
       SE _ coIn0' deps0' _ <- readL s0'
@@ -303,7 +303,7 @@ deltaMutJoints tst mut = fmap toLazy $
       forM (IS.toList coIn) $ \s0 -> do
         SE _ coIn0 deps0 _ <- readL s0
         -- remove (s0,s1) from DelLeft of coIn's if the muts exist
-        when (IS.null deps0) $ delMutJoint (DelLeft s0) (s0,s1)
+        when (IS.null deps0) $ delMutJoint (DelLeft s0) s1
         return $ trySingleton (IS.delete s1 coIn0) <&> (, IS.singleton s0)
     forM_ (IM.toList depsGained) $ \(s1', deps) -> do
       SE _ coIn1' deps1' _ <- readR s1'
@@ -336,12 +336,11 @@ deltaMutJoints tst mut = fmap toLazy $
     addMut = (enabledMuts %=) . Set.insert
     delMut :: Mutation -> StateT DeltaMutJointsState m ()
     delMut = (expiredMuts %=) . Set.insert
-    addMutJoint :: Mutation -> (Sym, Sym) -> StateT DeltaMutJointsState m ()
+    addMutJoint :: Mutation -> Sym -> StateT DeltaMutJointsState m ()
     addMutJoint = (deltaJoints %=) .: jtInsert
-    delMutJoint :: Mutation -> (Sym, Sym) -> StateT DeltaMutJointsState m ()
+    delMutJoint :: Mutation -> Sym -> StateT DeltaMutJointsState m ()
     delMutJoint = (deltaJoints %=) .: jtInsert
-    jtInsert mu ss = M.insertWith (const $ M.insert ss ())
-                     mu (M.singleton ss ())
+    jtInsert mu s = M.insertWith (const $ IS.insert s) mu (IS.singleton s)
 
     -- | If s1 (which is a coOut of s0) already had at least one coIn,
     -- add (s0,s1) to the joints of `AddRight s1`, otherwise, introduce
@@ -353,7 +352,7 @@ deltaMutJoints tst mut = fmap toLazy $
         forM_ (IS.toList coOut1) $ \s0' -> do
           SE _ coIn0' _ _ <- readL s0'
           when (IS.null coIn0') $ delMut (Add2 s0' s1) --
-        else addMutJoint (AddRight s1) (s0,s1) --
+        else addMutJoint (AddRight s1) s0 --
 
     -- | If s0 (which is a coOut of s1) already had at least one coIn,
     -- add (s0,s1) to the joints of `AddLeft s0`, otherwise, introduce
@@ -365,7 +364,7 @@ deltaMutJoints tst mut = fmap toLazy $
         forM_ (IS.toList coOut0) $ \s1' -> do
           SE _ coIn1' _ _ <- readR s1'
           when (IS.null coIn1') $ delMut (Add2 s0 s1') --
-        else addMutJoint (AddLeft s0) (s0,s1) --
+        else addMutJoint (AddLeft s0) s1 --
 
     -- | If s1 (which is coOut of s0) had only one coIn (s0), mark
     -- `AddRight s1` as expired (disable), otherwise, remove the (s0,s1)
@@ -378,7 +377,7 @@ deltaMutJoints tst mut = fmap toLazy $
           forM_ (IS.toList coOut1) $ \s0' -> do
             SE _ coIn0' _ _ <- readL s0'
             when (IS.null coIn0') $ addMut (Add2 s0' s1) --
-        (_:_:_) -> delMutJoint (AddRight s1) (s0,s1) --
+        (_:_:_) -> delMutJoint (AddRight s1) s0 --
         [] -> error "impossible: s0 `mem` coIn1 is assumed"
 
     -- | If s0 (which is coOut of s1) had only one coIn (s1), mark
@@ -392,7 +391,7 @@ deltaMutJoints tst mut = fmap toLazy $
           forM_ (IS.toList coOut0) $ \s1' -> do
             SE _ coIn1' _ _ <- readR s1'
             when (IS.null coIn1') $ addMut (Add2 s0 s1') --
-        (_:_:_) -> delMutJoint (AddLeft s0) (s0,s1) --
+        (_:_:_) -> delMutJoint (AddLeft s0) s1 --
         [] -> error "impossible: s1 `mem` coIn0 is assumed"
 
 err :: String -> a
