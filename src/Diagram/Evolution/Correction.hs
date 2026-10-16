@@ -5,6 +5,7 @@ module Diagram.Evolution.Correction (module Diagram.Evolution.Correction) where
 
 import Prelude hiding (init)
 
+import Debug.Trace
 import Control.Monad
 import Control.Monad.State.Strict
 
@@ -19,6 +20,7 @@ import qualified Data.Map.Strict as M
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
 
+import Diagram.Pretty
 import Diagram.Primitive
 import Diagram.String
 
@@ -82,8 +84,10 @@ getDelta :: PrimMonad m => (Sym -> Sym -> Bool) -> (Sym -> Sym -> Bool) ->
             Doubly (PrimState m) -> (CI, TypeState (PrimState m)) ->
             ([CI], TypeState (PrimState m)) -> m Cor
 getDelta outCond subCond dly (super, new_tst) (subs, old_tst) = do
+  traceM $ pShow subs
+  traceM $ pShow super
   -- Del Cor
-  newDelCor <- onDelMuts dly new_tst super
+  newDelCor <- onDelMutsWith outCond dly new_tst super
   oldDelCor <- forM subs $ onDelMuts dly old_tst
   let delCorDelta = foldr union newDelCor $ negate <<<$>>> oldDelCor
   -- Add Cor
@@ -219,7 +223,7 @@ composeAdds dly tst ci = (<$> liftA2 (,) prevCIs nextCIs) $ \case
     prevCIs = prevMutCI dly tst ci
     nextCIs = nextMutCIs outCond subCond dly tst ci
       where outCond _ _ = True -- never fail an out joint
-            subCond _ _ = False
+            subCond _ _ = False -- don't gather subs
 
 -- WHERE --
 
@@ -450,13 +454,18 @@ nextMutCIs outCond subCond str tst (CI _ _ _ i0 s0) = (next0 >>=) $ \case
 -- they are added/subtracted from the string's or type's counts.
 onDelMuts :: PrimMonad m =>
   Doubly (PrimState m) -> TypeState (PrimState m) -> CI -> m Cor
-onDelMuts _ _ (CI _ _ 2 _ _) = return M.empty
-onDelMuts dly tst supCI@(CI _ _ supLen supTl supStl) = do
+onDelMuts = onDelMutsWith $ \_ _ -> True
+
+-- with an `outCond` to filter out cor calculations on moving joints
+onDelMutsWith :: PrimMonad m => (Sym -> Sym -> Bool) ->
+  Doubly (PrimState m) -> TypeState (PrimState m) -> CI -> m Cor
+onDelMutsWith _ _ _ (CI _ _ 2 _ _) = return M.empty
+onDelMutsWith outCond dly tst supCI@(CI _ _ supLen supTl supStl) = do
   M.filter (not . IM.null) -- clean
     . fmap (IM.filter (/= 0) .  go)
     . M.fromListWith (<>)
     . reverse -- preserve order through (<>)
-    . ffmap NE.singleton <$> decomposeIn dly tst supCI
+    . ffmap NE.singleton <$> decomposeInWith outCond dly tst supCI
   where
     supLenEven = even supLen
     go :: NonEmpty (Bool, CI) -> IntMap Int
@@ -509,13 +518,22 @@ onDelMuts dly tst supCI@(CI _ _ supLen supTl supStl) = do
 -- 1\/True is odd\/non-constr.
 decomposeIn :: PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m [(Mutation, (Bool, CI))]
-decomposeIn str tst ci@(CI hd shd len _ stl)
-  | len == 2  = (,(False,ci)) <<$>> TS.delMutsOf tst shd stl
-  | otherwise = go [] False hd shd . drop 1 =<< CI.symExtension str ci
+decomposeIn = decomposeInWith $ \_ _ -> True
+
+-- with an `outCond` to filter out cor calculations on moving joints
+decomposeInWith :: PrimMonad m => (Sym -> Sym -> Bool) ->
+  Doubly (PrimState m) -> TypeState (PrimState m) -> CI ->
+  m [(Mutation, (Bool, CI))]
+decomposeInWith outCond _ tst ci@(CI _ shd 2 _ stl)
+  | outCond shd stl = (,(False,ci)) <<$>> TS.delMutsOf tst shd stl
+  | otherwise = return []
+decomposeInWith outCond str tst ci@(CI hd shd _ _ _) =
+  go [] False hd shd . drop 1 =<< CI.symExtension str ci
   where
     go mcis _ _ _ [] = return mcis
     go mcis p i0 s0 ((i1,s1):rest) = do
-      muts <- TS.delMutsOf tst s0 s1
+      muts <- if outCond s0 s1 then TS.delMutsOf tst s0 s1
+              else return [] -- [outCond patch] TODO: write better
       let (alive, ended) = L.partition (flip elem muts . fst) mcis
           started = (, (p, CI i0 s0 2 i1 s1))
                     <$> filter (`notElem` (fst <$> mcis)) muts
