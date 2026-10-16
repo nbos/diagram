@@ -68,11 +68,11 @@ join = fst .: join_
 -- of the returned set of intervals (snd)
 join_ :: CIs -> CIs -> (CIs, IntMap Int)
 join_ ciAs ciBs = flip evalState (JoinState ciAs ciBs IM.empty) $ do
-  traceM "  CIs.join_ called"
-  checkIntegrity_ ciAs
-  traceM $ "  ciAs (valid) = " ++ pShow ciAs
-  checkIntegrity_ ciBs
-  traceM $ "  ciBs (valid) = " ++ pShow ciBs
+  -- traceM "  CIs.join_ called"
+  -- checkIntegrity_ ciAs
+  -- traceM $ "  ciAs (valid) = " ++ pShow ciAs
+  -- checkIntegrity_ ciBs
+  -- traceM $ "  ciBs (valid) = " ++ pShow ciBs
 
   -- short-circuit intersection (O(m) <<< O(N)) --
   unless (uB0 `UT.disjoint` uA1) $
@@ -97,7 +97,7 @@ join_ ciAs ciBs = flip evalState (JoinState ciAs ciBs IM.empty) $ do
         id id ns cor
       res = CIs jt ns' bhd btl
 
-  traceM $ "res = " ++ pShow res
+  -- traceM $ "res = " ++ pShow res
   return ( checkIntegrityId res -- (debug)
          , cor )
 
@@ -206,9 +206,9 @@ difference :: PrimMonad m => Doubly (PrimState m) ->
   Maybe (Sym -> Sym -> m Bool) -> Maybe (Sym -> Sym -> m Bool) ->
   CIs -> CIs -> m (CIs, IntMap Int)
 difference dly memSuper_ memSub_ cisA cisB = do
-  checkIntervalsIntegrity dly cisA -- (debug)
-  checkIntervalsIntegrity dly cisB -- (debug)
-  traceM $ "\n  CIs.difference called, args  = " ++ pShow (cisA, cisB)
+  -- checkIntervalsIntegrity dly cisA -- (debug)
+  -- checkIntervalsIntegrity dly cisB -- (debug)
+  -- traceM $ "\n  CIs.difference called, args  = " ++ pShow (cisA, cisB)
 
   DiffState bhdC btlC cor <- flip execStateT (DiffState bhdA btlA IM.empty) $
     forM_ (IM.elems bhdB) $ \ci@(CI subHd _ _ subTl _) ->
@@ -236,10 +236,10 @@ difference dly memSuper_ memSub_ cisA cisB = do
           traceShowM ("negate <$> remCounts",negate <$> remCounts)
           diffCor %= imUnion (negate <$> remCounts)
 
-  traceShowM ("cor",cor)
+  -- traceShowM ("cor",cor)
   let nsC = nsA `imUnion` (negate <$> (nsB `imUnion` cor))
       res = CIs jtA nsC bhdC btlC
-  traceM $ "  res = " ++ pShow res
+  -- traceM $ "  res = " ++ pShow res
   checkIntervalsIntegrity dly res -- (debug)
   return (res, cor)
 
