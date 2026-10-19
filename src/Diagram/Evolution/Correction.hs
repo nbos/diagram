@@ -1,11 +1,13 @@
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
-{-# LANGUAGE LambdaCase, TupleSections, BangPatterns #-}
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TupleSections #-}
 
 module Diagram.Evolution.Correction (module Diagram.Evolution.Correction) where
 
+import Debug.Trace
 import Prelude hiding (init)
 
-import Debug.Trace
 import Control.Monad
 import Control.Monad.State.Strict
 
@@ -73,33 +75,40 @@ onAllMuts dly tst ci = do
   onDel <- onDelMuts dly tst ci
   return $ M.unionWith (error "impossible") onAdd onDel
 
--- | Where a set of CIs (subs :: [CI]) inhabiting a JointType (old_tst
--- :: TypeState) join with neighboring CIs inhabiting a complement type
--- makes a super CI (super :: CI) inhabiting a super-type (new_tst ::
--- TypeState), return the difference to be added to Corrections by going
--- from the rems\/old_tst to the super\/new_tst states (i.e. the
--- difference `newCor - oldCor`) by adding the implied complement to the
--- JointType.
-getDelta :: PrimMonad m => (Sym -> Sym -> Bool) -> (Sym -> Sym -> Bool) ->
-            Doubly (PrimState m) -> (CI, TypeState (PrimState m)) ->
-            ([CI], TypeState (PrimState m)) -> m Cor
-getDelta outCond subCond dly (super, new_tst) (subs, old_tst) = do
+-- TODO: is `subCond` necessary since it's defined as the difference
+-- between sup_tst and sub_tst?
+-- | Where a set of CIs (subs :: [CI]) inhabiting a JointType (sub_tst
+-- :: TypeState) join with neighboring CIs (muts :: [CI]) inhabiting a
+-- complement type makes a super CI (super :: CI) inhabiting a
+-- super-type (sup_tst :: TypeState), return the difference to be added
+-- to Corrections by going from the subs type state to the super type
+-- state (i.e. the differences `supCor - subCor`) by adding the implied
+-- complement to the JointType. Cancels chains if one of the
+--
+-- `subCond` is used both to short-circuit scanning to the left-
+deltaOnAllMuts :: PrimMonad m => (Sym -> Sym -> Bool) -> Doubly (PrimState m) ->
+  (CI, TypeState (PrimState m)) -> ([CI], TypeState (PrimState m)) -> m Cor
+deltaOnAllMuts subCond dly (super, sup_tst) (subs, sub_tst) = do
   traceM $ pShow subs
   traceM $ pShow super
   -- Del Cor
-  newDelCor <- onDelMutsWith outCond dly new_tst super
-  oldDelCor <- forM subs $ onDelMuts dly old_tst
-  let delCorDelta = foldr union newDelCor $ negate <<<$>>> oldDelCor
+  supDelCor <- onDelMuts dly sup_tst super
+  traceShowM ("supDelCor",supDelCor)
+  subDelCor <- forM subs $ onDelMuts dly sub_tst
+  traceShowM ("subDelCor",subDelCor)
+  let delCorDelta = foldr union supDelCor $ negate <<<$>>> subDelCor
   -- Add Cor
-  (mSuperAddChains, inters) <- composeAddsSub outCond subCond dly new_tst super
-  intersNewAddCor <- forM inters $ onAddMuts dly new_tst
-  newAddCor <- case mSuperAddChains of
-    Nothing -> onAddMuts dly new_tst super <&> (:intersNewAddCor)
+  (mSuperAddChains, inters) <- composeAddsSub subCond dly sup_tst super
+  intersSupAddCor <- forM inters $ onAddMuts dly sup_tst
+  supAddCor <- case mSuperAddChains of
+    Nothing -> onAddMuts dly sup_tst super <&> (:intersSupAddCor)
     Just superAddChains -> return $
-      (uc onAddMut <$> superAddChains) ++ intersNewAddCor
-  oldAddCor <- forM (subs ++ inters) $ onAddMuts dly old_tst
+      (uc onAddMut <$> superAddChains) ++ intersSupAddCor
+  traceShowM ("supAddCor",supAddCor)
+  subAddCor <- forM (subs ++ inters) $ onAddMuts dly sub_tst
+  traceShowM ("subAddCor",subAddCor)
   let addCorDelta = fromMaybe M.empty $ foldTree union $
-                    newAddCor ++ (negate <<<$>>> oldAddCor)
+                    supAddCor ++ (negate <<<$>>> subAddCor)
 
   return $ M.unionWith (error "impossible: disjoint")
     addCorDelta delCorDelta
@@ -161,31 +170,24 @@ onAddMut_ cis = clean $ flip execState IM.empty $ do
 -- `subCond` and don't connect to/touch a non-sub in-intervals
 -- (i.e. "inters") inside non-cancelled chains.
 composeAddsSub :: PrimMonad m => (Sym -> Sym -> Bool) ->
-  (Sym -> Sym -> Bool) -> Doubly (PrimState m) -> TypeState (PrimState m) ->
-  CI -> m (Maybe [(Mutation, NonEmpty CI)], [CI])
-composeAddsSub outCond subCond dly tst ci = (<$> results) $ \case
+  Doubly (PrimState m) -> TypeState (PrimState m) -> CI ->
+  m (Maybe [(Mutation, NonEmpty CI)], [CI])
+composeAddsSub subCond dly tst ci = (<$> results) $ \case
   (Nothing, Nothing)           -> (Just [], [])
-  (Nothing, Just (_, Nothing)) -> (Just [], [])
   (Just (_, Nothing), Nothing) -> (Just [], [])
-  (Just (_, Nothing), Just (_, Nothing)) -> (Just [], [])
 
-  (Nothing, Just (addMut, Just (nexts, rsubs)))
+  (Nothing, Just (addMut, nexts, rsubs))
     -> (Just [(addMut, ci <| nexts)], rsubs)
 
   (Just (addMut, Just (prvs, lsubs)), Nothing)
     | null lsubs -> (Just [(addMut, prvs <> (ci:|[]))], [])
     | otherwise  -> (Nothing, lsubs) -- signal non-canon
 
-  (Just (addMut, Nothing), Just (addMut', Just (nexts, rsubs)))
+  (Just (addMut, Nothing), Just (addMut', nexts, rsubs))
     | addMut == addMut' -> (Just [], []) -- cancels fwd
     | otherwise -> (Just [(addMut', ci <| nexts)], rsubs)
 
-  (Just (addMut, Just (prvs, lsubs)), Just (addMut', Nothing))
-    | addMut == addMut' -> (Just [], []) -- cancels bwd
-    | not (null lsubs) -> (Nothing, lsubs) -- signal non-canon
-    | otherwise -> (Just [ (addMut, prvs <> (ci:|[])) ], [])
-
-  (Just (addMut, Just (prvs, lsubs)), Just (addMut', Just (nexts, rsubs)))
+  (Just (addMut, Just (prvs, lsubs)), Just (addMut', nexts, rsubs))
     | not (null lsubs) -> (Nothing, lsubs ++ rsubs) -- signal non-canon
     | addMut == addMut' ->
         ( Just [(addMut, prvs <> (ci <| nexts))] -- join
@@ -194,8 +196,8 @@ composeAddsSub outCond subCond dly tst ci = (<$> results) $ \case
         ( Just [ (addMut, prvs <> (ci:|[])), (addMut', ci <| nexts) ]
         , rsubs )
   where
-    prevCIs = prevMutCIsSub outCond subCond dly tst ci
-    nextCIs = nextMutCIs    outCond subCond dly tst ci
+    prevCIs = prevMutCIsSub subCond dly tst ci
+    nextCIs = nextMutCIs    subCond dly tst ci
     results = liftA2 (,) prevCIs nextCIs
 
 -- | Return each etc-add-in-add-in-etc-chain the given in-CI is the
@@ -205,25 +207,19 @@ composeAdds :: PrimMonad m => Doubly (PrimState m) ->
 composeAdds dly tst ci = (<$> liftA2 (,) prevCIs nextCIs) $ \case
   (Nothing, Nothing) -> []
   (Just (_, Nothing), Nothing) -> []
-  (Nothing, Just (_, Nothing)) -> []
-  (Nothing, Just (addMut, Just (nexts, _))) -> [(addMut, ci <| nexts)]
+  (Nothing, Just (addMut, nexts, _)) -> [(addMut, ci <| nexts)]
   (Just (addMut, Just prv), Nothing) -> [(addMut, prv:|[ci])]
-  (Just (_, Nothing), Just (_, Nothing)) -> []
-  (Just (addMut, Nothing), Just (addMut', Just (nexts, _)))
+  (Just (addMut, Nothing), Just (addMut', nexts, _))
     | addMut == addMut' -> [] -- cancels fwd
     | otherwise -> [ (addMut', ci <| nexts) ]
-  (Just (addMut, Just prv), Just (addMut', Nothing))
-    | addMut == addMut' -> [] -- cancels bwd
-    | otherwise -> [ (addMut, prv:|[ci]) ]
-  (Just (addMut, Just prv), Just (addMut', Just (nexts, _)))
+  (Just (addMut, Just prv), Just (addMut', nexts, _))
     | addMut == addMut' -> [(addMut, prv <| ci <| nexts)] -- join
     | otherwise -> [ (addMut, prv:|[ci])
                    , (addMut', ci <| nexts) ]
   where
     prevCIs = prevMutCI dly tst ci
-    nextCIs = nextMutCIs outCond subCond dly tst ci
-      where outCond _ _ = True -- never fail an out joint
-            subCond _ _ = False -- don't gather subs
+    nextCIs = nextMutCIs subCond dly tst ci
+      where subCond _ _ = False -- don't gather subs
 
 -- WHERE --
 
@@ -232,32 +228,27 @@ composeAdds dly tst ci = (<$> liftA2 (,) prevCIs nextCIs) $ \case
 -- the given in-interval, in the string's left-to-right order (therefore
 -- always ending in an out-interval immediately preceeding the given
 -- interval), only if no in-CI contains a joint failing the given
--- `subCond` preidcate and if no out-CI contains a joints failing the
--- given `outCond` predicate.
+-- `subCond` preidcate.
 --
 -- Returns `Nothing` if there is no joint immediately preceeding the
 -- given interval or if there is no add-mutation that would switch it.
 --
--- Within the pair, returns `Nothing` if an out-joint fails the
--- `outCond` or if an in-joint fails the `subCond`. Otherwise, returns
--- the chain as a NonEmpty and the interspersed set of sub-intervals as
--- a (possibly empty) list.
+-- Within the pair, returns `Nothing` if an in-joint fails the
+-- `subCond`. Otherwise, returns the chain as a NonEmpty and the
+-- interspersed set of sub-intervals as a (possibly empty) list.
 --
 -- The `sub` condition is assumed to hold only joints which are members
 -- of the state's type (hence "sub"): it's only checked once a joint has
 -- been found to be within the state's type.
 prevMutCIsSub :: forall m. PrimMonad m => (Sym -> Sym -> Bool) ->
-  (Sym -> Sym -> Bool) -> Doubly (PrimState m) -> TypeState (PrimState m) ->
-  CI -> m (Maybe (Mutation, Maybe (NonEmpty CI, [CI])))
-prevMutCIsSub outCond subCond str tst (CI hd0 shd0 _ _ _) = (prev0 >>=) $ \case
+  Doubly (PrimState m) -> TypeState (PrimState m) -> CI ->
+  m (Maybe (Mutation, Maybe (NonEmpty CI, [CI])))
+prevMutCIsSub subCond str tst (CI hd0 shd0 _ _ _) = (prev0 >>=) $ \case
   Nothing -> return Nothing -- no prev symbol/interval
   Just (phd0,sphd0) -> (TS.addMutOf tst sphd0 shd0 >>=) $ \case
     Nothing -> return Nothing -- no mut
-    Just addMut
-      | outCond sphd0 shd0 ->
-          let mkCI hd shd len = CI hd shd len hd0 shd0
-          in Just . (addMut,) <$> goOut [] [] mkCI phd0 sphd0 2
-      | otherwise -> return $ Just (addMut, Nothing) -- (cancelled)
+    Just addMut -> let mkCI hd shd len = CI hd shd len hd0 shd0
+                   in Just . (addMut,) <$> goOut [] [] mkCI phd0 sphd0 2
       where
         goOut :: [CI] -> [CI] -> (Index -> Sym -> Len -> CI) ->
                  Index -> Sym -> Len -> m (Maybe (NonEmpty CI, [CI]))
@@ -269,11 +260,10 @@ prevMutCIsSub outCond subCond str tst (CI hd0 shd0 _ _ _) = (prev0 >>=) $ \case
                        let mkCI' hd' shd' len' = CI hd' shd' len' hd shd
                        in goSub (ci:acc) subs mkCI' phd sphd 2 -- sub: switch
                    | otherwise -> return Nothing -- not first of a chain, cancel
-              False | outCond sphd shd -> (TS.addMutOf tst sphd shd >>=) $ \case
-                        Just addMut' | addMut' == addMut -> -- continue
-                                         go phd sphd (len+1)
-                        _else -> return res -- end of interval
-                    | otherwise -> return Nothing -- (cancelled)
+              False -> (TS.addMutOf tst sphd shd >>=) $ \case
+                Just addMut' | addMut' == addMut -> -- continue
+                                 go phd sphd (len+1)
+                _else -> return res -- end of interval
             where
               ci = mkCI hd shd len
               res = Just (ci:|acc, subs)
@@ -286,13 +276,12 @@ prevMutCIsSub outCond subCond str tst (CI hd0 shd0 _ _ _) = (prev0 >>=) $ \case
             Just (phd,sphd) -> (TS.member tst sphd shd >>=) $ \case
               True | subCond sphd shd -> go phd sphd (len+1)
                    | otherwise -> return Nothing -- not first of a chain, cancel
-              False | outCond sphd shd -> (TS.addMutOf tst sphd shd >>=) $ \case
-                        Just addMut'
-                          | addMut' == addMut -> -- switch
-                              let mkCI' hd' shd' len' = CI hd' shd' len' hd shd
-                              in goOut (ci:acc) (ci:subs) mkCI' phd sphd 2
-                        _else -> return res -- end
-                    | otherwise -> return Nothing -- (cancelled)
+              False -> (TS.addMutOf tst sphd shd >>=) $ \case
+                Just addMut'
+                  | addMut' == addMut -> -- switch
+                      let mkCI' hd' shd' len' = CI hd' shd' len' hd shd
+                      in goOut (ci:acc) (ci:subs) mkCI' phd sphd 2
+                _else -> return res -- end
             where
               ci = mkCI hd shd len
               res = Just (ci:|acc, ci:subs)
@@ -354,29 +343,21 @@ prevMutCI str tst (CI hd0 shd0 _ _ _) = (D.prev str hd0 >>=) $ \case
 -- Returns `Nothing` if end of string or if the following joint does not
 -- have an add-mutation.
 --
--- Returns `Just (_, Nothing)` if there is a joint with an add-mutation
--- following the given CI, but is cancelled because a joint in an out-CI
--- fails the given `outCond` predicate. In other words, all joints of
--- out-CIs returned are guaranteed to satisfy outCond, just like the
--- returned subs satisfy subCond.
---
 -- Otherwise, returns the add-mutation, non-empty alternating sequence,
 -- and sub-intervals from that sequence's in-intervals that satisfy the
 -- given `subCond` predicate if they don't make contact with an in-CI
 -- (i.e. if they wouldn't be part of any superCI)
 nextMutCIs :: forall m. PrimMonad m => (Sym -> Sym -> Bool) ->
-  (Sym -> Sym -> Bool) -> Doubly (PrimState m) -> TypeState (PrimState m) ->
-  CI -> m (Maybe (Mutation, (Maybe (NonEmpty CI, [CI]))))
-nextMutCIs outCond subCond str tst (CI _ _ _ i0 s0) = (next0 >>=) $ \case
+  Doubly (PrimState m) -> TypeState (PrimState m) -> CI ->
+  m (Maybe (Mutation, NonEmpty CI, [CI]))
+nextMutCIs subCond str tst (CI _ _ _ i0 s0) = (next0 >>=) $ \case
   Nothing -> return Nothing -- hit end
   Just (i1,s1) -> (TS.addMutOf tst s0 s1 >>=) $ \case
     Nothing -> return Nothing -- no add-mutation
-    Just addMut -> Just . (addMut,) <$> -- m
-      if outCond s0 s1 then goOut [] [] (CI i0 s0) 2 i1 s1
-      else return Nothing -- (cancelled)
+    Just addMut -> Just . uc (addMut,,) <$> goOut [] [] (CI i0 s0) 2 i1 s1
       where
         goOut :: [CI] -> [CI] -> (Len -> Index -> Sym -> CI) ->
-                 Len -> Index -> Sym -> m (Maybe (NonEmpty CI, [CI]))
+                 Len -> Index -> Sym -> m (NonEmpty CI, [CI])
         goOut acc subs mkCI = go where
           go !len tl stl = (D.next str tl >>=) $ \case
             Nothing -> return res -- hit end of string
@@ -384,19 +365,18 @@ nextMutCIs outCond subCond str tst (CI _ _ _ i0 s0) = (next0 >>=) $ \case
               True | subCond stl sntl -> -- switch
                        goSub False (ci:acc) subs mkCI' mkCI' 2 2 ntl sntl
                    | otherwise -> goIn (ci:acc) subs mkCI' 2 ntl sntl -- switch
-              False | outCond stl sntl -> (TS.addMutOf tst stl sntl >>=) $ \case
-                        Just addMut' | addMut' == addMut ->
-                                         go (len+1) ntl sntl -- keep going
-                        _else -> return res -- end of intervals
-                    | otherwise -> return Nothing -- (cancelled)
+              False -> (TS.addMutOf tst stl sntl >>=) $ \case
+                Just addMut' | addMut' == addMut ->
+                                 go (len+1) ntl sntl -- keep going
+                _else -> return res -- end of intervals
             where
               ci = mkCI len tl stl
               mkCI' = CI tl stl
-              res = Just (NE.reverse (ci:|acc), reverse subs)
+              res = (NE.reverse (ci:|acc), reverse subs)
 
         -- in && not sub --
         goIn :: [CI] -> [CI] -> (Len -> Index -> Sym -> CI) ->
-                Len -> Index -> Sym -> m (Maybe (NonEmpty CI, [CI]))
+                Len -> Index -> Sym -> m (NonEmpty CI, [CI])
         goIn acc subs mkCI = go where
           go !len tl stl = (D.next str tl >>=) $ \case
             Nothing -> return res -- hit end of string
@@ -405,21 +385,20 @@ nextMutCIs outCond subCond str tst (CI _ _ _ i0 s0) = (next0 >>=) $ \case
                        goSub True acc subs mkCI' mkCI 2 2 ntl sntl
                    | otherwise -> go (len+1) ntl sntl -- keep going
 
-              False | outCond stl sntl -> (TS.addMutOf tst stl sntl >>=) $ \case
-                        Just addMut'
-                          | addMut' == addMut ->
-                              goOut (ci:acc) subs mkCI' 2 ntl sntl -- switch
-                        _else -> return res -- end of intervals
-                    | otherwise -> return Nothing -- (cancelled)
+              False -> (TS.addMutOf tst stl sntl >>=) $ \case
+                Just addMut'
+                  | addMut' == addMut ->
+                      goOut (ci:acc) subs mkCI' 2 ntl sntl -- switch
+                _else -> return res -- end of intervals
             where
               ci = mkCI len tl stl
               mkCI' = CI tl stl
-              res = Just (NE.reverse (ci:|acc), reverse subs)
+              res = (NE.reverse (ci:|acc), reverse subs)
 
         -- in && sub -- both inter (fromIn == False) and sub super (" == True)
         goSub :: Bool -> [CI] -> [CI] -> (Len -> Index -> Sym -> CI) ->
                  (Len -> Index -> Sym -> CI) -> Len -> Len ->
-                 Index -> Sym -> m (Maybe (NonEmpty CI, [CI]))
+                 Index -> Sym -> m (NonEmpty CI, [CI])
         goSub fromIn acc subs mkSub mkCI = go where
           go !subLen !len tl stl = (D.next str tl >>=) $ \case
             Nothing -> return res -- hit end of string
@@ -428,17 +407,16 @@ nextMutCIs outCond subCond str tst (CI _ _ _ i0 s0) = (next0 >>=) $ \case
                        go (subLen+1) (len+1) ntl sntl -- keep going
                    | otherwise -> -- sub is not inter-, don't cons
                        goIn acc subs mkCI (len+1) ntl sntl
-              False | outCond stl sntl -> (TS.addMutOf tst stl sntl >>=) $ \case
-                        Just addMut'
-                          | addMut' == addMut -> -- switch
-                              goOut (ci:acc) subs' (CI tl stl) 2 ntl sntl
-                        _else -> return res -- end of intervals
-                    | otherwise -> return Nothing -- (cancelled)
+              False -> (TS.addMutOf tst stl sntl >>=) $ \case
+                Just addMut'
+                  | addMut' == addMut -> -- switch
+                      goOut (ci:acc) subs' (CI tl stl) 2 ntl sntl
+                _else -> return res -- end of intervals
             where
               ci = mkCI len tl stl
               subs' | fromIn = subs
                     | otherwise = mkSub subLen tl stl : subs
-              res = Just (NE.reverse (ci:|acc), reverse subs')
+              res = (NE.reverse (ci:|acc), reverse subs')
   where
     next0 = D.next str i0
 
@@ -452,20 +430,15 @@ nextMutCIs outCond subCond str tst (CI _ _ _ i0 s0) = (next0 >>=) $ \case
 -- in symCounts from applying those mutations. Correction values are
 -- signed in order to be added to the del-mut's CIs' counts *before*
 -- they are added/subtracted from the string's or type's counts.
-onDelMuts :: PrimMonad m =>
-  Doubly (PrimState m) -> TypeState (PrimState m) -> CI -> m Cor
-onDelMuts = onDelMutsWith $ \_ _ -> True
-
--- with an `outCond` to filter out cor calculations on moving joints
-onDelMutsWith :: PrimMonad m => (Sym -> Sym -> Bool) ->
-  Doubly (PrimState m) -> TypeState (PrimState m) -> CI -> m Cor
-onDelMutsWith _ _ _ (CI _ _ 2 _ _) = return M.empty
-onDelMutsWith outCond dly tst supCI@(CI _ _ supLen supTl supStl) = do
+onDelMuts :: PrimMonad m => Doubly (PrimState m) ->
+             TypeState (PrimState m) -> CI -> m Cor
+onDelMuts _ _ (CI _ _ 2 _ _) = return M.empty
+onDelMuts dly tst supCI@(CI _ _ supLen supTl supStl) = do
   M.filter (not . IM.null) -- clean
     . fmap (IM.filter (/= 0) .  go)
     . M.fromListWith (<>)
     . reverse -- preserve order through (<>)
-    . ffmap NE.singleton <$> decomposeInWith outCond dly tst supCI
+    . ffmap NE.singleton <$> decomposeIn dly tst supCI
   where
     supLenEven = even supLen
     go :: NonEmpty (Bool, CI) -> IntMap Int
@@ -518,22 +491,13 @@ onDelMutsWith outCond dly tst supCI@(CI _ _ supLen supTl supStl) = do
 -- 1\/True is odd\/non-constr.
 decomposeIn :: PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> CI -> m [(Mutation, (Bool, CI))]
-decomposeIn = decomposeInWith $ \_ _ -> True
-
--- with an `outCond` to filter out cor calculations on moving joints
-decomposeInWith :: PrimMonad m => (Sym -> Sym -> Bool) ->
-  Doubly (PrimState m) -> TypeState (PrimState m) -> CI ->
-  m [(Mutation, (Bool, CI))]
-decomposeInWith outCond _ tst ci@(CI _ shd 2 _ stl)
-  | outCond shd stl = (,(False,ci)) <<$>> TS.delMutsOf tst shd stl
-  | otherwise = return []
-decomposeInWith outCond str tst ci@(CI hd shd _ _ _) =
-  go [] False hd shd . drop 1 =<< CI.symExtension str ci
+decomposeIn str tst ci@(CI hd shd len _ stl)
+  | len == 2 = (,(False,ci)) <<$>> TS.delMutsOf tst shd stl
+  | otherwise = go [] False hd shd . drop 1 =<< CI.symExtension str ci
   where
     go mcis _ _ _ [] = return mcis
     go mcis p i0 s0 ((i1,s1):rest) = do
-      muts <- if outCond s0 s1 then TS.delMutsOf tst s0 s1
-              else return [] -- [outCond patch] TODO: write better
+      muts <- TS.delMutsOf tst s0 s1
       let (alive, ended) = L.partition (flip elem muts . fst) mcis
           started = (, (p, CI i0 s0 2 i1 s1))
                     <$> filter (`notElem` (fst <$> mcis)) muts

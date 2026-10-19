@@ -275,13 +275,13 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   -- (3/3): Joint coverage changes
   (enabledMuts, expiredMuts, movedJoints) <- TS.deltaMutJoints old_tst mut
 
-  traceM $ "Enabled muts: " ++ pShow enabledMuts
+  traceM $ "Enabled muts (insert): " ++ pShow enabledMuts
   traceM ""
 
-  traceM $ "Expired muts: " ++ pShow expiredMuts
+  traceM $ "Expired muts (delete): " ++ pShow expiredMuts
   traceM ""
 
-  traceM $ "Moved joints: " ++ pShow movedJoints
+  traceM $ "Moved (" ++ show typeOfMut ++ "'d) joints: " ++ pShow movedJoints
   traceM ""
 
   -- DELETE EXPIRED ENTRIES
@@ -316,7 +316,7 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
       outCond = (not .:) $ curry $ flip Set.member allMovedJoints
 
   dly <- use doubly
-  deltaCor <- (typeCIs %%== pushMut_CIs outCond dly old_tst new_tst me)
+  deltaCor <- (typeCIs %%== pushMut_CIs dly old_tst new_tst me)
               <&> (`M.withoutKeys` mutsFlipped)
   --
 
@@ -335,7 +335,7 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
         (\(MEU nIl dcor _ _) (MEU _ _ is dcis) -> MEU nIl dcor is dcis)
         mutEntryUpdates_01 mutEntryUpdates_23
 
-  trace "" traceM $ "Updates: " ++ pShow mutEntryUpdates
+  -- trace "" traceM $ "Updates: " ++ pShow mutEntryUpdates
 
   -- (debug)
   CIs newTypJT ndns _ _ <- use typeCIs
@@ -377,10 +377,10 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
 -- mutations (may include erroneous corrections on newly enabled muts
 -- (Add case) or newly expired muts (Del case), which need to be
 -- computed explicitly anyway, but remember to filter them out)
-pushMut_CIs :: forall m. PrimMonad m => (Sym -> Sym -> Bool) ->
-  Doubly (PrimState m) -> TypeState (PrimState m) -> TypeState (PrimState m) ->
-  MutEntry -> CIs -> m (Map Mutation (IntMap Int), CIs)
-pushMut_CIs outCond dly old_tst new_tst me typCIs = fmap toLazy $
+pushMut_CIs :: forall m. PrimMonad m => Doubly (PrimState m) ->
+  TypeState (PrimState m) -> TypeState (PrimState m) -> MutEntry -> CIs ->
+  m (Map Mutation (IntMap Int), CIs)
+pushMut_CIs dly old_tst new_tst me typCIs = fmap toLazy $
   trace ("mutCIs: " ++ pShow mutCIs) $
   case typeOfMut of
   Add -> do
@@ -391,8 +391,8 @@ pushMut_CIs outCond dly old_tst new_tst me typCIs = fmap toLazy $
                 -- (return .: JT.member mutJT)
 
         getDelta :: CI -> [CI] -> m (Map Mutation (IntMap Int))
-        getDelta super subs =
-          Cor.getDelta outCond notInMut dly (super, new_tst) (subs, old_tst)
+        getDelta super subs = Cor.deltaOnAllMuts notInMut dly
+                              (super, new_tst) (subs, old_tst)
 
     flip execStateT st0 $ forM_ mutCIsL $
       \ci -> (lift (superCI ci) >>=) $ flip whenJust $ \case
@@ -411,8 +411,8 @@ pushMut_CIs outCond dly old_tst new_tst me typCIs = fmap toLazy $
                 -- return .: JT.member mutJT
 
         getDelta :: CI -> [CI] -> m (Map Mutation (IntMap Int))
-        getDelta super rems = negate <<<$>>>
-          Cor.getDelta outCond notInMut dly (super, old_tst) (rems, new_tst)
+        getDelta super rems = negate <<<$>>> Cor.deltaOnAllMuts notInMut dly
+                              (super, old_tst) (rems, new_tst)
 
     flip execStateT st0 $ forM_ mutCIsL $
       \ci -> (lift (superCI ci) >>=) $ flip whenJust $ \case
