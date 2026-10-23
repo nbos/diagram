@@ -22,7 +22,6 @@ import Data.Strict.Classes (toLazy)
 
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.IntSet (IntSet)
 import qualified Data.IntSet as IS
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -304,16 +303,9 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   --
 
   -- (2/3): Correction terms changes
-  let movedJointss :: Map Mutation (IntSet, Set (Sym, Sym))
+  let movedJointss :: Map Mutation (Set (Sym, Sym))
       movedJointss = flip M.mapWithKey movedJoints $ \mu ss ->
-        ( ss, Set.fromDistinctAscList $
-              Mut.mutJoint mu <$> IS.toAscList ss )
-      allMovedJoints :: Set (Sym, Sym)
-      allMovedJoints = mconcat $ snd <$> M.elems movedJointss
-
-      -- don't touch intervals of moved joints, they have to be processed
-      -- in their entirety separately
-      outCond = (not .:) $ curry $ flip Set.member allMovedJoints
+        ( Set.fromDistinctAscList $ Mut.mutJoint mu <$> IS.toAscList ss )
 
   dly <- use doubly
   deltaCor <- (typeCIs %%== pushMut_CIs dly old_tst new_tst me)
@@ -321,19 +313,17 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   --
 
   -- MAKE ENTRY UPDATES
-  let mkMEU_01 nIl dc = MEU nIl dc IS.empty CIs.empty
+  let mkMEU_01 nIl dc = MEU nIl dc CIs.empty
       mutEntryUpdates_01 = M.mergeWithKey (const $ Just .: mkMEU_01)
                            (MEU.fromDCounts <$>) (MEU.fromDCor <$>)
                            n'IlsByAffected deltaCor
   allCIs <- use jointCIs
-  let mkMEU_23 is dcis = MEU IM.empty IM.empty is dcis
-      getCIs = mfoldTree . M.elems . M.restrictKeys allCIs
-      mutEntryUpdates_23 = (<$> movedJointss) $
-        \(ss, jts) -> mkMEU_23 ss $ getCIs jts
+  let getCIs = mfoldTree . M.elems . M.restrictKeys allCIs
 
-      mutEntryUpdates = M.unionWith
-        (\(MEU nIl dcor _ _) (MEU _ _ is dcis) -> MEU nIl dcor is dcis)
-        mutEntryUpdates_01 mutEntryUpdates_23
+      mutEntryUpdates = M.mergeWithKey
+        (\_ (MEU nIl dcor _) dcis -> Just $ MEU nIl dcor dcis)
+        id (fmap MEU.fromDCIs)
+        mutEntryUpdates_01 (fmap getCIs movedJointss)
 
   -- trace "" traceM $ "Updates: " ++ pShow mutEntryUpdates
 
@@ -346,12 +336,10 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
 
   -- APPLY ENTRY UPDATES
   mutEntries <- use $ mutBooks.byMut
-  let old_mem = TS.member old_tst
-      new_mem = TS.member new_tst
-      update :: MutEntry -> Update -> StateT (MutBooks (PrimState m)) m ()
+  let update :: MutEntry -> Update -> StateT (MutBooks (PrimState m)) m ()
       update = MB.update . ME.validate newTypJT str n'Of <==< apply
       apply :: MutEntry -> Update -> StateT (MutBooks (PrimState m)) m MutEntry
-      apply = MEU.apply old_mem typeOfMut new_mem n'Of dly
+      apply = MEU.apply old_tst typeOfMut new_tst n'Of dly
 
   zoom mutBooks $ sequence_ $ M.intersectionWith update
     mutEntries mutEntryUpdates
@@ -391,7 +379,7 @@ pushMut_CIs dly old_tst new_tst me typCIs = fmap toLazy $
                 -- (return .: JT.member mutJT)
 
         getDelta :: CI -> [CI] -> m (Map Mutation (IntMap Int))
-        getDelta super subs = Cor.deltaOnAllMuts notInMut dly
+        getDelta super subs = Cor.deltaOnAllMuts dly notInMut
                               (super, new_tst) (subs, old_tst)
 
     flip execStateT st0 $ forM_ mutCIsL $
@@ -411,7 +399,7 @@ pushMut_CIs dly old_tst new_tst me typCIs = fmap toLazy $
                 -- return .: JT.member mutJT
 
         getDelta :: CI -> [CI] -> m (Map Mutation (IntMap Int))
-        getDelta super rems = negate <<<$>>> Cor.deltaOnAllMuts notInMut dly
+        getDelta super rems = negate <<<$>>> Cor.deltaOnAllMuts dly notInMut
                               (super, old_tst) (rems, new_tst)
 
     flip execStateT st0 $ forM_ mutCIsL $
@@ -488,18 +476,17 @@ mkMutEntry mut = do
 ----------
 
 -- | Construct a new EvolutionState
-init :: PrimMonad m =>
-  Int -> Int -> Doubly (PrimState m) -> U.Vector Int -> Joints CIs ->
-  JointType -> m (EvolutionState (PrimState m))
+init :: PrimMonad m => Int -> Int -> Doubly (PrimState m) -> U.Vector Int ->
+        Joints CIs -> JointType -> m (EvolutionState (PrimState m))
 init m bigN dly ns allCIs jt = init_ m bigN dly ns allCIs (jt, memJointCIs)
   where memJointCIs = M.filterWithKey (const . uc (JT.member jt)) allCIs
 
 -- | Construct a new EvolutionState where the second set of CIs given is
 -- a subset of the first set and corresponds exactly to its entries for
 -- each joint that falls under the given type.
-init_ :: forall m. PrimMonad m =>
-  Int -> Int -> Doubly (PrimState m) -> U.Vector Int -> Joints CIs ->
-  (JointType, Joints CIs) -> m (EvolutionState (PrimState m))
+init_ :: forall m. PrimMonad m => Int -> Int -> Doubly (PrimState m) ->
+         U.Vector Int -> Joints CIs -> (JointType, Joints CIs) ->
+         m (EvolutionState (PrimState m))
 init_ m bigN dly ns allCIs (jt, memJointCIs) = do
   tst <- TS.init m allJoints jt
 
@@ -543,7 +530,7 @@ init_ m bigN dly ns allCIs (jt, memJointCIs) = do
 -- | Combine values keyed by joints flipped (in/out) by the same
 -- mutation together, given a combining function
 joinByMut :: forall m a. PrimMonad m => TypeState (PrimState m) ->
-  (a -> a -> a) -> [((Sym,Sym), a)] -> m (Map Mutation a)
+             (a -> a -> a) -> [((Sym,Sym), a)] -> m (Map Mutation a)
 joinByMut tst f = fmap (M.fromListWith f . concat) . mapM g
   where
     g :: ((Sym,Sym), a) -> m [(Mutation, a)]

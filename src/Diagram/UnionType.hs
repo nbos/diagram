@@ -1,7 +1,7 @@
 {-# LANGUAGE InstanceSigs, DeriveGeneric, DeriveAnyClass #-}
 module Diagram.UnionType (module Diagram.UnionType) where
 
-import Prelude hiding (length)
+import Prelude as P hiding (length)
 
 import GHC.Generics (Generic)
 
@@ -84,10 +84,18 @@ delete :: Sym -> UnionType -> UnionType
 delete s ut | s `member` ut = deleteMember s ut
             | otherwise = ut -- unchanged
 
--- | Delete a symbol that is present in the type. Breaks invariant if it
--- is not present.
+-- | Delete a symbol that is present in the type. Breaks invariant (size
+-- value) if it is not present.
 deleteMember :: Sym -> UnionType -> UnionType
 deleteMember s (UT n ss) = UT (n-1) $ IS.delete s ss
+
+-- | Delete symbols which are present in the type. Breaks invariant
+-- (size value) if this is not the case.
+differenceSubset :: UnionType -> UnionType -> UnionType
+differenceSubset (UT n sup) (UT m sub)
+  | m <= n = UT (n - m) (sup IS.\\ sub)
+  | otherwise = err $ "differenceSubset: second arg. is larger than first: "
+                ++ show (n,m)
 
 -------------
 -- LATTICE --
@@ -118,6 +126,16 @@ join (UT _ ss) (UT _ ss') = fromSet $ IS.union ss ss'
 -- | Greatest lower bound
 meet :: UnionType -> UnionType -> UnionType
 meet (UT _ ss) (UT _ ss') = fromSet $ IS.intersection ss ss'
+
+-- | Partial ordering
+compare :: UnionType -> UnionType -> Maybe Ordering
+compare (UT n ss) (UT n' ss') = case P.compare n n' of
+  LT | ss `IS.isSubsetOf` ss' -> Just LT
+     | otherwise -> Nothing
+  EQ | ss == ss' -> Just EQ
+     | otherwise -> Nothing
+  GT | ss' `IS.isSubsetOf` ss -> Just GT
+     | otherwise -> Nothing
 
 -----------------
 -- INFORMATION --

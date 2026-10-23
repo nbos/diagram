@@ -36,8 +36,8 @@ import Diagram.Evolution.Mutation (Mutation(..), MutType(..), typeOfMut)
 --  |      | |  +--- n' ! | |       /  +--- nm ! \   |
 --  |  log | | ddn  ----- | | + log | dnm  ----- |   |
 --  |      | |  +--> n''! | |       \  +--> nm'! /   |
---  |      \ +------------+ /                        |
---  |                                                |
+--  |      \ +------------+ /  |                  |  |
+--  |         n_i for i < m    +-- new term n_m --+  |
 --  |  where:                                        |
 --  |    ddn = sign[Add/Del] * (CIs.symCounts + cor) |
 --  |    dnm = (-1) * sum ddns `div` 2               |

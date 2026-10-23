@@ -4,30 +4,33 @@
 module Diagram.Evolution.MutEntry.Update (
   module Diagram.Evolution.MutEntry.Update ) where
 
+import Debug.Trace
 import Control.Lens hiding (Index, (<|))
+import Control.Monad.Extra
 
 import Data.Maybe
 import Data.IntMap.Strict (IntMap)
-import Data.IntSet (IntSet)
-import qualified Data.IntSet as IS
 import qualified Data.IntMap.Strict as IM
 import Data.List.NonEmpty (NonEmpty(..),(<|))
 import qualified Data.List.NonEmpty as NE
 
+import Diagram.Pretty
 import Diagram.String
 import Diagram.Primitive
 
 import qualified Diagram.Doubly as D
-import Diagram.UnionType (UnionType)
 import qualified Diagram.UnionType as UT
 import qualified Diagram.JointType as JT
 import Diagram.ConstrInterval (CI(..))
+import qualified Diagram.ConstrInterval as CI
 import Diagram.ConstrIntervals (CIs(..))
 import qualified Diagram.ConstrIntervals as CIs
 
 import Diagram.Evolution.Math (logFact)
 import Diagram.Evolution.Mutation (Mutation(..),MutType(..))
 import qualified Diagram.Evolution.Mutation as Mut
+import Diagram.Evolution.TypeState (TypeState)
+import qualified Diagram.Evolution.TypeState as TS
 import Diagram.Evolution.MutEntry (MutEntry(..))
 import qualified Diagram.Evolution.Correction as Cor
 
@@ -45,8 +48,6 @@ data Update = MEU
     -- the introduction or removal of joints into the CIs of the
     -- MutEntry.
 
-  , _onCIsJT :: !IntSet -- for Del (because change on CIs' joint type is
-    -- not the joint type of the change on CIs', side determined by mut)
   , _onCIs :: !CIs } -- CIs to be added or removed. Always only added
     -- following an Add mutation. Always only removed following a Del
     -- mutation.
@@ -59,7 +60,7 @@ makeLenses ''Update
 ------------------
 
 empty :: Update
-empty = MEU IM.empty IM.empty IS.empty CIs.empty
+empty = MEU IM.empty IM.empty CIs.empty
 
 fromDCounts :: IntMap (Count, Count, Double) -> Update
 fromDCounts dnIls = empty{ _onSymCounts = dnIls }
@@ -67,9 +68,8 @@ fromDCounts dnIls = empty{ _onSymCounts = dnIls }
 fromDCor :: IntMap Int -> Update
 fromDCor ddnIls = empty{ _onCorrection = ddnIls }
 
-fromDCIs :: IntSet -> CIs -> Update
-fromDCIs is cis = empty{ _onCIsJT = is
-                       , _onCIs = cis }
+fromDCIs :: CIs -> Update
+fromDCIs cis = empty{ _onCIs = cis }
 
 -----------
 -- APPLY --
@@ -82,8 +82,8 @@ fromDCIs is cis = empty{ _onCIsJT = is
 --  |      | |  +--- n' ! | |       /  +--- nm ! \   |
 --  |  log | | ddn  ----- | | + log | dnm  ----- |   |
 --  |      | |  +--> n''! | |       \  +--> nm'! /   |
---  |      \ +------------+ /                        |
---  |                                                |
+--  |      \ +------------+ /  |                  |  |
+--  |         n_i for i < m    +-- new term n_m --+  |
 --  |  where:                                        |
 --  |    ddn = sign[Add/Del] * (CIs.symCounts + cor) |
 --  |    dnm = (-1) * sum ddns `div` 2               |
@@ -96,56 +96,107 @@ fromDCIs is cis = empty{ _onCIsJT = is
 -- whether it's from the TypeState before or after the application
 -- doesn't matter), and a reference string, apply the given
 -- MutEntryUpdate to the given MutEntry.
-apply :: PrimMonad m => (Sym -> Sym -> m Bool) -> MutType ->
-  (Sym -> Sym -> m Bool) -> (Sym -> Count) -> Doubly (PrimState m) ->
+apply :: forall m. PrimMonad m => TypeState (PrimState m) -> MutType ->
+  TypeState (PrimState m) -> (Sym -> Count) -> Doubly (PrimState m) ->
   MutEntry -> Update -> m MutEntry
-apply _old_mem prevMutType new_mem n'Of dly me meu = do
-  let ME mut old_dnsLoss old_ddns old_dnm old_cis@(CIs _old_mutJT _ _ _) = me
-      MEU n'Ils dCor cis_djt dCIs@(CIs dcis_jt dcis_ns dcis_bhd _) = meu
+apply oldTS prevMutType newTS n'Of dly me meu = do
+  let ME mut oldDnsLoss oldDdns oldDnm oldCIs = me
+      MEU n'Ils dCor dCIs@(CIs dCIs_jt dCIs_ns dCIs_bhd _) = meu
+
+  traceM $ "\nApplying mut entry update (on " ++ pShow mut ++ "): " ++ pShow meu
 
   -- cis --
-  (new_cis@(CIs new_mutJT _ _ _), _some_cor) <- case prevMutType of
-    -- we can get the cor terms from merging the delta with the mutJT,
-    -- but it won't contain the ones from merging that with the typJT,
-    -- so the cor on the introduced/eliminated joints has to be computed
-    -- from scratch (dCor')
-    Add -> return $ CIs.join_ old_cis dCIs
-    Del -> (<$> CIs.difference dly Nothing Nothing old_cis dCIs) $
-      -- NOTE: have to manually fix the JointType in CIs because
-      -- difference doesn't have the information to do so (in general)
-      let deletes :: UnionType -> UnionType
-          deletes = foldr (.) id $ UT.deleteMember <$> IS.toList cis_djt
-      in _1.CIs.jointType %~ case mut of
-                               AddLeft  _ -> JT.right %~ deletes
-                               DelLeft  _ -> JT.right %~ deletes
-                               AddRight _ -> JT.left  %~ deletes
-                               DelRight _ -> JT.left  %~ deletes
-                               _else -> id
+  (newCIs@(CIs new_mutJT _ _ _), _) <- case prevMutType of
+    Add -> return $ CIs.join_ oldCIs dCIs
+    Del -> (<$> CIs.difference dly Nothing Nothing oldCIs dCIs) $
+      _1.CIs.jointType %~ case mut of -- manually fix the joint type of CIs
+        AddLeft _  -> JT.right %~ UT.differenceSubset (dCIs_jt^.JT.right)
+        DelLeft _  -> JT.right %~ UT.differenceSubset (dCIs_jt^.JT.right)
+        AddRight _ -> JT.left  %~ UT.differenceSubset (dCIs_jt^.JT.left)
+        DelRight _ -> JT.left  %~ UT.differenceSubset (dCIs_jt^.JT.left)
+        _else -> id -- no-op (dCIs should be empty: Add/Del2 only have 1 joint)
 
-  let super s0 s1 = -- FIXME: not true coming from a Del mut, right?
-        (JT.member new_mutJT s0 s1 ||) <$> new_mem s0 s1
-      sub = return .: JT.member dcis_jt
-  dCor' <- fromMaybe IM.empty . foldTree imUnion -- join
-           . fmap Cor.onAddMut_ -- get Cor
-           . catMaybes . catMaybes <$> mapM (compose super sub dly)
-                                            (IM.elems dcis_bhd)
+  traceM $ "\nnew_cis = " ++ pShow newCIs
+  traceM "\ncompose output:"
+
+  -- dCor' --
+  let
+    smallerTS, largerTS :: TypeState (PrimState m)
+    (smallerTS, largerTS) = case prevMutType of
+      Add -> (oldTS, newTS)
+      Del -> (newTS, oldTS)
+
+    memPrevMutLeft, memPrevMutRight :: Sym -> m Bool
+    memPrevMutLeft s0 = (TS.leftMember largerTS s0 >>=) $ \case
+      False -> return False
+      True  -> not <$> TS.leftMember smallerTS s0
+    memPrevMutRight s1 = (TS.rightMember largerTS s1 >>=) $ \case
+      False -> return False
+      True  -> not <$> TS.rightMember smallerTS s1
+
+    memPrevMut :: Sym -> Sym -> m Bool
+    memPrevMut s0 s1 = (TS.member largerTS s0 s1 >>=) $ \case
+      False -> return False
+      True  -> not <$> TS.member smallerTS s0 s1
+
+    leftMutOverlapCheck, rightMutOverlapCheck :: Sym -> m Bool
+    leftMutOverlapCheck s0 = (memPrevMutLeft s0 >>=) $ \case
+      False -> return False
+      True  -> allM memPrevMutRight (UT.toList $ dCIs_jt^.JT.right)
+    rightMutOverlapCheck s1 = (memPrevMutRight s1 >>=) $ \case
+      False -> return False
+      True  -> allM memPrevMutLeft (UT.toList $ dCIs_jt^.JT.left)
+
+  -- check if type of dCIs is fully subsumed by prevMut before going
+  -- through dCIs CI-by-CI
+  completeOverlap <- case mut of
+    AddLeft  s0 ->  leftMutOverlapCheck s0
+    DelLeft  s0 ->  leftMutOverlapCheck s0
+    AddRight s1 -> rightMutOverlapCheck s1
+    DelRight s1 -> rightMutOverlapCheck s1
+    _else | dCIs == CIs.empty -> return True
+          | otherwise -> err' $ "bi-directional mut only expected to "
+                         ++ "have one joint: " ++ show (mut, dCIs)
+  let
+    thisMutType = Mut.typeOfMut mut
+    memA = return .: JT.member dCIs_jt
+    memB s0 s1 = (<$> TS.member newTS s0 s1) $
+      let memJT = flip2 JT.member s0 s1
+      in case (prevMutType, thisMutType) of
+        (Add, Add) -> (||      memJT new_mutJT)
+        (Add, Del) -> (&& not (memJT new_mutJT))
+        (Del, Add) -> (||     (memJT new_mutJT && not (memJT dCIs_jt)))
+        (Del, Del) -> (&& not (memJT new_mutJT ||      memJT dCIs_jt))
+  let
+    dCIsL = IM.elems dCIs_bhd
+    sign | prevMutType == thisMutType = id
+         | otherwise = negate :: Int -> Int
+
+  dCor' <- case completeOverlap of
+    True -> return IM.empty
+    False -> ffmap sign $
+      ( fmap ( fromMaybe IM.empty . foldTree imUnion -- join
+               . fmap Cor.onAddMut_ ) -- get Cor
+        . filterM (fmap not . overlapsPrevMut dly memPrevMut) -- no prev mut
+        <=< fmap (catMaybes . catMaybes) -- no `Nothing` or `Just Nothing`
+        . mapM (compose dly memA memB) ) dCIsL
   let
     -- ddns --
-    new_ddns = IM.mergeWithKey (\_ (_, ddn') _ -> nothingIf (==0) ddn')
-               (snd <$>) id ddnsIls old_ddns -- left-biased union
+    newDdns = IM.mergeWithKey (\_ (_, ddn') _ -> nothingIf (==0) ddn')
+               (snd <$>) id ddnsIls oldDdns -- left-biased union
     ddnsIls = IM.mergeWithKey (\_ ddn d -> Just (ddn, ddn + d))
-              (const IM.empty) ((0,) <$>) old_ddns dddns
-    dddns = case Mut.typeOfMut mut of
+              (const IM.empty) ((0,) <$>) oldDdns dddns
+    dddns = case thisMutType of
       Add -> negate <$> udddns
       Del -> udddns
     udddns = dCIsCounts `imUnion` dCor
     dCIsCounts = case prevMutType of
       Add -> dcis_ns'
       Del -> negate <$> dcis_ns'
-    dcis_ns' = dcis_ns `imUnion` dCor'
+    dcis_ns' = dCIs_ns `imUnion` dCor'
 
     -- dnsLoss --
-    new_dnsLoss = old_dnsLoss + dDnsLoss
+    newDnsLoss = oldDnsLoss + dDnsLoss
     dDnsLoss = sum $ IM.mergeWithKey
                ( \_ ((old_n', new_n', dLoss), _) (ddn, ddn') -> Just $
                  let old_n'' = old_n' + ddn
@@ -163,20 +214,20 @@ apply _old_mem prevMutType new_mem n'Of dly me meu = do
                        new_n'' = n' + ddn'
                    in logFact old_n'' - logFact new_n'' )
                n'IlDdns ddnsIls
+
     n'IlDdns = IM.mergeWithKey (const $ Just .: (,))
                (error "informed of a n' update that is not in ddns")
                (const $ IM.empty)
-               n'Ils old_ddns
+               n'Ils oldDdns
 
     -- dnm --
-    new_dnm = old_dnm + dDnm
+    newDnm = oldDnm + dDnm
     dDnm = negate (sum dddns) & \r ->
       if even r then r `div` 2
       else err' $ "expected even number: " ++ show (r, dddns)
 
-  CIs.checkIntegrityM dly new_cis -- (debug)
-
-  return $ ME mut new_dnsLoss new_ddns new_dnm new_cis
+  CIs.checkIntegrityM dly newCIs -- (debug)
+  return $ ME mut newDnsLoss newDdns newDnm newCIs
 
   where
     err' = err . ("apply: " ++)
@@ -184,79 +235,117 @@ apply _old_mem prevMutType new_mem n'Of dly me meu = do
 err :: String -> a
 err = error . ("MutEntry.Update." ++)
 
--- | Returns the list of alternating [out-]in-out-etc. CIs, where each
--- in-CI, is in both `sub` and `super` types and out-CIs are in `super`,
--- but not `sub`, surrounding a given in-CI. Each joint member of `sub`
--- is assumed to be member of `super` as well. Returns Nothing if given
--- in-CI is member of a chain that will be returned by another (left)
--- in-CI (injectivity). Returns Just Nothing if the CI chain only
--- contains the given CI (singleton).
-compose :: PrimMonad m => (Sym -> Sym -> m Bool) -> (Sym -> Sym -> m Bool) ->
-           Doubly (PrimState m) -> CI -> m (Maybe (Maybe (NonEmpty CI)))
-compose super sub dly ci = (<$> liftA2 (,) prev next) $ \case
-  (Nothing, _) -> Nothing -- cancelled (rare)
-  (Just Nothing, mnxt) -> Just $ (ci <|) <$> mnxt
-  (Just (Just prv), mnxt) -> Just $ Just $
-                             maybe (prv:|[ci]) ((prv:|[ci]) <>) mnxt
-  where
-    prev = prevCI  super sub dly ci
-    next = nextCIs super sub dly ci
+overlapsPrevMut :: PrimMonad m => Doubly (PrimState m) ->
+                   (Sym -> Sym -> m Bool) -> NonEmpty CI -> m Bool
+overlapsPrevMut dly memPrevMut cis =
+  overlapsPrevMut1 dly memPrevMut `anyM` NE.toList cis
 
+overlapsPrevMut1 :: PrimMonad m => Doubly (PrimState m) ->
+                    (Sym -> Sym -> m Bool) -> CI -> m Bool
+overlapsPrevMut1 dly memPrevMut ci =
+  CI.jointExtension dly ci >>= anyM (uc memPrevMut)
+
+-- NOTE 1: this below could well be in Diagram.Evolution.Correction, but
+-- as it is only used here (for now), having what is essentially
+-- `composeAdds` on a single mutation (the one being updated) with a
+-- particular filter operation in this file probably makes the reading
+-- less confusing.
+
+-- NOTE 2: we would use the super/sub separation as it is used in
+-- Diagram.Evolution.Correction, i.e. that `sub ==> super`, or that the
+-- CI chains are of alternating `sub` and `super & (not sub)`, but
+-- because of the calculation of `dCor'` has to change the two
+-- predicates depending on the 4 ways `prevMutType x thisMutType` can
+-- go, would require a 3-part inclusion/exclusion definition of
+-- predicates for `super`, it becomes simpler that the primary predicate
+-- `super` not subsume the secondary predicate `sub`, so that the
+-- returned CI chains are of alternating `sub` and `super` (instead of
+-- `super & (not sub)`).
+--
+-- Predicate names, now being mutually exclusive sets, are renamed `inA`
+-- for `sub` (`A` is the name given to the set where the given CI
+-- belongs) and `inB` for `super`. This makes the logic easier to
+-- follow.
+
+-- | Given membership function for two mutually exclusive joint types, a
+-- reference string, and a CI of joints satisfying the first membership
+-- function, return the list of alternating [B-]A-B-A-B-etc. CIs,
+-- surrounding (including) the given A-CI.
+--
+-- `Nothing` if another A-CI is to the left of the given CI separated by
+-- a single B-CI, for injectivity. Or if any encountered joint
+-- (including those of the given CI) satisfies `memPrevMut` predicate.
+--
+-- `Just Nothing` if the CI chain only contains the given CI (usual
+-- case).
+compose :: PrimMonad m => Doubly (PrimState m) -> (Sym -> Sym -> m Bool) ->
+           (Sym -> Sym -> m Bool) -> CI -> m (Maybe (Maybe (NonEmpty CI)))
+compose dly memA memB ciA = (<$> liftA2 (,) prev next) $ \case
+    (Just Nothing, Nothing) -> Just Nothing -- no B-neighbors (usual case)
+    (Just Nothing, Just nxt) -> Just $ Just (ciA <| nxt)
+    (Just (Just prv), Nothing) -> Just $ Just (prv:|[ciA])
+    (Just (Just prv), Just nxt) -> Just $ Just $ ((prv:|[ciA]) <> nxt)
+    (Nothing, _) -> Nothing -- cancelled (rare)
+  where
+    prev = prevCI  memA memB dly ciA
+    next = nextCIs memA memB dly ciA
 
 -- WHERE --
 
 prevCI :: PrimMonad m => (Sym -> Sym -> m Bool) -> (Sym -> Sym -> m Bool) ->
           Doubly (PrimState m) -> CI -> m (Maybe (Maybe CI))
-prevCI super sub dly (CI hd0 shd0 _ _ _) = (D.prev dly hd0 >>=) $ \case
+prevCI memA memB dly (CI hd0 shd0 _ _ _) = (mmphd0 >>=) $ \case
   Nothing -> return $ Just Nothing -- no prev symbol/interval
-  Just (phd0,sphd0) -> (super sphd0 shd0 >>=) $ \case
+  Just (phd0,sphd0) -> (memB sphd0 shd0 >>=) $ \case
     False -> return $ Just Nothing
     True -> go phd0 sphd0 2 -- Just <<$>> (go ... :: m (Maybe CI))
       where
         go hd shd !len = (D.prev dly hd >>=) $ \case
           Nothing -> return res -- hit start, end
-          Just (phd,sphd) -> (super sphd shd >>=) $ \case
-            True -> (sub sphd shd >>=) $ \case
+          Just (phd,sphd) -> (memB sphd shd >>=) $ \case
+            True -> go phd sphd (len+1)
+            False -> (memA sphd shd >>=) $ \case
               True -> return Nothing -- not first of a chain, cancel
-              False -> go phd sphd (len+1)
-            False -> return res -- end of interval
+              False -> return res -- end of interval
           where
             res = Just $ Just $ CI hd shd len hd0 shd0
+  where
+    mmphd0 = D.prev dly hd0
 
 nextCIs :: forall m. PrimMonad m => (Sym -> Sym -> m Bool) ->
-           (Sym -> Sym -> m Bool) -> Doubly (PrimState m) ->
-           CI -> m (Maybe (NonEmpty CI))
-nextCIs super sub dly (CI _ _ _ i0 s0) = (D.next dly i0 >>=) $ \case
+           (Sym -> Sym -> m Bool) -> Doubly (PrimState m) -> CI ->
+           m (Maybe (NonEmpty CI))
+nextCIs memA memB dly (CI _ _ _ i0 s0) = (D.next dly i0 >>=) $ \case
   Nothing -> return Nothing -- hit end
-  Just (i1,s1) -> (super s0 s1 >>=) $ \case
+  Just (i1,s1) -> (memB s0 s1 >>=) $ \case
     False -> return Nothing
-    True -> Just <$> goOut [] (CI i0 s0) 2 i1 s1
+    True -> Just <$> goB [] (CI i0 s0) 2 i1 s1
       where
-        goOut :: [CI] -> (Len -> Index -> Sym -> CI) ->
-                 Len -> Index -> Sym -> m (NonEmpty CI)
-        goOut acc mkCI = go where
+        goB :: [CI] -> (Len -> Index -> Sym -> CI) ->
+               Len -> Index -> Sym -> m (NonEmpty CI)
+        goB acc mkCI = go where
           go !len tl stl = (D.next dly tl >>=) $ \case
             Nothing -> return res -- hit end of string
-            Just (ntl,sntl) -> (super stl sntl >>=) $ \case
-              True -> (sub stl sntl >>=) $ \case
-                True -> goIn (ci:acc) mkCI' 2 ntl sntl -- switch
-                False -> go (len+1) ntl sntl -- keep going
-              False -> return res -- end of intervals
+            Just (ntl,sntl) -> (memB stl sntl >>=) $ \case
+              True -> go (len+1) ntl sntl -- keep going
+              False -> (memA stl sntl >>=) $ \case
+                True -> goA (ci:acc) mkCI' 2 ntl sntl -- switch
+                False -> return res -- end of intervals
             where
               ci = mkCI len tl stl
               mkCI' = CI tl stl
               res = NE.reverse (ci:|acc)
 
-        goIn :: [CI] -> (Len -> Index -> Sym -> CI) ->
-                Len -> Index -> Sym -> m (NonEmpty CI)
-        goIn acc mkCI = go where
+        goA :: [CI] -> (Len -> Index -> Sym -> CI) ->
+               Len -> Index -> Sym -> m (NonEmpty CI)
+        goA acc mkCI = go where
           go !len tl stl = (D.next dly tl >>=) $ \case
             Nothing -> return res -- hit end of string
-            Just (ntl,sntl) -> (super stl sntl >>=) $ \case
-              True -> (sub stl sntl >>=) $ \case
-                True -> go (len+1) ntl sntl -- keep going
-                False -> goOut (ci:acc) mkCI' 2 ntl sntl -- switch
-              False -> return res -- end of intervals
+            Just (ntl,sntl) -> (memA stl sntl >>=) $ \case
+              True -> go (len+1) ntl sntl -- keep going
+              False -> (memB stl sntl >>=) $ \case
+                True -> goB (ci:acc) mkCI' 2 ntl sntl -- switch
+                False -> return res -- end of intervals
             where
               ci = mkCI len tl stl
               mkCI' = CI tl stl

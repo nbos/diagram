@@ -168,6 +168,18 @@ meet :: JointType -> JointType -> JointType
 meet (JT u0 u1) (JT u0' u1') =
   JT (UT.meet u0 u0') (UT.meet u1 u1')
 
+-- | Partial ordering
+compare :: JointType -> JointType -> Maybe Ordering
+compare (JT u0 u1) (JT u0' u1') = do -- Maybe
+  ord0 <- UT.compare u0 u0'
+  ord1 <- UT.compare u1 u1'
+  case ord0 of
+    LT | GT <- ord1 -> Nothing
+       | otherwise  -> Just LT
+    GT | LT <- ord1 -> Nothing
+       | otherwise  -> Just GT
+    EQ -> Just ord1
+
 -----------
 -- CODEC --
 -----------

@@ -244,9 +244,8 @@ checkIntervalsIntegrity dly (CIs _ ns bhd btl)
 -- | Check against the type
 checkJointsAgainstType :: PrimMonad m => Doubly (PrimState m) -> CIs -> m ()
 checkJointsAgainstType dly (CIs jt _ bhd _) = do
-  ijts <- concat <$> mapM (CI.jointExtension dly) (IM.elems bhd)
-  let (s0s, s1s) = unzip $ snd <$> ijts
-      jt_verif = JT.fromLists s0s s1s
+  (s0s, s1s) <- unzip . concat <$> mapM (CI.jointExtension dly) (IM.elems bhd)
+  let jt_verif = JT.fromLists s0s s1s
   when (jt /= jt_verif) $
     err $ "checkJointsAgainstType: type doesn't correspond to member joints:"
     ++ "\nis:\n" ++ show jt ++ "\nshould be:\n" ++ show jt_verif ++ "\n"
@@ -255,9 +254,8 @@ checkJointsAgainstType dly (CIs jt _ bhd _) = do
 -- | Errorless version of @checkIntegrity@
 valid :: PrimMonad m => Doubly (PrimState m) -> CIs -> m Bool
 valid dly (CIs jt ns bhd btl) = do
-  ijts <- concat <$> mapM (CI.jointExtension dly) cisL
-  let (s0s, s1s) = unzip $ snd <$> ijts
-      jt_verif = JT.fromLists s0s s1s
+  (s0s, s1s) <- unzip . concat <$> mapM (CI.jointExtension dly) cisL
+  let jt_verif = JT.fromLists s0s s1s
   ns_verif <- unions <$> mapM (CI.symCounts dly) cisL
   return $ even (sum ns)
     && bhdCIs == btlCIs && jt == jt_verif && ns == ns_verif
