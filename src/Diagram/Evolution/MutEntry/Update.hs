@@ -104,17 +104,20 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
       MEU n'Ils dCor dCIs@(CIs dCIs_jt dCIs_ns dCIs_bhd _) = meu
 
   traceM $ "\nApplying mut entry update (on " ++ pShow mut ++ "): " ++ pShow meu
+  traceM $ "\noldCIs = " ++ pShow oldCIs
+  traceM $ "dCIs = " ++ pShow dCIs
 
   -- cis --
   (newCIs@(CIs new_mutJT _ _ _), _) <- case prevMutType of
     Add -> return $ CIs.join_ oldCIs dCIs
     Del -> (<$> CIs.difference dly Nothing Nothing oldCIs dCIs) $
-      _1.CIs.jointType %~ case mut of -- manually fix the joint type of CIs
-        AddLeft _  -> JT.right %~ UT.differenceSubset (dCIs_jt^.JT.right)
-        DelLeft _  -> JT.right %~ UT.differenceSubset (dCIs_jt^.JT.right)
-        AddRight _ -> JT.left  %~ UT.differenceSubset (dCIs_jt^.JT.left)
-        DelRight _ -> JT.left  %~ UT.differenceSubset (dCIs_jt^.JT.left)
+      (_1.CIs.jointType %~ case mut of -- manually fix the joint type of CIs
+        AddLeft _  -> JT.right %~ flip UT.differenceSubset (dCIs_jt^.JT.right)
+        DelLeft _  -> JT.right %~ flip UT.differenceSubset (dCIs_jt^.JT.right)
+        AddRight _ -> JT.left  %~ flip UT.differenceSubset (dCIs_jt^.JT.left)
+        DelRight _ -> JT.left  %~ flip UT.differenceSubset (dCIs_jt^.JT.left)
         _else -> id -- no-op (dCIs should be empty: Add/Del2 only have 1 joint)
+      )
 
   traceM $ "\nnew_cis = " ++ pShow newCIs
   traceM "\ncompose output:"
