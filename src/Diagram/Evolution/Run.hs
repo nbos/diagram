@@ -176,7 +176,8 @@ step = do
   str <- D.toList =<< use doubly -- (debug)
   traceM $ pShowStrMut mut mutJT typJT str
 
-  n <- use stepNumber
+  numRun <- use runNumber
+  numStep <- use stepNumber
 
   if ddInfo > 0
     then do
@@ -186,7 +187,7 @@ step = do
     let msg = "-- Pushing mut " ++ show mut ++ " --"
         msg_len = length msg
         bot_bar = replicate msg_len '-'
-        top_bar_label = '[' : show n ++ [']']
+        top_bar_label = '[' : show numRun ++ ':' : show numStep ++ [']']
         label_len = length top_bar_label
         top_bar_left_side_len = (msg_len - label_len) `div` 2
         top_bar_left_side = replicate top_bar_left_side_len '-'
@@ -199,7 +200,6 @@ step = do
     traceM ""
 
     pushMut e
-    stepNumber += 1 -- inc
     trace "" traceM $ " -------------------- Finished push "
       ++ top_bar_label ++ " --------------------"
     return True
@@ -342,6 +342,7 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   --
 
   jointCount += mutDnm -- apply delta nm
+  stepNumber += 1 -- inc
   get >>= validate -- (debug)
 
   where
