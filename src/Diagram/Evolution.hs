@@ -1,621 +1,70 @@
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
-{-# LANGUAGE TypeApplications, TypeOperators #-}
 {-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE TupleSections #-}
 
 module Diagram.Evolution (module Diagram.Evolution) where
 
-import Prelude hiding (init)
-import Debug.Trace
+import System.Random (StdGen)
 
-import Control.Monad
 import Control.Monad.Extra
-import Control.Lens hiding (both,last1,Index,(:>),index)
 import Control.Monad.State.Strict
+import Control.Monad.Trans.Random.Lazy (RandT)
+import Control.Lens hiding (both,last1,Index,(:>),index)
 
-import Data.Function
-import qualified Data.List as L
-import Data.Strict.Tuple (Pair(..))
-import Data.Strict.Classes (toLazy)
-
-import Data.Set (Set)
-import qualified Data.Set as Set
-import qualified Data.IntSet as IS
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as M
-import Data.IntMap.Strict (IntMap)
-import qualified Data.IntMap.Strict as IM
-
-import qualified Data.Vector as V
+import Diagram.String
+import Diagram.Primitive
+import Diagram.Streaming ()
 import qualified Data.Vector.Unboxed as U
 
-import Diagram.Pretty
-import Diagram.Primitive
-
-import Diagram.Joints (Joints)
 import qualified Diagram.UnionType as UT
 import Diagram.JointType (JointType(JT))
 import qualified Diagram.JointType as JT
-import Diagram.String
-import qualified Diagram.ConstrInterval as CI
-import Diagram.ConstrInterval (CI)
-import Diagram.ConstrIntervals (CIs(CIs))
+import qualified Diagram.JointType.Random as JT
+
+import Diagram.Joints (Joints)
+import qualified Diagram.Joints as Jts
+import Diagram.ConstrIntervals (CIs)
 import qualified Diagram.ConstrIntervals as CIs
-import qualified Diagram.Doubly as D
 
-import Diagram.Evolution.Math (logFact)
-import qualified Diagram.Evolution.Math as Math
-import Diagram.Evolution.Mutation (Mutation(..), MutType(..))
-import qualified Diagram.Evolution.Mutation as Mut
-import qualified Diagram.Evolution.Correction as Cor
-import Diagram.Evolution.TypeState (TypeState)
-import qualified Diagram.Evolution.TypeState as TS
-import Diagram.Evolution.MutEntry (MutEntry(..))
-import qualified Diagram.Evolution.MutEntry as ME
-import Diagram.Evolution.MutEntry.Update (Update(..))
-import qualified Diagram.Evolution.MutEntry.Update as MEU
-import Diagram.Evolution.MutBooks (MutBooks(MutBooks), byMut)
-import qualified Diagram.Evolution.MutBooks as MB
+import Diagram.Evolution.Run ()
+import qualified Diagram.Evolution.Run as Run
 
-import Diagram.Util
+data EvolutionState
 
-----------------------
--- EVOLUTION STATE  --
-----------------------
-
-type EvolutionT m = StateT (EvolutionState (PrimState m)) m
--- | Evolution state of a JointType in a given string
-data EvolutionState s = EvolutionState
-  -- String state (static/readonly, only changes accross intros, not evolution)
-  { _stringLen :: !Int -- N, bigN
-  , _doubly    :: !(Doubly s) -- dly :: underlying string :: [N]Sym
-  , _symCounts :: !(U.Vector Count) -- ns :: symbol counts (TODO: dyn vec)
-  , _jointCIs  :: !(Joints CIs) -- allCIs :: (s0,s1) -> CIs
-
-  -- current Type state (evolves/mutates)
-  , _generation :: !Int -- number of mutations applied
-  , _typeState  :: !(TypeState s) -- sym entries :: [(mem, coIn, deps, coOut)]
-  , _typeCIs    :: !CIs -- joint type CIs
-  , _jointCount :: !Int -- nm (dnm)
-
-  -- indexed Mutations
-  , _mutBooks :: !(MutBooks s) }
-makeLenses ''EvolutionState
-
--- GETTERS --
-
--- | m
-numSymbols :: Monad m => EvolutionT m Int
-numSymbols = zoom typeState TS.numSymbols
-
-jointType :: Monad m => EvolutionT m JointType
-jointType = use $ typeCIs.CIs.jointType
-
--- | vm = sz0 * sz1
-variety :: Monad m => EvolutionT m Int
-variety = JT.variety <$> jointType
-
--- | Compute the difference in information/code length incurred by the
--- introduction of the current joint type (i.e. no further mutation)
-getIntroInfo :: PrimMonad m => EvolutionT m Double
-getIntroInfo = Math.dInfo <$> numSymbols -- m
-                          <*> use stringLen -- N
-                          <*> use jointCount -- nm
-                          <*> getCountIntervals -- [(n,n')]
-                          <*> variety -- vm
-
-getCountIntervals :: PrimMonad m => EvolutionT m [(Count,Count)]
-getCountIntervals = snd <<$>> getSymCountIntervals
-
-getSymCountIntervals :: Monad m => EvolutionT m [(Sym,(Count,Count))]
-getSymCountIntervals = do
-  ns <- use symCounts
-  CIs _ ndns _ _ <- use typeCIs
-  return $ IM.toList $ flip IM.mapWithKey ndns $ \s ndn ->
-    let n = ns U.! s
-        n' = n - ndn
-    in seq n' (n,n')
-
--- EVAL --
-
--- | Enumerate all available mutations with their loss. Unsorted.
-evalAll :: Monad m => EvolutionT m [(Double, MutEntry)]
-evalAll = evalAll_ <$> numSymbols -- m
-                   <*> use stringLen -- N
-                   <*> use jointCount -- nm
-                   <*> jointType -- JointType
-                   <*> use mutBooks -- Books
-
-evalAll_ :: Int -> Int -> Int -> JointType -> MutBooks s ->
-            [(Double, MutEntry)]
-evalAll_ m bigN nm jt (MutBooks als ars a2s dls drs d2s _ _) =
-  concat $ zipWith (fmap . toFst) lossFns entries
+-- | Keep generating random JointTypes and hill-climbing to minima,
+-- printing results.
+searchForever :: forall m. (MonadIO m, PrimMonad m) => Int -> Int ->
+  Doubly (PrimState m) -> U.Vector Int -> Joints CIs -> RandT StdGen m ()
+searchForever m bigN dly ns allCIs = go 1
   where
-    (sz0,sz1) = JT.dims jt
-    vm = sz0 * sz1
-    lossFns :: [MutEntry -> Double]
-    lossFns = ME.eval m bigN nm <$> vm's
-    vm's = [ vm + sz1 -- addLeft
-           , vm + sz0 -- addRight
-           , vm + sz0 + sz1 + 1 -- add2
-           , vm - sz1 -- delLeft
-           , vm - sz0 -- delRight
-           , vm - sz0 - sz1 + 1 ] :: [Int] -- del2
+    top = JT.fromJoints allCIs
+    allCIs2s = Jts.sized $ Jts.doubleIndex 256 allCIs
 
-    entries :: [[MutEntry]]
-    entries = flatten <$> [ als, ars, a2s, dls, drs, d2s ]
-    flatten = concatMap (concatMap M.elems . M.elems)
-              . IM.elems
+    go :: Int -> RandT StdGen m ()
+    go !num = do
+      (jt, cis) <- JT.genRandom allCIs2s
+      -- report stats, verify properties/integrity
+      let indent = (liftIO (putStr "  ") >>)
+      indent $ JT.printInfo (top, allCIs) (jt, cis)
+      liftIO $ putStrLn ""
+      indent $ JT.printLUB jt cis
+      indent $ JT.printSubtyping (top, allCIs) (jt, cis)
+      indent $ JT.printConservation (top, allCIs) (jt, cis)
+      indent $ JT.printMembership allCIs (jt, cis)
+      liftIO $ putStrLn ""
 
--- EXEC --
+      (JT u0' u1') <- hillClimb m bigN dly ns allCIs num (jt,cis)
+      liftIO $ putStr "Minimal type achieved: " >> print (UT.toAscList u0')
+      liftIO $ putStr "                       " >> print (UT.toAscList u1')
+
+      go (num+1) -- repeat
 
 -- | Hill climb to a local minimum, given parameters m (number of
 -- symbols), N (string length), the string, symbol counts, constructive
 -- intervals of all joints in the string and a joint type with its CIs
 -- indexed by joint.
-hillClimb :: forall m. PrimMonad m =>
-  Int -> Int -> Doubly (PrimState m) -> U.Vector Int -> Joints CIs ->
-  (JointType, Joints CIs) -> m JointType
-hillClimb = init_ >======> execStateT (whileM step)
-            >.> fmap (^.typeCIs.CIs.jointType)
-
-step :: PrimMonad m => EvolutionT m Bool
-step = do
-  es <- evalAll
-  let (_, e@(ME mut loss ddns dnm (CIs mutJT _ _ _))) =
-        L.minimumBy (compare `on` fst) es
-
-  CIs typJT@(JT u0 u1) _ _ _ <- use typeCIs
-  traceM ""
-  traceM $ "Joint type: " ++ show (UT.toList u0)
-  traceM $ "            " ++ show (UT.toList u1)
-
-  traceM ""
-  traceM $ "  Best mutation: " ++ pShow mut
-  traceM $ "  ddnsLoss: " ++ pShow loss
-  traceM $ "  ddns: "     ++ pShow ddns
-  traceM $ "  dnm: "      ++ pShow dnm
-
-  ddInfo <- ddInformation e
-  traceM $ "  ddInfo: "      ++ pShow ddInfo
-  traceM ""
-
-  str <- D.toList =<< use doubly -- (debug)
-  traceM $ pShowStrMut mut mutJT typJT str
-
-  n <- use generation
-
-  if ddInfo > 0
-    then do
-    return False
-
-    else do
-    let msg = "-- Pushing mut " ++ show mut ++ " --"
-        msg_len = length msg
-        bot_bar = replicate msg_len '-'
-        top_bar_label = '[' : show n ++ [']']
-        label_len = length top_bar_label
-        top_bar_left_side_len = (msg_len - label_len) `div` 2
-        top_bar_left_side = replicate top_bar_left_side_len '-'
-        top_bar_right_side = replicate (msg_len - label_len
-                                        - top_bar_left_side_len) '-'
-
-    traceM $ ' ':(top_bar_left_side ++ top_bar_label ++ top_bar_right_side)
-    traceM $ ' ':msg
-    traceM $ ' ':bot_bar
-    traceM ""
-
-    pushMut e
-    generation += 1 -- inc
-    trace "" traceM $ " -------------------- Finished push "
-      ++ top_bar_label ++ " --------------------"
-    return True
-
-ddInformation :: PrimMonad m => MutEntry -> EvolutionT m Double
-ddInformation (ME mut _ ddns dnm _) = do
-  m <- numSymbols
-  bigN <- use stringLen
-  ils <- getMutCountIntervals ddns
-  nm <- use jointCount
-
-  vm <- variety
-  (sz0, sz1) <- JT.dims <$> jointType
-  let vm' = case mut of
-        AddLeft _  -> vm + sz1
-        AddRight _ -> vm + sz0
-        Add2 _ _   -> vm + sz0 + sz1 + 1
-        DelLeft _  -> vm - sz1
-        DelRight _ -> vm - sz0
-        Del2 _ _   -> vm - sz0 - sz1 + 1
-
-  return $ Math.ddInfo m bigN ils (nm, nm+dnm) (vm, vm')
-
--- | Return the updated count-intervals of symbols whose counts are
--- affected by a mut, given the delta-delta-symbol-counts of the mut
-getMutCountIntervals :: PrimMonad m => IntMap Int -> EvolutionT m [(Count,Count)]
-getMutCountIntervals ddns = do
-  ns <- use symCounts
-  CIs _ ndns _ _ <- use typeCIs
-  return $ IM.elems $ IM.mergeWithKey (Just .:. f ns)
-    (const IM.empty) (IM.mapWithKey $ flip (f ns) 0)
-    ndns ddns
-  where
-    f ns s ndn ddn = seq n'' (n',n'')
-      where n = ns U.! s
-            n' = n - ndn
-            n'' = n' + ddn
-
-------------
--- UPDATE --
-------------
-
--- | Apply a mutation, update books.
-pushMut :: forall m. PrimMonad m => MutEntry -> EvolutionT m ()
-pushMut me@(ME mut _ mutDdns mutDnm _) = do
-
-  -- Application of a Mutation affects other MutEntries in three ways:
-  -- (1) the post-intro count of symbols (n') changes, affecting mut
-  -- entries' post-application symbol counts (n''), both of which
-  -- dnsLoss is a function of; (2) changes to correction terms from the
-  -- inclusion/exclusion of the muts CIs, affecting mut entries'
-  -- post-application symbol counts (n''); and (3) inclusion/exclusion
-  -- of new joints into mut CIs, again affecting count n'' and the
-  -- dnsLoss. Diagram.Evolution.MutEntry.Update (MEU) makes the three
-  -- into update "entries" to be applied together for each affected
-  -- mutation.
-
-  old_tst <- TS.clone =<< use typeState -- clone entire type state
-  zoom typeState $ TS.pushMut mut -- [APPLY] on TypeState
-  new_tst <- use typeState
-  --
-
-  -- (3/3): Joint coverage changes
-  (enabledMuts, expiredMuts, movedJoints) <- TS.deltaMutJoints old_tst mut
-
-  traceM $ "Enabled muts (insert): " ++ pShow enabledMuts
-  traceM ""
-
-  traceM $ "Expired muts (delete): " ++ pShow expiredMuts
-  traceM ""
-
-  traceM $ "Moved (" ++ show typeOfMut ++ "'d) joints: " ++ pShow movedJoints
-  traceM ""
-
-  -- DELETE EXPIRED ENTRIES
-  zoom mutBooks $ mapM_ MB.delete $ Set.toList expiredMuts
-  --
-
-  -- (1/3): Pre-mut symbol count changes (n')
-  CIs _ oldTypNdns _ _ <- use typeCIs -- (before getCorDelta modifies)
-  ns <- use symCounts
-  let mutsFlipped = enabledMuts `Set.union` expiredMuts
-      n'Ils = pushMut_n'Ils ns oldTypNdns mutDdns
-      unionIl = M.unionWithKey $ const $ IM.unionWithKey
-        (err' . ("duplicate sym count intervals: " ++) . show .:. (,,))
-  getAffectedMuts <- mutBooks `uses` MB.affectedMuts
-
-  n'IlsByAffected <- fmap ( maybe M.empty (flip M.withoutKeys mutsFlipped)
-                           . foldTree unionIl ) $
-    forM (IM.toList n'Ils) $ \(s, n'Il) ->
-    M.fromSet (const $ IM.singleton s n'Il) <$> getAffectedMuts s
-  --
-
-  -- (2/3): Correction terms changes
-  let movedJointss :: Map Mutation (Set (Sym, Sym))
-      movedJointss = flip M.mapWithKey movedJoints $ \mu ss ->
-        ( Set.fromDistinctAscList $ Mut.mutJoint mu <$> IS.toAscList ss )
-
-  dly <- use doubly
-  deltaCor <- (typeCIs %%== pushMut_CIs dly old_tst new_tst me)
-              <&> (`M.withoutKeys` mutsFlipped)
-  --
-
-  -- MAKE ENTRY UPDATES
-  let mkMEU_01 nIl dc = MEU nIl dc CIs.empty
-      mutEntryUpdates_01 = M.mergeWithKey (const $ Just .: mkMEU_01)
-                           (MEU.fromDCounts <$>) (MEU.fromDCor <$>)
-                           n'IlsByAffected deltaCor
-  allCIs <- use jointCIs
-  let getCIs = mfoldTree . M.elems . M.restrictKeys allCIs
-
-      mutEntryUpdates = M.mergeWithKey
-        (\_ (MEU nIl dcor _) dcis -> Just $ MEU nIl dcor dcis)
-        id (fmap MEU.fromDCIs)
-        mutEntryUpdates_01 (fmap getCIs movedJointss)
-
-  -- trace "" traceM $ "Updates: " ++ pShow mutEntryUpdates
-
-  -- (debug)
-  CIs newTypJT ndns _ _ <- use typeCIs
-  str <- use doubly >>= D.toList
-  let n'Of s = maybe n (n-) $ IM.lookup s ndns
-        where n = ns U.! s
-  --
-
-  -- APPLY ENTRY UPDATES
-  mutEntries <- use $ mutBooks.byMut
-  let update :: MutEntry -> Update -> StateT (MutBooks (PrimState m)) m ()
-      update = MB.update . ME.validate newTypJT str n'Of <==< apply
-      apply :: MutEntry -> Update -> StateT (MutBooks (PrimState m)) m MutEntry
-      apply = MEU.apply old_tst typeOfMut new_tst n'Of dly
-
-  zoom mutBooks $ sequence_ $ M.intersectionWith update
-    mutEntries mutEntryUpdates
-
-  -- INSERT NEWLY ENABLED ENTRIES
-  let ime@(ME imut _ _ _ _) = ME.recip me
-  es <- mapM mkMutEntry $ Set.toList $ Set.delete imut enabledMuts
-  zoom mutBooks $ mapM_ MB.insert (ime:es)
-  --
-
-  jointCount += mutDnm -- apply delta nm
-  get >>= validate -- (debug)
-
-  where
-    typeOfMut = Mut.typeOfMut mut
-    err' = err . ("pushMut: " ++)
-
--- WHERE --
-
--- | Given the string, before and after type states of the given mut as
--- well as the CIs of the type before application of the mut, apply the
--- difference on the type CIs and the delta on Cor of all available
--- mutations (may include erroneous corrections on newly enabled muts
--- (Add case) or newly expired muts (Del case), which need to be
--- computed explicitly anyway, but remember to filter them out)
-pushMut_CIs :: forall m. PrimMonad m => Doubly (PrimState m) ->
-  TypeState (PrimState m) -> TypeState (PrimState m) -> MutEntry -> CIs ->
-  m (Map Mutation (IntMap Int), CIs)
-pushMut_CIs dly old_tst new_tst me typCIs = fmap toLazy $
-  trace ("mutCIs: " ++ pShow mutCIs) $
-  case typeOfMut of
-  Add -> do
-    let superCI :: CI -> m (Maybe (Maybe (CI, [CI])))
-        superCI = CI.superCI dly super sub
-          where super = TS.member new_tst
-                sub = fmap not .: TS.member old_tst
-                -- (return .: JT.member mutJT)
-
-        getDelta :: CI -> [CI] -> m (Map Mutation (IntMap Int))
-        getDelta super subs = Cor.deltaOnAllMuts dly notInMut
-                              (super, new_tst) (subs, old_tst)
-
-    flip execStateT st0 $ forM_ mutCIsL $
-      \ci -> (lift (superCI ci) >>=) $ flip whenJust $ \case
-        Nothing -> do -- super == ci
-          (_1 %=) . Cor.union =<< lift (getDelta ci [])
-          _2 %== insert1 ci
-        Just (super, subs) -> do -- super > ci
-          (_1 %=) . Cor.union =<< lift (getDelta super subs)
-          _2 %== foldr (>=>) (insert1 super) -- insert after
-                             (delete1 <$> subs) -- dels first
-  Del -> do
-    let superCI :: CI -> m (Maybe (Maybe (CI, [CI])))
-        superCI = CI.superCI dly super sub
-          where super = TS.member old_tst
-                sub = fmap not .: TS.member new_tst
-                -- return .: JT.member mutJT
-
-        getDelta :: CI -> [CI] -> m (Map Mutation (IntMap Int))
-        getDelta super rems = negate <<<$>>> Cor.deltaOnAllMuts dly notInMut
-                              (super, old_tst) (rems, new_tst)
-
-    flip execStateT st0 $ forM_ mutCIsL $
-      \ci -> (lift (superCI ci) >>=) $ flip whenJust $ \case
-        Nothing -> do -- super == ci
-          (_1 %=) . Cor.union =<< lift (getDelta ci [])
-          _2 %== delete1 ci
-        Just (super, rems) -> do -- super > ci
-          (_1 %=) . Cor.union =<< lift (getDelta super rems)
-          _2 %== foldr (<=<) (delete1 super) -- del first
-                             (insert1 <$> rems) -- inserts after
-  where
-    ME mut _ _ _ mutCIs@(CIs mutJT _ mutCIsBhd _) = me
-    typeOfMut = Mut.typeOfMut mut
-    -- we modify the JT here, and do all the insert-deleting in the loop
-    st0 = M.empty :!: over CIs.jointType (Mut.unsafeApply mut) typCIs
-
-    mutCIsL = IM.elems mutCIsBhd
-    notInMut = not .: JT.member mutJT
-    insert1 = CIs.insertDisjoint dly
-    delete1 = CIs.deleteExisting dly
-
--- | Given a count vector (before intro, `n`), counts of the symbols in
--- the type to be introduced (negative delta on counts, `-dn`), and
--- deltas of sym counts on that type of a mut (delta delta, `ddn`),
--- return the before/after values of delta on counts (n,n') as well as
--- the delta on the dnsLoss that is incured by the change.
-pushMut_n'Ils :: U.Vector Count -> IntMap Int -> IntMap Int ->
-                  IntMap (Count, Count, Double)
-pushMut_n'Ils ns = IM.mergeWithKey col
-                   (const IM.empty) -- ndns only
-                   (IM.mapWithKey newDns)
-  where
-    col :: Int -> Count -> Count -> Maybe (Count, Count, Double)
-    col s ndn ddn = seq dLoss $ Just (old_n', new_n', dLoss)
-      where n = ns U.! s
-            old_n' = n - ndn
-            new_n' = old_n' + ddn
-            dLoss = logFact new_n' - logFact old_n'
-
-    newDns :: Int -> Count -> (Count, Count, Double)
-    newDns s ddn = seq dLoss (old_n', new_n', dLoss)
-      where n = ns U.! s
-            old_n' = n -- dn == 0
-            new_n' = old_n' + ddn
-            dLoss = logFact new_n' - logFact old_n'
-
-mkMutEntry :: PrimMonad m => Mutation -> EvolutionT m MutEntry
-mkMutEntry mut = do
-  tst <- use typeState
-  allCIs <- use jointCIs
-  mutCIs <- mfoldTree . M.elems . M.intersection allCIs
-            <$> TS.jointsOf tst mut
-
-  typCIs@(CIs jt ndns _ _) <- use typeCIs
-  str <- D.toList =<< use doubly -- (debug)
-  ns <- use symCounts
-  cor <- case Mut.typeOfMut mut of
-    Add -> return $ snd $ CIs.join_ typCIs mutCIs
-    Del -> do
-      dly <- use doubly
-      fmap snd $ CIs.difference dly (Just $ TS.member tst)
-         Nothing typCIs mutCIs
-
-  return $ ME.validate jt str (n'Of ns ndns) $ -- (debug)
-    ME.fromParamsWithCor (n'Of ns ndns) mut mutCIs cor
-
-  where
-    n'Of ns ndns s = maybe n (n-) $ IM.lookup s ndns
-      where n = ns U.! s
-
-----------
--- INIT --
-----------
-
--- | Construct a new EvolutionState
-init :: PrimMonad m => Int -> Int -> Doubly (PrimState m) -> U.Vector Int ->
-        Joints CIs -> JointType -> m (EvolutionState (PrimState m))
-init m bigN dly ns allCIs jt = init_ m bigN dly ns allCIs (jt, memJointCIs)
-  where memJointCIs = M.filterWithKey (const . uc (JT.member jt)) allCIs
-
--- | Construct a new EvolutionState where the second set of CIs given is
--- a subset of the first set and corresponds exactly to its entries for
--- each joint that falls under the given type.
-init_ :: forall m. PrimMonad m => Int -> Int -> Doubly (PrimState m) ->
-         U.Vector Int -> Joints CIs -> (JointType, Joints CIs) ->
-         m (EvolutionState (PrimState m))
-init_ m bigN dly ns allCIs (jt, memJointCIs) = do
-  tst <- TS.init m allJoints jt
-
-  -- TODO: switch back to non-debug CIs.join --
-  cisByMut <- joinByMutM tst (CIs.debug_join dly) $ M.toList allCIs
-  corByMut <- Cor.unions <$> mapM (Cor.onAllMuts dly tst) memCIsL
-  str <- D.toList dly -- TODO: rm
-
-  let es = M.mergeWithKey ( Just . ME.validate jt str n'Of
-                               .:. ME.fromParamsWithCor n'Of ) -- CIs * cor
-        (M.mapWithKey $
-          ME.validate jt str n'Of .: ME.fromParams n'Of) -- only CIs
-        (M.mapWithKey $ -- note: mergeWithKey can pass empty maps, so map errs
-          err' . ("have cor, but CIs missing: " ++) . show .: (,)) -- only cor
-        cisByMut corByMut
-
-  books <- MB.fromList m $ M.elems es
-  return $ EvolutionState { _stringLen  = bigN
-                          , _doubly     = dly
-                          , _symCounts  = ns
-                          , _jointCIs   = allCIs
-                          , _generation = 0
-                          , _typeState  = tst
-                          , _typeCIs    = memCIs
-                          , _jointCount = nm
-                          , _mutBooks   = books }
-  where
-    allJoints = M.keys allCIs
-    memCIs@(CIs _ ndns _ _) = mfoldTree $ M.elems memJointCIs
-    memCIsL = CIs.toList memCIs
-    n'Of s = maybe n (n-) $ IM.lookup s ndns
-      where n = ns U.! s
-    err' = err . ("init: " ++)
-
-    two_nm = sum ndns
-    nm | even two_nm = two_nm `div` 2
-       | otherwise = err' $ "expected an even number: " ++ show (two_nm, ndns)
-
--- WHERE --
-
--- | Combine values keyed by joints flipped (in/out) by the same
--- mutation together, given a combining function
-joinByMut :: forall m a. PrimMonad m => TypeState (PrimState m) ->
-             (a -> a -> a) -> [((Sym,Sym), a)] -> m (Map Mutation a)
-joinByMut tst f = fmap (M.fromListWith f . concat) . mapM g
-  where
-    g :: ((Sym,Sym), a) -> m [(Mutation, a)]
-    g ((s0,s1), a) = (,a) <<$>> TS.mutsOf tst s0 s1
-
--- | joinByMut, but monadic
-joinByMutM :: forall m a. PrimMonad m => TypeState (PrimState m) ->
-  (a -> a -> m a) -> [((Sym,Sym), a)] -> m (Map Mutation a)
-joinByMutM tst f = (fromListWithM f . concat) <=< mapM g
-  where
-    g :: ((Sym,Sym), a) -> m [(Mutation, a)]
-    g ((s0,s1), a) = (,a) <<$>> TS.mutsOf tst s0 s1
-
--- | Data.Map.fromListWith, but monadic
-fromListWithM :: (Ord k, Monad m) => (a -> a -> m a) -> [(k, a)] -> m (Map k a)
-fromListWithM f = foldM g M.empty
-  where
-    g m (k,v) = M.alterF (comb v) k m
-    comb new Nothing    = pure (Just new)
-    comb new (Just old) = Just <$> f new old
-
-err :: String -> a
-err = error . ("Evolution." ++)
-
-validate :: PrimMonad m => EvolutionState (PrimState m) -> m ()
-validate (EvolutionState bigN dly ns allCIs _ tst memCIs nm books) = do
-  st' <- init m bigN dly ns allCIs jt
-  let EvolutionState _ _ _ _ _ tst' memCIs' nm' books' = st'
-
-  unless (nm == nm') $
-    err'' "joint counts (total)" (nm, nm')
-  return $ validateCIs "Evolution.validate: mismatch in type CIs: "
-    memCIs memCIs'
-
-  let TS.TS u0 u1 = tst
-  se0s <- V.toList <$> V.freeze u0
-  se1s <- V.toList <$> V.freeze u1
-  let TS.TS u0' u1' = tst'
-  se0s' <- V.toList <$> V.freeze u0'
-  se1s' <- V.toList <$> V.freeze u1'
-  forM_ (zip [0::Int ..] $ zip se0s se0s') $ \(s, (se0, se0')) ->
-    unless (se0 == se0') $
-    err'' ("sym entries for " ++ show s ++ " (left)") (se0,se0')
-  forM_ (zip [0::Int ..] $ zip se1s se1s') $ \(s, (se1, se1')) ->
-    unless (se1 == se1') $
-    err'' ("sym entries for " ++ show s ++ " (right)") (se1,se1')
-
-  str <- D.toList dly
-  forM_ (M.toList $ books^.MB.byMut) $
-    \(mut, ME _ _ ddns dnm cis@(CIs mutJT _ _ _)) ->
-      case M.lookup mut (books'^.MB.byMut) of
-        Nothing -> err' ("extra mut entry found: " ++ pShow mut)
-        Just (ME _ _ ddns' dnm' cis') -> do
-          when (ddns /= ddns') $
-            err' $ "fields ddns for mut entry " ++ pShow mut
-            ++ "\ndon't check out: " ++ pShow (ddns, ddns')
-            ++ "\n\n" ++ pShowStrMut mut mutJT jt str
-          when (dnm /= dnm') $
-            err' $ "fields dnm for mut entry " ++ pShow mut
-            ++ "\ndon't check out: " ++ pShow (dnm, dnm')
-            ++ "\n\n" ++ pShowStrMut mut mutJT jt str
-          return $ validateCIs
-            ("Evolution.validate: mismatch in CIs for mut "
-             ++ pShow mut ++ ": ") cis cis'
-
-  forM_ (M.toList $ books'^.MB.byMut) $ \(mut, _) ->
-    case M.lookup mut (books^.MB.byMut) of
-      Nothing -> err' ("missing mut entry: " ++ pShow mut)
-      Just _  -> return ()
-
-  where
-    CIs jt _ _ _ = memCIs
-    m = U.length ns
-    err' = err . ("validate: " ++)
-    err'' name vals = err' $ name ++ " don't check out:\n"
-                      ++ pShow vals
-
-validateCIs :: String -> CIs -> CIs -> ()
-validateCIs msg (CIs jt ndns bhd btl) (CIs jt' ndns' bhd' btl')
-  | jt /= jt' = err' "joint types" (jt,jt')
-  | ndns /= ndns' = err' "joint counts (individual)" $ imValDiff ndns ndns'
-  | bhd /= bhd' = err' "CIs (by head)" $ imKeyDiff bhd bhd'
-  | btl /= btl' = err' "CIs (by tail)" $ imKeyDiff btl btl'
-  | otherwise = ()
-  where
-    err' name = err . ((msg ++ name ++ " don't check out: ") ++) . show
-    imKeyDiff im im' = (im IM.\\ im', im' IM.\\ im)
-    imValDiff im im' = IM.unionWith (+) im (negate <$> im')
+hillClimb :: PrimMonad m => Int -> Int -> Doubly (PrimState m) ->
+  U.Vector Int -> Joints CIs -> Int -> (JointType, Joints CIs) -> m JointType
+hillClimb m bigN dly ns allCIs num jt = do
+  st <- Run.init_ m bigN dly ns allCIs num jt
+  res <- execStateT (whileM Run.step) st
+  return (res^.Run.typeCIs.CIs.jointType)

@@ -27,37 +27,22 @@ import Options.Applicative
       progDesc,
       header )
 
-import System.Random (StdGen)
 import qualified System.Random as R
 
-import Control.Monad
-import Control.Monad.IO.Class (MonadIO(..))
-import Control.Monad.Trans.Random.Lazy (RandT,evalRand,evalRandT)
-import Control.Monad.State.Strict (MonadTrans(lift))
+import Control.Monad.Trans.Random.Lazy (evalRand,evalRandT)
 import Control.Monad.Random.Class (MonadRandom(getRandom))
 
 import Data.Word (Word64)
 import qualified Data.Vector.Unboxed as U
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as M
 
 import qualified Streaming.Prelude as S
 import qualified Streaming.ByteString as Q
 import Diagram.Streaming ()
-import Diagram.String
-
-import qualified Diagram.UnionType as UT
-import Diagram.JointType (JointType(JT))
-import qualified Diagram.JointType as JT
-import qualified Diagram.JointType.Random as JT
 
 import qualified Diagram.Doubly as D
-import qualified Diagram.Joints as Jts
 import qualified Diagram.Model as Mdl
 import qualified Diagram.ConstrIntervals as CIs
 import qualified Diagram.Evolution as Evo
-
--- import Diagram.Simple
 
 import Diagram.Progress (withPB)
 
@@ -113,100 +98,7 @@ main = do
   putStrLn "String: " >> print str
   putStrLn ""
 
-  let top@(JT _tu0 _tu1) = JT.fromJoints allCIs
-      allCIs2s = Jts.sized $ Jts.doubleIndex 256 allCIs
-      m = 256 :: Int
+  let m = 256 :: Int
 
-  case () of
-    _ -> evalRandT go stdGen -- run
-
-      where -- MAIN LOOP --
-      go :: RandT StdGen IO ()
-      go = do
-        (jt, cis) <- JT.genRandom allCIs2s
-
-        -- report stats, verify properties/integrity
-        let ind = (lift (putStr "  ") >>)
-        ind $ printInfo (top, allCIs) (jt, cis)
-        lift $ putStrLn ""
-        ind $ printLUB jt cis
-        ind $ printSubtyping (top, allCIs) (jt, cis)
-        ind $ printConservation (top, allCIs) (jt, cis)
-        ind $ printMembership allCIs (jt, cis)
-        lift $ putStrLn ""
-
-        (JT u0' u1') <- Evo.hillClimb m bigN dly ns allCIs (jt,cis)
-        lift $ putStr "Minimal type: " >> print (UT.toAscList u0')
-        lift $ putStr "              " >> print (UT.toAscList u1')
-
-        go -- repeat
-
----------------------
--- IO STATS/CHECKS --
----------------------
-
-printInfo :: MonadIO m => (JointType, Map (Sym,Sym) a) ->
-             (JointType, Map (Sym,Sym) b) -> m ()
-printInfo (jt,jts) (rjt,rjts) = liftIO $ putStrLn $
-  "Generated type with size "
-  ++ show (JT.dims rjt)
-  ++ " from "  ++ show (JT.dims jt)
-  ++ " covering " ++ show (Jts.size rjts)
-  ++ " joints out of " ++ show (Jts.size jts)
-  ++ " ("  ++ show
-  (round @_ @Int $ 100.0 * fromIntegral (Jts.size rjts)
-    / fromIntegral @_ @Double (Jts.size jts))
-  ++ "%)"
-
-printLUB :: MonadIO m => JointType -> Map (Sym,Sym) a -> m ()
-printLUB jt jts = liftIO $ do
-  putStr "type is "
-  if jt == JT.fromJoints jts
-    then putStrLn $ inGreen "LUB" ++ " of its joints"
-    else do putStrLn $ inRed "not LUB" ++ " of its joints"
-            putStrLn $ "rtjt: " ++ show (jt, void jts)
-            error "LUB error"
-
-printSubtyping :: MonadIO m => (JointType, Map (Sym,Sym) a) ->
-                  (JointType, Map (Sym,Sym) b) -> m ()
-printSubtyping (jt,jts) (rjt,rjts) = liftIO $ do
-  let jts' = jts M.\\ rjts
-  putStr "type is "
-  if rjt `JT.leq` jt
-    then putStrLn $ inGreen "subtype" ++ " of its parent"
-    else do putStrLn $ inRed "not subtype" ++ " of its parent"
-            putStrLn $ "tjt: " ++ show (jt, void jts)
-              ++ "\ntjt': " ++ show (jt, void jts')
-              ++ "\nrtjt: " ++ show (rjt, void rjts)
-            error "subtype error"
-
-printConservation :: MonadIO m => (JointType, Map (Sym,Sym) a) ->
-                     (JointType, Map (Sym,Sym) a) -> m ()
-printConservation (jt,jts) (rjt,rjts) = liftIO $ do
-  let jts' = jts M.\\ rjts
-  putStr "split " -- TODO: check disjointness too?
-  if void jts == (void rjts `M.union` void jts')
-    then putStrLn $ inGreen "preserves" ++ " all joints"
-    else do putStrLn $ inRed "does not preserve" ++ " all joints"
-            putStrLn $ "tjt: " ++ show (jt, void jts)
-              ++ "\ntjt': " ++ show (jt, void jts')
-              ++ "\nrtjt: " ++ show (rjt, void rjts)
-            error "joints split error"
-
-printMembership :: MonadIO m => Map (Sym,Sym) a -> (JointType, Map (Sym,Sym) a) -> m ()
-printMembership jts (rjt,rjts) = liftIO $ do
-  let rjtsVerif = M.filterWithKey (const . uncurry (JT.member rjt)) jts
-  putStr "returned joints "
-  if M.keys rjts == M.keys rjtsVerif
-    then putStrLn $ inGreen "match" ++ " joints under the type"
-    else do putStrLn $ inRed "don't match" ++ " joints under the type"
-            putStrLn $ "rtjt: " ++ show (M.keys rjts)
-              ++ "\nrjts: " ++ show (M.keys rjts)
-              ++ "\nrjtsVerif: " ++ show (M.keys rjtsVerif)
-            error "joints coverage error"
-
-inRed :: String -> String
-inRed s = "\ESC[31mError:" ++ s ++ "\ESC[0m"
-
-inGreen :: String -> String
-inGreen s = "\ESC[32m" ++ s ++ "\ESC[0m"
+  flip evalRandT stdGen $ -- go
+    Evo.searchForever m bigN dly ns allCIs

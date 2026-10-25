@@ -75,6 +75,7 @@ executable diagram
                       Diagram.JointType
                       Diagram.JointType.Random
                       Diagram.Evolution
+                      Diagram.Evolution.Run
                       Diagram.Evolution.Math
                       Diagram.Evolution.Mutation
                       Diagram.Evolution.MutBooks

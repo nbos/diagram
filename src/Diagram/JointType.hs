@@ -1,26 +1,30 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
 {-# LANGUAGE InstanceSigs, DeriveGeneric, DeriveAnyClass #-}
-{-# LANGUAGE LambdaCase, TupleSections #-}
+{-# LANGUAGE LambdaCase, TupleSections, TypeApplications #-}
 
 module Diagram.JointType (module Diagram.JointType, Sym) where
 
 import GHC.Generics (Generic)
+import Control.Monad
 import Control.Lens hiding (both,Index)
 
 import Data.Hashable
 import Data.Tuple.Extra
 import qualified Data.List.Extra as L
+import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 
 import qualified Codec.Arithmetic.Variety as Variety
 import Codec.Arithmetic.Variety.BitVec (BitVec)
 import qualified Codec.Arithmetic.Variety.BitVec as BV
 
+import Diagram.Primitive
 import Diagram.Information
 
 import Diagram.String
 import Diagram.Joints (Joints)
+import qualified Diagram.Joints as Jts
 import Diagram.UnionType (UnionType(..))
 import qualified Diagram.UnionType as UT
 
@@ -241,3 +245,73 @@ resolutionInfo k jt = fromIntegral k * log2 base
 -- | Length of a code to instantiate a type into `k` constructions
 resolutionLen :: Int -> JointType -> Int
 resolutionLen = ceiling .: resolutionInfo
+
+---------------------
+-- IO STATS/CHECKS --
+---------------------
+
+printInfo :: MonadIO m => (JointType, Map (Sym,Sym) a) ->
+             (JointType, Map (Sym,Sym) b) -> m ()
+printInfo (jt,jts) (rjt,rjts) = liftIO $ putStrLn $
+  "Generated type with size "
+  ++ show (dims rjt)
+  ++ " from "  ++ show (dims jt)
+  ++ " covering " ++ show (Jts.size rjts)
+  ++ " joints out of " ++ show (Jts.size jts)
+  ++ " ("  ++ show
+  (round @_ @Int $ 100.0 * fromIntegral (Jts.size rjts)
+    / fromIntegral @_ @Double (Jts.size jts))
+  ++ "%)"
+
+printLUB :: MonadIO m => JointType -> Map (Sym,Sym) a -> m ()
+printLUB jt jts = liftIO $ do
+  putStr "type is "
+  if jt == fromJoints jts
+    then putStrLn $ inGreen "LUB" ++ " of its joints"
+    else do putStrLn $ inRed "not LUB" ++ " of its joints"
+            putStrLn $ "rtjt: " ++ show (jt, void jts)
+            error "LUB error"
+
+printSubtyping :: MonadIO m => (JointType, Map (Sym,Sym) a) ->
+                  (JointType, Map (Sym,Sym) b) -> m ()
+printSubtyping (jt,jts) (rjt,rjts) = liftIO $ do
+  let jts' = jts M.\\ rjts
+  putStr "type is "
+  if rjt `leq` jt
+    then putStrLn $ inGreen "subtype" ++ " of its parent"
+    else do putStrLn $ inRed "not subtype" ++ " of its parent"
+            putStrLn $ "tjt: " ++ show (jt, void jts)
+              ++ "\ntjt': " ++ show (jt, void jts')
+              ++ "\nrtjt: " ++ show (rjt, void rjts)
+            error "subtype error"
+
+printConservation :: MonadIO m => (JointType, Map (Sym,Sym) a) ->
+                     (JointType, Map (Sym,Sym) a) -> m ()
+printConservation (jt,jts) (rjt,rjts) = liftIO $ do
+  let jts' = jts M.\\ rjts
+  putStr "split " -- TODO: check disjointness too?
+  if void jts == (void rjts `M.union` void jts')
+    then putStrLn $ inGreen "preserves" ++ " all joints"
+    else do putStrLn $ inRed "does not preserve" ++ " all joints"
+            putStrLn $ "tjt: " ++ show (jt, void jts)
+              ++ "\ntjt': " ++ show (jt, void jts')
+              ++ "\nrtjt: " ++ show (rjt, void rjts)
+            error "joints split error"
+
+printMembership :: MonadIO m => Map (Sym,Sym) a -> (JointType, Map (Sym,Sym) a) -> m ()
+printMembership jts (rjt,rjts) = liftIO $ do
+  let rjtsVerif = M.filterWithKey (const . uncurry (member rjt)) jts
+  putStr "returned joints "
+  if M.keys rjts == M.keys rjtsVerif
+    then putStrLn $ inGreen "match" ++ " joints under the type"
+    else do putStrLn $ inRed "don't match" ++ " joints under the type"
+            putStrLn $ "rtjt: " ++ show (M.keys rjts)
+              ++ "\nrjts: " ++ show (M.keys rjts)
+              ++ "\nrjtsVerif: " ++ show (M.keys rjtsVerif)
+            error "joints coverage error"
+
+inRed :: String -> String
+inRed s = "\ESC[31mError:" ++ s ++ "\ESC[0m"
+
+inGreen :: String -> String
+inGreen s = "\ESC[32m" ++ s ++ "\ESC[0m"

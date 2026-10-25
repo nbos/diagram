@@ -1,8 +1,10 @@
 module Diagram.Primitive
   ( module Diagram.Primitive
   , PrimMonad(PrimState)
+  , MonadIO(..)
   ) where
 
+import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.Primitive (PrimMonad(PrimState))
 import qualified Data.Vector.Generic.Mutable as MV
 

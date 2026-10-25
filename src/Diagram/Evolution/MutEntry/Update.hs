@@ -163,13 +163,14 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
   let
     thisMutType = Mut.typeOfMut mut
     memA = return .: JT.member dCIs_jt
-    memB s0 s1 = (<$> TS.member newTS s0 s1) $
-      let memJT = flip2 JT.member s0 s1
+    memB s0 s1 =
+      let memTS = (<$> TS.member newTS s0 s1)
+          memJT = flip2 JT.member s0 s1
       in case (prevMutType, thisMutType) of
-        (Add, Add) -> (||      memJT new_mutJT)
-        (Add, Del) -> (&& not (memJT new_mutJT))
-        (Del, Add) -> (||     (memJT new_mutJT && not (memJT dCIs_jt)))
-        (Del, Del) -> (&& not (memJT new_mutJT ||      memJT dCIs_jt))
+        (Add, Add) -> memTS (||      memJT new_mutJT)
+        (Add, Del) -> memTS (&& not (memJT new_mutJT))
+        (Del, Add) -> memTS (||     (memJT new_mutJT && not (memJT dCIs_jt)))
+        (Del, Del) -> memTS (&& not (memJT new_mutJT ||      memJT dCIs_jt))
   let
     dCIsL = IM.elems dCIs_bhd
     sign | prevMutType == thisMutType = id
