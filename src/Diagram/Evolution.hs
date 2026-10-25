@@ -22,8 +22,8 @@ import qualified Diagram.JointType.Random as JT
 
 import Diagram.Joints (Joints)
 import qualified Diagram.Joints as Jts
-import Diagram.ConstrIntervals (CIs)
-import qualified Diagram.ConstrIntervals as CIs
+import Diagram.ConstrIntervals.Internal (CIs)
+import qualified Diagram.ConstrIntervals.Internal as CIs
 
 import Diagram.Evolution.Run ()
 import qualified Diagram.Evolution.Run as Run

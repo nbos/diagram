@@ -193,11 +193,10 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
     dddns = case thisMutType of
       Add -> negate <$> udddns
       Del -> udddns
-    udddns = dCIsCounts `imUnion` dCor
+    udddns = dCIsCounts `imUnion` dCor `imUnion` dCor'
     dCIsCounts = case prevMutType of
-      Add -> dcis_ns'
-      Del -> negate <$> dcis_ns'
-    dcis_ns' = dCIs_ns `imUnion` dCor'
+      Add -> dCIs_ns
+      Del -> negate <$> dCIs_ns
 
     -- dnsLoss --
     newDnsLoss = oldDnsLoss + dDnsLoss

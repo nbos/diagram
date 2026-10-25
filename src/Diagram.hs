@@ -41,7 +41,7 @@ import Diagram.Streaming ()
 
 import qualified Diagram.Doubly as D
 import qualified Diagram.Model as Mdl
-import qualified Diagram.ConstrIntervals as CIs
+import qualified Diagram.ConstrIntervals.Internal as CIs
 import qualified Diagram.Evolution as Evo
 
 import Diagram.Progress (withPB)
