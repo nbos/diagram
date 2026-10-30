@@ -89,8 +89,8 @@ onAllMuts dly tst ci = do
 deltaOnAllMuts :: PrimMonad m => Doubly (PrimState m) -> (Sym -> Sym -> Bool) ->
   (CI, TypeState (PrimState m)) -> ([CI], TypeState (PrimState m)) -> m Cor
 deltaOnAllMuts dly subCond (super, sup_tst) (subs, sub_tst) = do
-  traceM $ pShow subs
-  traceM $ pShow super
+  traceM $ "subs: " ++ pShow subs
+  traceM $ "sup:  " ++ pShow super
   -- Del Cor
   supDelCor <- onDelMuts dly sup_tst super
   traceShowM ("supDelCor",supDelCor)
@@ -99,6 +99,8 @@ deltaOnAllMuts dly subCond (super, sup_tst) (subs, sub_tst) = do
   let delCorDelta = foldr union supDelCor $ negate <<<$>>> subDelCor
   -- Add Cor
   (mSuperAddChains, inters) <- composeAddsSub dly subCond sup_tst super
+  traceM $ "inters: " ++ pShow inters
+  traceM $ "mSuperAddChains: " ++ pShow mSuperAddChains
   intersSupAddCor <- forM inters $ onAddMuts dly sup_tst
   supAddCor <- case mSuperAddChains of
     Nothing -> onAddMuts dly sup_tst super <&> (:intersSupAddCor)
@@ -321,7 +323,7 @@ prevMutCI dly tst (CI hd0 shd0 _ _ _) = (D.prev dly hd0 >>=) $ \case
 -- - |  +--+---+--+     |   |  (in)   |   |    +-+---+---+   |
 -- - +-mut-+   +---mut--+   |  inter  |   +-sub--+   +--sub--+
 -- - |                  |   |         |   |                  |
--- - +-------+----(in)--+   +--sub'---+   +---(in)--+--------+
+-- - +------------(in)--+   +--sub'---+   +---(in)-----------+
 -- -
 -- - input: superCI :: CI
 -- -

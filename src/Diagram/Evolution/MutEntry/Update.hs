@@ -101,26 +101,31 @@ apply :: forall m. PrimMonad m => TypeState (PrimState m) -> MutType ->
   MutEntry -> Update -> m MutEntry
 apply oldTS prevMutType newTS n'Of dly me meu = do
   let ME mut oldDnsLoss oldDdns oldDnm oldCIs = me
-      MEU n'Ils dCor dCIs@(CIs dCIs_jt dCIs_ns dCIs_bhd _) = meu
+      MEU n'Ils dCor dCIs@(CIs dCIsJT dCIs_ns dCIs_bhd _) = meu
+
+  str <- D.toList dly
 
   traceM $ "\nApplying mut entry update (on " ++ pShow mut ++ "): " ++ pShow meu
   traceM $ "\noldCIs = " ++ pShow oldCIs
-  traceM $ "dCIs = " ++ pShow dCIs
+  traceM $ pShowStr (oldCIs^.CIs.jointType) str
+
+  traceM $ "\ndCIs = " ++ pShow dCIs
+  traceM $ pShowStr (dCIs^.CIs.jointType) str
 
   -- cis --
   (newCIs@(CIs new_mutJT _ _ _), _) <- case prevMutType of
     Add -> return $ CIs.join_ oldCIs dCIs
     Del -> (<$> CIs.difference dly Nothing Nothing oldCIs dCIs) $
       (_1.CIs.jointType %~ case mut of -- manually fix the joint type of CIs
-        AddLeft _  -> JT.right %~ flip UT.differenceSubset (dCIs_jt^.JT.right)
-        DelLeft _  -> JT.right %~ flip UT.differenceSubset (dCIs_jt^.JT.right)
-        AddRight _ -> JT.left  %~ flip UT.differenceSubset (dCIs_jt^.JT.left)
-        DelRight _ -> JT.left  %~ flip UT.differenceSubset (dCIs_jt^.JT.left)
+        AddLeft _  -> JT.right %~ flip UT.differenceSubset (dCIsJT^.JT.right)
+        DelLeft _  -> JT.right %~ flip UT.differenceSubset (dCIsJT^.JT.right)
+        AddRight _ -> JT.left  %~ flip UT.differenceSubset (dCIsJT^.JT.left)
+        DelRight _ -> JT.left  %~ flip UT.differenceSubset (dCIsJT^.JT.left)
         _else -> id -- no-op (dCIs should be empty: Add/Del2 only have 1 joint)
       )
 
   traceM $ "\nnew_cis = " ++ pShow newCIs
-  traceM "\ncompose output:"
+  traceM $ pShowStr (newCIs^.CIs.jointType) str
 
   -- dCor' --
   let
@@ -129,29 +134,23 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
       Add -> (oldTS, newTS)
       Del -> (newTS, oldTS)
 
+    -- it's pointless to go CI-by-CI, rejecting them all if all joints
+    -- of dCIs are joints of prevMut, so we check for this "overlap" as
+    -- an optimization; should be removable with no change to result
     memPrevMutLeft, memPrevMutRight :: Sym -> m Bool
     memPrevMutLeft s0 = (TS.leftMember largerTS s0 >>=) $ \case
-      False -> return False
+      False -> return False -- i.e. liftA2 (&&)
       True  -> not <$> TS.leftMember smallerTS s0
     memPrevMutRight s1 = (TS.rightMember largerTS s1 >>=) $ \case
-      False -> return False
+      False -> return False -- i.e. liftA2 (&&)
       True  -> not <$> TS.rightMember smallerTS s1
-
-    memPrevMut :: Sym -> Sym -> m Bool
-    memPrevMut s0 s1 = (TS.member largerTS s0 s1 >>=) $ \case
-      False -> return False
-      True  -> not <$> TS.member smallerTS s0 s1
-
     leftMutOverlapCheck, rightMutOverlapCheck :: Sym -> m Bool
     leftMutOverlapCheck s0 = (memPrevMutLeft s0 >>=) $ \case
-      False -> return False
-      True  -> allM memPrevMutRight (UT.toList $ dCIs_jt^.JT.right)
+      False -> return False -- i.e. liftA2 (&&)
+      True  -> allM memPrevMutRight (UT.toList $ dCIsJT^.JT.right)
     rightMutOverlapCheck s1 = (memPrevMutRight s1 >>=) $ \case
-      False -> return False
-      True  -> allM memPrevMutLeft (UT.toList $ dCIs_jt^.JT.left)
-
-  -- check if type of dCIs is fully subsumed by prevMut before going
-  -- through dCIs CI-by-CI
+      False -> return False -- i.e. liftA2 (&&)
+      True  -> allM memPrevMutLeft (UT.toList $ dCIsJT^.JT.left)
   completeOverlap <- case mut of
     AddLeft  s0 ->  leftMutOverlapCheck s0
     DelLeft  s0 ->  leftMutOverlapCheck s0
@@ -160,30 +159,43 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
     _else | dCIs == CIs.empty -> return True
           | otherwise -> err' $ "bi-directional mut only expected to "
                          ++ "have one joint: " ++ show (mut, dCIs)
+    --
   let
     thisMutType = Mut.typeOfMut mut
-    memA = return .: JT.member dCIs_jt
-    memB s0 s1 =
-      let memTS = (<$> TS.member newTS s0 s1)
-          memJT = flip2 JT.member s0 s1
+    memA = return .: JT.member dCIsJT
+    memB s0 s1 = let
+      memNewTS = (<$> TS.member newTS s0 s1)
+      memNewMutJT = JT.member new_mutJT s0 s1
+      mem_dCIsJT = JT.member dCIsJT s0 s1
       in case (prevMutType, thisMutType) of
-        (Add, Add) -> memTS (||      memJT new_mutJT)
-        (Add, Del) -> memTS (&& not (memJT new_mutJT))
-        (Del, Add) -> memTS (||     (memJT new_mutJT && not (memJT dCIs_jt)))
-        (Del, Del) -> memTS (&& not (memJT new_mutJT ||      memJT dCIs_jt))
+        (Add, Add) -> memNewTS (||      memNewMutJT)
+        (Add, Del) -> memNewTS (&& not  memNewMutJT)
+        (Del, Add) -> memNewTS (||     (memNewMutJT && not mem_dCIsJT)) -- old?
+        (Del, Del) -> memNewTS (&& not (memNewMutJT ||     mem_dCIsJT))
   let
     dCIsL = IM.elems dCIs_bhd
     sign | prevMutType == thisMutType = id
          | otherwise = negate :: Int -> Int
 
+    memPrevMut :: Sym -> Sym -> m Bool
+    memPrevMut s0 s1 = (TS.member largerTS s0 s1 >>=) $ \case
+      False -> return False
+      True  -> not <$> TS.member smallerTS s0 s1
+
+  traceM $ "\n dCIsL = " ++ pShow dCIsL
+
+  traceM "\ncompose output:"
   dCor' <- case completeOverlap of
     True -> return IM.empty
     False -> ffmap sign $
       ( fmap ( fromMaybe IM.empty . foldTree imUnion -- join
                . fmap Cor.onAddMut_ ) -- get Cor
         . filterM (fmap not . overlapsPrevMut dly memPrevMut) -- no prev mut
-        <=< fmap (catMaybes . catMaybes) -- no `Nothing` or `Just Nothing`
+        <=< fmap (catMaybes . catMaybes . fmap traceShowId) -- no `Nothing` or `Just Nothing`
         . mapM (compose dly memA memB) ) dCIsL
+
+  traceM $ "\ndCor' = " ++ pShow dCor'
+
   let
     -- ddns --
     newDdns = IM.mergeWithKey (\_ (_, ddn') _ -> nothingIf (==0) ddn')
@@ -201,21 +213,46 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
     -- dnsLoss --
     newDnsLoss = oldDnsLoss + dDnsLoss
     dDnsLoss = sum $ IM.mergeWithKey
-               ( \_ ((old_n', new_n', dLoss), _) (ddn, ddn') -> Just $
+               ( \s ((old_n', new_n', dLoss), _) (ddn, ddn') -> Just $
                  let old_n'' = old_n' + ddn
                  -- old_loss = logFact old_n' - logFact old_n''
                      new_n'' = new_n' + ddn'
                  -- new_loss = logFact new_n' - logFact new_n''
-                 in dLoss - logFact new_n'' + logFact old_n'' )
-               ( fmap $ \((old_n', new_n', dLoss), ddn) -> -- n'Il only
+                 in traceShow ("s, both",s) $
+                    traceShow ("old_n'",old_n') $
+                    traceShow ("new_n'",new_n') $
+                    traceShow ("dLoss",dLoss) $
+                    traceShow ("ddn",ddn) $
+                    traceShow ("ddn'",ddn') $
+                    traceShow ("old_n''",old_n'') $
+                    traceShow ("new_n''",new_n'') $
+                    trace ""
+                    dLoss - logFact new_n'' + logFact old_n'' )
+               ( IM.mapWithKey $ \s ((old_n', new_n', dLoss), ddn) -> -- n'Il only
                    let old_n'' = old_n' + ddn
                        new_n'' = new_n' + ddn
-                   in dLoss - logFact new_n'' + logFact old_n'' )
+                   in traceShow ("s, n'IlDdns",s) $
+                      traceShow ("old_n'",old_n') $
+                      traceShow ("new_n'",new_n') $
+                      traceShow ("dLoss",dLoss) $
+                      traceShow ("ddn",ddn) $
+                      traceShow ("old_n''",old_n'') $
+                      traceShow ("new_n''",new_n'') $
+                      trace ""
+                      dLoss - logFact new_n'' + logFact old_n'' )
                ( IM.mapWithKey $ \s (ddn, ddn') -> -- ddns only
                    let n'      = n'Of s -- old_n' == new_n'
                        old_n'' = n' + ddn
                        new_n'' = n' + ddn'
-                   in logFact old_n'' - logFact new_n'' )
+                   in traceShow ("s, ddnsIls",s) $ -- ("s, ddnsIls",105)
+                      traceShow ("ddn",ddn) $ -- ("ddn",0)
+                      traceShow ("ddn'",ddn') $ -- ("ddn'",-2)
+                      traceShow ("n'", n') $ -- ("n'",0)
+                      traceShow ("old_n''",old_n'') $ -- ("old_n''",0)
+                      traceShow ("new_n''",new_n'') $ -- ("new_n''",-2)
+                      trace ""
+                      logFact old_n'' - logFact new_n'' ) -- ERROR --
+
                n'IlDdns ddnsIls
 
     n'IlDdns = IM.mergeWithKey (const $ Just .: (,))

@@ -61,9 +61,9 @@ import qualified Diagram.Evolution.MutBooks as MB
 
 import Diagram.Util
 
-----------------------
+----------------
 -- RUN STATE  --
-----------------------
+----------------
 
 type RunT m = StateT (RunState (PrimState m)) m
 -- | Run state of a JointType in a given string
@@ -176,14 +176,10 @@ step = do
   str <- D.toList =<< use doubly -- (debug)
   traceM $ pShowStrMut mut mutJT typJT str
 
-  numRun <- use runNumber
-  numStep <- use stepNumber
-
-  if ddInfo > 0
-    then do
-    return False
-
-    else do
+  if ddInfo > 0 then return False else do
+    stepNumber += 1 -- inc
+    numRun <- use runNumber
+    numStep <- use stepNumber
     let msg = "-- Pushing mut " ++ show mut ++ " --"
         msg_len = length msg
         bot_bar = replicate msg_len '-'
@@ -281,13 +277,13 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   -- (1/3): Pre-mut symbol count changes (n')
   CIs _ oldTypNdns _ _ <- use typeCIs -- (before getCorDelta modifies)
   ns <- use symCounts
-  let mutsFlipped = enabledMuts `Set.union` expiredMuts
+  let movedMuts = enabledMuts `Set.union` expiredMuts
       n'Ils = pushMut_n'Ils ns oldTypNdns mutDdns
       unionIl = M.unionWithKey $ const $ IM.unionWithKey
         (err' . ("duplicate sym count intervals: " ++) . show .:. (,,))
   getAffectedMuts <- mutBooks `uses` MB.affectedMuts
 
-  n'IlsByAffected <- fmap ( maybe M.empty (flip M.withoutKeys mutsFlipped)
+  n'IlsByAffected <- fmap ( maybe M.empty (flip M.withoutKeys movedMuts)
                            . foldTree unionIl ) $
     forM (IM.toList n'Ils) $ \(s, n'Il) ->
     M.fromSet (const $ IM.singleton s n'Il) <$> getAffectedMuts s
@@ -299,15 +295,15 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
         ( Set.fromDistinctAscList $ Mut.mutJoint mu <$> IS.toAscList ss )
 
   dly <- use doubly
-  deltaCor <- (typeCIs %%== pushMut_CIs dly old_tst new_tst me)
-              <&> (`M.withoutKeys` mutsFlipped)
+  dCor <- (typeCIs %%== pushMut_CIs dly old_tst new_tst me)
+          <&> (`M.withoutKeys` movedMuts)
   --
 
   -- MAKE ENTRY UPDATES
   let mkMEU_01 nIl dc = MEU nIl dc CIs.empty
       mutEntryUpdates_01 = M.mergeWithKey (const $ Just .: mkMEU_01)
                            (MEU.fromDCounts <$>) (MEU.fromDCor <$>)
-                           n'IlsByAffected deltaCor
+                           n'IlsByAffected dCor
   allCIs <- use jointCIs
   let getCIs = mfoldTree . M.elems . M.restrictKeys allCIs
 
@@ -342,7 +338,6 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   --
 
   jointCount += mutDnm -- apply delta nm
-  stepNumber += 1 -- inc
   get >>= validate -- (debug)
 
   where
