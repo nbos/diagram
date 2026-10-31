@@ -366,7 +366,7 @@ pushMut_CIs dly old_tst new_tst me typCIs = fmap toLazy $
                 -- (return .: JT.member mutJT)
 
         getDelta :: CI -> [CI] -> m (Map Mutation (IntMap Int))
-        getDelta super subs = Cor.deltaOnAllMuts dly notInMut
+        getDelta super subs = Cor.deltaOnAllMuts dly
                               (super, new_tst) (subs, old_tst)
 
     flip execStateT st0 $ forM_ mutCIsL $
@@ -386,7 +386,7 @@ pushMut_CIs dly old_tst new_tst me typCIs = fmap toLazy $
                 -- return .: JT.member mutJT
 
         getDelta :: CI -> [CI] -> m (Map Mutation (IntMap Int))
-        getDelta super rems = negate <<<$>>> Cor.deltaOnAllMuts dly notInMut
+        getDelta super rems = negate <<<$>>> Cor.deltaOnAllMuts dly
                               (super, old_tst) (rems, new_tst)
 
     flip execStateT st0 $ forM_ mutCIsL $
@@ -399,13 +399,12 @@ pushMut_CIs dly old_tst new_tst me typCIs = fmap toLazy $
           _2 %== foldr (<=<) (delete1 super) -- del first
                              (insert1 <$> rems) -- inserts after
   where
-    ME mut _ _ _ mutCIs@(CIs mutJT _ mutCIsBhd _) = me
+    ME mut _ _ _ mutCIs@(CIs _ _ mutCIsBhd _) = me
     typeOfMut = Mut.typeOfMut mut
     -- we modify the JT here, and do all the insert-deleting in the loop
     st0 = M.empty :!: over CIs.jointType (Mut.unsafeApply mut) typCIs
 
     mutCIsL = IM.elems mutCIsBhd
-    notInMut = not .: JT.member mutJT
     insert1 = CIs.insertDisjoint dly
     delete1 = CIs.deleteExisting dly
 

@@ -76,7 +76,7 @@ onAllMuts dly tst ci = do
   return $ M.unionWith (error "impossible") onAdd onDel
 
 -- TODO: is `subCond` necessary since it's defined as the difference
--- between sup_tst and sub_tst? No. TODO: monadize composeAddsSub pred
+-- between sup_tst and sub_tst?
 -- | Where a set of CIs (subs :: [CI]) inhabiting a JointType (sub_tst
 -- :: TypeState) join with neighboring CIs (muts :: [CI]) inhabiting a
 -- complement type makes a super CI (super :: CI) inhabiting a
@@ -86,9 +86,9 @@ onAllMuts dly tst ci = do
 -- complement to the JointType. Cancels chains if one of the
 --
 -- `subCond` is used both to short-circuit scanning to the left-
-deltaOnAllMuts :: PrimMonad m => Doubly (PrimState m) -> (Sym -> Sym -> Bool) ->
+deltaOnAllMuts :: PrimMonad m => Doubly (PrimState m) ->
   (CI, TypeState (PrimState m)) -> ([CI], TypeState (PrimState m)) -> m Cor
-deltaOnAllMuts dly subCond (super, sup_tst) (subs, sub_tst) = do
+deltaOnAllMuts dly (super, sup_tst) (subs, sub_tst) = do
   traceM $ "subs: " ++ pShow subs
   traceM $ "sup:  " ++ pShow super
   -- Del Cor
@@ -99,7 +99,7 @@ deltaOnAllMuts dly subCond (super, sup_tst) (subs, sub_tst) = do
   let delCorDelta = foldr union supDelCor $ negate <<<$>>> subDelCor
   -- Add Cor
   (mSuperAddChains, inters) <-
-    composeAddsSub dly (TS.member sup_tst) (TS.addMutOf sup_tst) subCond super
+    composeAddsSub dly (TS.member sup_tst) (TS.addMutOf sup_tst) notInMut super
   traceM $ "inters: " ++ pShow inters
   traceM $ "mSuperAddChains: " ++ pShow mSuperAddChains
   intersSupAddCor <- forM inters $
@@ -118,8 +118,11 @@ deltaOnAllMuts dly subCond (super, sup_tst) (subs, sub_tst) = do
 
   return $ M.unionWith (error "impossible: disjoint")
     addCorDelta delCorDelta
-
-
+  where
+    -- `inMut` would have different membership between `sup` and `sub`,
+    -- so `notInMut` has same membership, i.e. `(==)`
+    notInMut s0 s1 = liftA2 (==) (TS.member sup_tst s0 s1)
+                                 (TS.member sub_tst s0 s1)
 ----------------------
 -- ON ADD MUTATIONS --
 ----------------------
@@ -178,7 +181,7 @@ onAddMut_ cis = clean $ flip execState IM.empty $ do
 -- (i.e. "inters") inside non-cancelled chains.
 composeAddsSub :: PrimMonad m => Doubly (PrimState m) ->
   (Sym -> Sym -> m Bool) -> (Sym -> Sym -> m (Maybe Mutation)) ->
-  (Sym -> Sym -> Bool) -> CI -> m (Maybe [(Mutation, NonEmpty CI)], [CI])
+  (Sym -> Sym -> m Bool) -> CI -> m (Maybe [(Mutation, NonEmpty CI)], [CI])
 composeAddsSub dly member addMutOf subCond ci = (<$> results) $ \case
   (Nothing, Nothing)           -> (Just [], [])
   (Just (_, Nothing), Nothing) -> (Just [], [])
@@ -227,7 +230,7 @@ composeAdds dly member addMutOf ci = (<$> liftA2 (,) prevCIs nextCIs) $ \case
   where
     prevCIs = prevMutCI  dly member addMutOf ci
     nextCIs = nextMutCIs dly member addMutOf subCond ci
-      where subCond _ _ = False -- don't gather subs
+      where subCond _ _ = return False -- don't gather subs
 
 -- WHERE --
 
@@ -250,7 +253,7 @@ composeAdds dly member addMutOf ci = (<$> liftA2 (,) prevCIs nextCIs) $ \case
 -- been found to be within the state's type.
 prevMutCIsSub :: forall m. PrimMonad m => Doubly (PrimState m) ->
   (Sym -> Sym -> m Bool) -> (Sym -> Sym -> m (Maybe Mutation)) ->
-  (Sym -> Sym -> Bool) -> CI -> m (Maybe (Mutation, Maybe (NonEmpty CI, [CI])))
+  (Sym -> Sym -> m Bool) -> CI -> m (Maybe (Mutation, Maybe (NonEmpty CI, [CI])))
 prevMutCIsSub dly member addMutOf subCond ci0 = (prev0 >>=) $ \case
   Nothing -> return Nothing -- no prev symbol/interval
   Just (phd0,sphd0) -> (addMutOf sphd0 shd0 >>=) $ \case
@@ -264,10 +267,10 @@ prevMutCIsSub dly member addMutOf subCond ci0 = (prev0 >>=) $ \case
           go hd shd !len = (D.prev dly hd >>=) $ \case
             Nothing -> return res -- hit start, end
             Just (phd,sphd) -> (member sphd shd >>=) $ \case
-              True | subCond sphd shd ->
-                       let mkCI' hd' shd' len' = CI hd' shd' len' hd shd
-                       in goSub (ci:acc) subs mkCI' phd sphd 2 -- sub: switch
-                   | otherwise -> return Nothing -- not first of a chain, cancel
+              True -> (subCond sphd shd >>=) $ \case
+                True -> let mkCI' hd' shd' len' = CI hd' shd' len' hd shd
+                        in goSub (ci:acc) subs mkCI' phd sphd 2 -- sub: switch
+                False -> return Nothing -- not first of a chain, cancel
               False -> (addMutOf sphd shd >>=) $ \case
                 Just addMut' | addMut' == addMut -> -- continue
                                  go phd sphd (len+1)
@@ -282,8 +285,9 @@ prevMutCIsSub dly member addMutOf subCond ci0 = (prev0 >>=) $ \case
           go hd shd !len = (D.prev dly hd >>=) $ \case
             Nothing -> return res -- hit start, end
             Just (phd,sphd) -> (member sphd shd >>=) $ \case
-              True | subCond sphd shd -> go phd sphd (len+1)
-                   | otherwise -> return Nothing -- not first of a chain, cancel
+              True -> (subCond sphd shd >>=) $ \case
+                True -> go phd sphd (len+1)
+                False -> return Nothing -- not first of a chain, cancel
               False -> (addMutOf sphd shd >>=) $ \case
                 Just addMut'
                   | addMut' == addMut -> -- switch
@@ -359,7 +363,7 @@ prevMutCI dly member addMutOf (CI hd0 shd0 _ _ _) = (D.prev dly hd0 >>=) $ \case
 -- (i.e. if they wouldn't be part of any superCI)
 nextMutCIs :: forall m. PrimMonad m => Doubly (PrimState m) ->
   (Sym -> Sym -> m Bool) -> (Sym -> Sym -> m (Maybe Mutation)) ->
-  (Sym -> Sym -> Bool) -> CI -> m (Maybe (Mutation, NonEmpty CI, [CI]))
+  (Sym -> Sym -> m Bool) -> CI -> m (Maybe (Mutation, NonEmpty CI, [CI]))
 nextMutCIs dly member addMutOf subCond (CI _ _ _ i0 s0) = (next0 >>=) $ \case
   Nothing -> return Nothing -- hit end
   Just (i1,s1) -> (addMutOf s0 s1 >>=) $ \case
@@ -372,9 +376,9 @@ nextMutCIs dly member addMutOf subCond (CI _ _ _ i0 s0) = (next0 >>=) $ \case
           go !len tl stl = (D.next dly tl >>=) $ \case
             Nothing -> return res -- hit end of string
             Just (ntl,sntl) -> (member stl sntl >>=) $ \case
-              True | subCond stl sntl -> -- switch
-                       goSub False (ci:acc) subs mkCI' mkCI' 2 2 ntl sntl
-                   | otherwise -> goIn (ci:acc) subs mkCI' 2 ntl sntl -- switch
+              True -> (subCond stl sntl >>=) $ \case -- switch
+                True -> goSub False (ci:acc) subs mkCI' mkCI' 2 2 ntl sntl
+                False -> goIn (ci:acc) subs mkCI' 2 ntl sntl -- switch
               False -> (addMutOf stl sntl >>=) $ \case
                 Just addMut' | addMut' == addMut ->
                                  go (len+1) ntl sntl -- keep going
@@ -391,10 +395,9 @@ nextMutCIs dly member addMutOf subCond (CI _ _ _ i0 s0) = (next0 >>=) $ \case
           go !len tl stl = (D.next dly tl >>=) $ \case
             Nothing -> return res -- hit end of string
             Just (ntl,sntl) -> (member stl sntl >>=) $ \case
-              True | subCond stl sntl ->
-                       goSub True acc subs mkCI' mkCI 2 2 ntl sntl
-                   | otherwise -> go (len+1) ntl sntl -- keep going
-
+              True -> (subCond stl sntl >>=) $ \case
+                True -> goSub True acc subs mkCI' mkCI 2 2 ntl sntl
+                False -> go (len+1) ntl sntl -- keep going
               False -> (addMutOf stl sntl >>=) $ \case
                 Just addMut'
                   | addMut' == addMut ->
@@ -413,10 +416,10 @@ nextMutCIs dly member addMutOf subCond (CI _ _ _ i0 s0) = (next0 >>=) $ \case
           go !subLen !len tl stl = (D.next dly tl >>=) $ \case
             Nothing -> return res -- hit end of string
             Just (ntl,sntl) -> (member stl sntl >>=) $ \case
-              True | subCond stl sntl ->
-                       go (subLen+1) (len+1) ntl sntl -- keep going
-                   | otherwise -> -- sub is not inter-, don't cons
-                       goIn acc subs mkCI (len+1) ntl sntl
+              True -> (subCond stl sntl >>=) $ \case
+                True -> go (subLen+1) (len+1) ntl sntl -- keep going
+                False -> -- sub is not inter-, don't cons
+                  goIn acc subs mkCI (len+1) ntl sntl
               False -> (addMutOf stl sntl >>=) $ \case
                 Just addMut'
                   | addMut' == addMut -> -- switch
