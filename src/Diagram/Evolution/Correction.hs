@@ -127,20 +127,33 @@ deltaOnAllMuts dly (supCI, supTS) (subCIs, subTS) = do
     addMutOf :: TypeState (PrimState m) -> TypeState (PrimState m) ->
                 Sym -> Sym -> m (Maybe (Either Mutation Mutation))
     addMutOf ts otherTS s0 s1 = (TS.addMutOf ts s0 s1 >>=) $ \case
-      Just mut -> (<$> TS.addMutOf otherTS s0 s1) $ \case
-        Just mut' | mut == mut' -> Just $ Right mut
-        _else                   -> Just $ Left  mut
-      _else -> return Nothing
+      Just mut -> (TS.member otherTS s0 s1 >>=) $ \case
+        -- `addMutOf` always called on a joint we know is OUT of the
+        -- type, but that guarantee doesn't hold for `otherTS`, so we
+        -- check. TODO: would be nice to have membership vectorized
+        True -> return $ Just $ Left mut
+        False -> (<$> TS.addMutOf otherTS s0 s1) $ \case
+          Just mut' | mut == mut' -> Just $ Right mut
+          _else                   -> Just $ Left  mut
+      Nothing -> return Nothing
 
     -- same as above, for del-mutations, but Left ==> Nothing, and Right
     -- ==> Just (). TODO: unify interface?
     delMutsOf :: TypeState (PrimState m) -> TypeState (PrimState m) ->
                  Sym -> Sym -> m [(Mutation, Maybe ())]
     delMutsOf ts otherTS s0 s1 = do
-      muts  <- TS.delMutsOf ts      s0 s1
-      muts' <- TS.delMutsOf otherTS s0 s1
-      return [ (mut, if mut `elem` muts' then Just () else Nothing)
-             | mut <- muts ] -- TODO: optimize?
+      muts  <- TS.delMutsOf ts s0 s1
+      if null muts then return [] else (TS.member otherTS s0 s1 >>=) $ \case
+        False -> return $ (,Nothing) <$> muts -- neither mut is possible
+        True -> do -- still member, check if muts are still available
+          muts' <- TS.delMutsOf otherTS s0 s1
+          return [ let !flag | mut `elem` muts' = Just ()
+                             | otherwise        = Nothing
+                   in trace ("delMutsOf " ++ pShow (s0,s1))
+                      trace ("muts: " ++ pShow muts)
+                      trace ("muts': " ++ pShow muts')
+                      traceShowId (mut, flag)
+                 | mut <- muts ] -- TODO: optimize?
 
 ----------------------
 -- ON ADD MUTATIONS --
