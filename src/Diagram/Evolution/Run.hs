@@ -15,6 +15,7 @@ import Control.Monad.Extra
 import Control.Lens hiding (both,last1,Index,(:>),index)
 import Control.Monad.State.Strict
 
+import Data.Maybe
 import Data.Function
 import qualified Data.List as L
 import Data.Strict.Tuple (Pair(..))
@@ -260,15 +261,9 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
 
   -- (3/3): Joint coverage changes
   (enabledMuts, expiredMuts, movedJoints) <- TS.deltaMutJoints old_tst mut
-
-  traceM $ "Enabled muts (insert): " ++ pShow enabledMuts
-  traceM ""
-
-  traceM $ "Expired muts (delete): " ++ pShow expiredMuts
-  traceM ""
-
-  traceM $ "Moved (" ++ show typeOfMut ++ "'d) joints: " ++ pShow movedJoints
-  traceM ""
+  traceM $ "Enabled muts (insert): " ++ pShow enabledMuts ++ "\n"
+  traceM $ "Expired muts (delete): " ++ pShow expiredMuts ++ "\n"
+  traceM $ "Moved (" ++ show typeOfMut ++ "'d) joints: " ++ pShow movedJoints ++ "\n"
 
   -- DELETE EXPIRED ENTRIES
   zoom mutBooks $ mapM_ MB.delete $ Set.toList expiredMuts
@@ -277,13 +272,14 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   -- (1/3): Pre-mut symbol count changes (n')
   CIs _ oldTypNdns _ _ <- use typeCIs -- (before getCorDelta modifies)
   ns <- use symCounts
-  let movedMuts = enabledMuts `Set.union` expiredMuts
+  let -- movedMuts = enabledMuts `Set.union` expiredMuts
       n'Ils = pushMut_n'Ils ns oldTypNdns mutDdns
       unionIl = M.unionWithKey $ const $ IM.unionWithKey
         (err' . ("duplicate sym count intervals: " ++) . show .:. (,,))
   getAffectedMuts <- mutBooks `uses` MB.affectedMuts
 
-  n'IlsByAffected <- fmap ( maybe M.empty (flip M.withoutKeys movedMuts)
+  n'IlsByAffected <- fmap ( fromMaybe M.empty
+                            -- maybe M.empty (flip M.withoutKeys movedMuts)
                            . foldTree unionIl ) $
     forM (IM.toList n'Ils) $ \(s, n'Il) ->
     M.fromSet (const $ IM.singleton s n'Il) <$> getAffectedMuts s
@@ -295,8 +291,8 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
         ( Set.fromDistinctAscList $ Mut.mutJoint mu <$> IS.toAscList ss )
 
   dly <- use doubly
-  dCor <- (typeCIs %%== pushMut_CIs dly old_tst new_tst me)
-          <&> (`M.withoutKeys` movedMuts)
+  dCor <- typeCIs %%== pushMut_CIs dly old_tst new_tst me
+          -- <&> (`M.withoutKeys` movedMuts)
   --
 
   -- MAKE ENTRY UPDATES
@@ -311,8 +307,6 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
         (\_ (MEU nIl dcor _) dcis -> Just $ MEU nIl dcor dcis)
         id (fmap MEU.fromDCIs)
         mutEntryUpdates_01 (fmap getCIs movedJointss)
-
-  -- trace "" traceM $ "Updates: " ++ pShow mutEntryUpdates
 
   -- (debug)
   CIs newTypJT ndns _ _ <- use typeCIs

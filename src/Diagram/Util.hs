@@ -164,7 +164,7 @@ fffmap = fmap . fmap . fmap
 {-# INLINE fffmap #-}
 
 ffffmap :: (Functor f1, Functor f2, Functor f3, Functor f4) =>
-          (a -> b) -> f1 (f2 (f3 (f4 a))) -> f1 (f2 (f3 (f4 b)))
+           (a -> b) -> f1 (f2 (f3 (f4 a))) -> f1 (f2 (f3 (f4 b)))
 ffffmap = fmap . fmap . fmap . fmap
 {-# INLINE ffffmap #-}
 
@@ -185,7 +185,7 @@ infixl 4 <<$>>
 infixl 4 <<<$>>>
 
 (<<<<$>>>>) :: (Functor f1, Functor f2, Functor f3, Functor f4) =>
-             (a -> b) -> f1 (f2 (f3 (f4 a))) -> f1 (f2 (f3 (f4 b)))
+               (a -> b) -> f1 (f2 (f3 (f4 a))) -> f1 (f2 (f3 (f4 b)))
 (<<<<$>>>>) = fmap . fmap . fmap . fmap
 {-# INLINE (<<<<$>>>>) #-}
 infixl 4 <<<<$>>>>
@@ -200,6 +200,12 @@ infixl 4 <<$
 (<<<$) = fmap . fmap . (<$)
 {-# INLINE (<<<$) #-}
 infixl 4 <<<$
+
+(<<<<$) :: (Functor f1, Functor f2, Functor f3, Functor f4) =>
+           a -> f1 (f2 (f3 (f4 b))) -> f1 (f2 (f3 (f4 a)))
+(<<<<$) = fmap . fmap . fmap . (<$)
+{-# INLINE (<<<<$) #-}
+infixl 4 <<<<$
 
 -- | `flip (.)`
 (>.>) :: (a -> b) -> (b -> c) -> a -> c

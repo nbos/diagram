@@ -177,10 +177,10 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
     sign | prevMutType == thisMutType = id
          | otherwise = negate :: Int -> Int
 
-    memPrevMut :: Sym -> Sym -> m Bool
-    memPrevMut s0 s1 = (TS.member largerTS s0 s1 >>=) $ \case
-      False -> return False
-      True  -> not <$> TS.member smallerTS s0 s1
+    -- memPrevMut :: Sym -> Sym -> m Bool
+    -- memPrevMut s0 s1 = (TS.member largerTS s0 s1 >>=) $ \case
+    --   False -> return False
+    --   True  -> not <$> TS.member smallerTS s0 s1
 
   traceM $ "\n dCIsL = " ++ pShow dCIsL
 
@@ -190,8 +190,8 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
     False -> ffmap sign $
       ( fmap ( fromMaybe IM.empty . foldTree imUnion -- join
                . fmap Cor.onAddMut_ ) -- get Cor
-        . filterM (fmap not . overlapsPrevMut dly memPrevMut) -- no prev mut
-        <=< fmap (catMaybes . catMaybes . fmap traceShowId) -- no `Nothing` or `Just Nothing`
+        -- . filterM (fmap not . overlapsPrevMut dly memPrevMut) -- no prev mut
+        . fmap (catMaybes . catMaybes . fmap traceShowId) -- no `Nothing` or `Just Nothing`
         . mapM (compose dly memA memB) ) dCIsL
 
   traceM $ "\ndCor' = " ++ pShow dCor'
