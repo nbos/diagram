@@ -149,11 +149,7 @@ deltaOnAllMuts dly (supCI, supTS) (subCIs, subTS) = do
           muts' <- TS.delMutsOf otherTS s0 s1
           return [ let !flag | mut `elem` muts' = Just ()
                              | otherwise        = Nothing
-                   in trace ("delMutsOf " ++ pShow (s0,s1))
-                      trace ("muts: " ++ pShow muts)
-                      trace ("muts': " ++ pShow muts')
-                      traceShowId (mut, flag)
-                 | mut <- muts ] -- TODO: optimize?
+                   in (mut, flag) | mut <- muts ] -- TODO: optimize?
 
 ----------------------
 -- ON ADD MUTATIONS --

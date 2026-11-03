@@ -174,8 +174,9 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
         (Del, Del) -> memNewTS (&& not (memNewMutJT ||     mem_dCIsJT))
   let
     dCIsL = IM.elems dCIs_bhd
-    sign | prevMutType == thisMutType = id
-         | otherwise = negate :: Int -> Int
+    sign = case prevMutType of
+      Add -> id
+      Del -> negate :: Int -> Int
 
     -- memPrevMut :: Sym -> Sym -> m Bool
     -- memPrevMut s0 s1 = (TS.member largerTS s0 s1 >>=) $ \case
