@@ -351,7 +351,7 @@ pushMut_CIs :: forall m. PrimMonad m => Doubly (PrimState m) ->
   m (Map Mutation (IntMap Int), CIs)
 pushMut_CIs dly old_tst new_tst me typCIs = fmap toLazy $
   trace ("mutCIs: " ++ pShow mutCIs) $
-  case typeOfMut of
+  case typeOfMut of -- TODO: factor/unify the two cases
   Add -> do
     let superCI :: CI -> m (Maybe (Maybe (CI, [CI])))
         superCI = CI.superCI dly super sub
@@ -380,7 +380,7 @@ pushMut_CIs dly old_tst new_tst me typCIs = fmap toLazy $
                 -- return .: JT.member mutJT
 
         getDelta :: CI -> [CI] -> m (Map Mutation (IntMap Int))
-        getDelta super rems = negate <<<$>>> Cor.deltaOnAllMuts dly
+        getDelta super rems = Cor.deltaOnAllMuts dly
                               (super, old_tst) (rems, new_tst)
 
     flip execStateT st0 $ forM_ mutCIsL $
@@ -396,7 +396,8 @@ pushMut_CIs dly old_tst new_tst me typCIs = fmap toLazy $
     ME mut _ _ _ mutCIs@(CIs _ _ mutCIsBhd _) = me
     typeOfMut = Mut.typeOfMut mut
     -- we modify the JT here, and do all the insert-deleting in the loop
-    st0 = M.empty :!: over CIs.jointType (Mut.unsafeApply mut) typCIs
+    st0 = M.empty :!: cis0
+    cis0 = over CIs.jointType (Mut.unsafeApply mut) typCIs
 
     mutCIsL = IM.elems mutCIsBhd
     insert1 = CIs.insertDisjoint dly

@@ -105,7 +105,9 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
 
   str <- D.toList dly
 
-  traceM $ "\nApplying mut entry update (on " ++ pShow mut ++ "): " ++ pShow meu
+  traceM "\n-----------------"
+  traceM $ "Applying mut entry update (on " ++ pShow mut ++ "): " ++ pShow me
+  traceM $ "\nUpdate: " ++ pShow meu
   traceM $ "\noldCIs = " ++ pShow oldCIs
   traceM $ pShowStr (oldCIs^.CIs.jointType) str
 
@@ -172,29 +174,17 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
         (Add, Del) -> memNewTS (&& not  memNewMutJT)
         (Del, Add) -> memNewTS (||     (memNewMutJT && not mem_dCIsJT)) -- old?
         (Del, Del) -> memNewTS (&& not (memNewMutJT ||     mem_dCIsJT))
-  let
-    dCIsL = IM.elems dCIs_bhd
-    sign = case prevMutType of
-      Add -> id
-      Del -> negate :: Int -> Int
 
-    -- memPrevMut :: Sym -> Sym -> m Bool
-    -- memPrevMut s0 s1 = (TS.member largerTS s0 s1 >>=) $ \case
-    --   False -> return False
-    --   True  -> not <$> TS.member smallerTS s0 s1
+    dCIsL = IM.elems dCIs_bhd
 
   traceM $ "\n dCIsL = " ++ pShow dCIsL
-
-  traceM "\ncompose output:"
   dCor' <- case completeOverlap of
     True -> return IM.empty
-    False -> ffmap sign $
-      ( fmap ( fromMaybe IM.empty . foldTree imUnion -- join
-               . fmap Cor.onAddMut_ ) -- get Cor
-        -- . filterM (fmap not . overlapsPrevMut dly memPrevMut) -- no prev mut
-        . fmap (catMaybes . catMaybes . fmap traceShowId) -- no `Nothing` or `Just Nothing`
-        . mapM (compose dly memA memB) ) dCIsL
-
+    False -> ( fmap ( fromMaybe IM.empty . foldTree imUnion -- join
+                      . fmap Cor.onAddMut_ ) -- get Cor
+               . fmap (catMaybes . catMaybes -- no `Nothing` or `Just Nothing`
+                       . fmap traceShowId)
+               . mapM (compose dly memA memB) ) dCIsL
   traceM $ "\ndCor' = " ++ pShow dCor'
 
   let
@@ -203,14 +193,19 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
                (snd <$>) id ddnsIls oldDdns -- left-biased union
     ddnsIls = IM.mergeWithKey (\_ ddn d -> Just (ddn, ddn + d))
               (const IM.empty) ((0,) <$>) oldDdns dddns
-    dddns = case thisMutType of
-      Add -> negate <$> udddns
-      Del -> udddns
-    udddns = dCIsCounts `imUnion` dCor `imUnion` dCor'
-    dCIsCounts = case prevMutType of
-      Add -> dCIs_ns
-      Del -> negate <$> dCIs_ns
+    dddns | prevMutType /= thisMutType = udddns
+          | otherwise = negate <$> udddns
+    udddns = dCIs_ns `imUnion` dCor `imUnion` dCor'
 
+  traceM $ pShow ("dCIs_ns",dCIs_ns)
+  traceM $ pShow ("dCor",dCor)
+  traceM $ pShow ("dCor'",dCor')
+  traceM $ pShow ("udddns",udddns)
+  traceM $ pShow ("dddns",dddns)
+  traceM $ pShow ("ddnsIls",ddnsIls)
+  traceM $ pShow ("newDdns",newDdns) ++ "\n"
+
+  let
     -- dnsLoss --
     newDnsLoss = oldDnsLoss + dDnsLoss
     dDnsLoss = sum $ IM.mergeWithKey
@@ -272,6 +267,18 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
 
   where
     err' = err . ("apply: " ++)
+
+-- goLeft :: (Index, Sym) -> m (Index, Int)
+-- goLeft is1@(i1,s1) = (D.prev dly i1 >>=) $ \case
+--   Nothing -> return is1
+--   Just is0@(_,s0) | JT.member new_mutJT s0 s1 -> goLeft is0
+--                   | otherwise -> return is1
+
+-- goRight :: (Index, Sym) -> m (Index, Int)
+-- goRight is0@(i0,s0) = (D.next dly i0 >>=) $ \case
+--   Nothing -> return is0
+--   Just is1@(_,s1) | JT.member new_mutJT s0 s1 -> goRight is1
+--                   | otherwise -> return is0
 
 err :: String -> a
 err = error . ("MutEntry.Update." ++)

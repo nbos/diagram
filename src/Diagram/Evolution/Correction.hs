@@ -138,7 +138,7 @@ deltaOnAllMuts dly (supCI, supTS) (subCIs, subTS) = do
       Nothing -> return Nothing
 
     -- same as above, for del-mutations, but Left ==> Nothing, and Right
-    -- ==> Just (). TODO: unify interface?
+    -- ==> Just (). TODO: unify interface (Either/Maybe/Bool)?
     delMutsOf :: TypeState (PrimState m) -> TypeState (PrimState m) ->
                  Sym -> Sym -> m [(Mutation, Maybe ())]
     delMutsOf ts otherTS s0 s1 = do
