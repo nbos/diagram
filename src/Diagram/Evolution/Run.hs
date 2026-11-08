@@ -273,13 +273,14 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   CIs _ oldTypNdns _ _ <- use typeCIs -- (before getCorDelta modifies)
   ns <- use symCounts
   let -- movedMuts = enabledMuts `Set.union` expiredMuts
-      n'Ils = pushMut_n'Ils ns oldTypNdns mutDdns
-      unionIl = M.unionWithKey $ const $ IM.unionWithKey
-        (err' . ("duplicate sym count intervals: " ++) . show .:. (,,))
+      -- (moved muts no longer returned by Cor.deltaOnAllMuts)
+    n'Ils = pushMut_n'Ils ns oldTypNdns mutDdns
+    unionIl = M.unionWithKey $ const $ IM.unionWithKey
+              (err' . ("duplicate sym count intervals: " ++) . show .:. (,,))
   getAffectedMuts <- mutBooks `uses` MB.affectedMuts
 
   n'IlsByAffected <- fmap ( fromMaybe M.empty
-                            -- maybe M.empty (flip M.withoutKeys movedMuts)
+                          -- maybe M.empty (flip M.withoutKeys movedMuts)
                            . foldTree unionIl ) $
     forM (IM.toList n'Ils) $ \(s, n'Il) ->
     M.fromSet (const $ IM.singleton s n'Il) <$> getAffectedMuts s
@@ -291,7 +292,7 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
         ( Set.fromDistinctAscList $ Mut.mutJoint mu <$> IS.toAscList ss )
 
   dly <- use doubly
-  dCor <- typeCIs %%== pushMut_CIs dly old_tst new_tst me
+  dCor <- typeCIs %%== pushMutCIs dly old_tst new_tst me
           -- <&> (`M.withoutKeys` movedMuts)
   --
 
@@ -346,10 +347,10 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
 -- mutations (may include erroneous corrections on newly enabled muts
 -- (Add case) or newly expired muts (Del case), which need to be
 -- computed explicitly anyway, but remember to filter them out)
-pushMut_CIs :: forall m. PrimMonad m => Doubly (PrimState m) ->
+pushMutCIs :: forall m. PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> TypeState (PrimState m) -> MutEntry -> CIs ->
   m (Map Mutation (IntMap Int), CIs)
-pushMut_CIs dly old_tst new_tst me typCIs = fmap toLazy $
+pushMutCIs dly old_tst new_tst me typCIs = fmap toLazy $
   trace ("mutCIs: " ++ pShow mutCIs) $
   case typeOfMut of -- TODO: factor/unify the two cases
   Add -> do
@@ -364,10 +365,10 @@ pushMut_CIs dly old_tst new_tst me typCIs = fmap toLazy $
                               (super, new_tst) (subs, old_tst)
 
     flip execStateT st0 $ forM_ mutCIsL $
-      \ci -> (lift (superCI ci) >>=) $ flip whenJust $ \case
+      \mutCI -> (lift (superCI mutCI) >>=) $ flip whenJust $ \case
         Nothing -> do -- super == ci
-          (_1 %=) . Cor.union =<< lift (getDelta ci [])
-          _2 %== insert1 ci
+          (_1 %=) . Cor.union =<< lift (getDelta mutCI [])
+          _2 %== insert1 mutCI
         Just (super, subs) -> do -- super > ci
           (_1 %=) . Cor.union =<< lift (getDelta super subs)
           _2 %== foldr (>=>) (insert1 super) -- insert after
@@ -384,10 +385,10 @@ pushMut_CIs dly old_tst new_tst me typCIs = fmap toLazy $
                               (super, old_tst) (rems, new_tst)
 
     flip execStateT st0 $ forM_ mutCIsL $
-      \ci -> (lift (superCI ci) >>=) $ flip whenJust $ \case
+      \mutCI -> (lift (superCI mutCI) >>=) $ flip whenJust $ \case
         Nothing -> do -- super == ci
-          (_1 %=) . Cor.union =<< lift (getDelta ci [])
-          _2 %== delete1 ci
+          (_1 %=) . Cor.union =<< lift (getDelta mutCI [])
+          _2 %== delete1 mutCI
         Just (super, rems) -> do -- super > ci
           (_1 %=) . Cor.union =<< lift (getDelta super rems)
           _2 %== foldr (<=<) (delete1 super) -- del first
@@ -433,7 +434,7 @@ mkMutEntry mut = do
   tst <- use typeState
   allCIs <- use jointCIs
   mutCIs <- mfoldTree . M.elems . M.intersection allCIs
-            <$> TS.jointsOf tst mut
+            <$> TS.jointsOfMut tst mut
 
   typCIs@(CIs jt ndns _ _) <- use typeCIs
   str <- D.toList =<< use doubly -- (debug)

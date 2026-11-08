@@ -60,8 +60,8 @@ clone (TS u0 u1) = TS <$> MV.clone u0 <*> MV.clone u1
 
 -- | Assuming the mutation is valid/available, return the set of joints
 -- that will flip membership upon its application.
-jointsOf :: PrimMonad m => TypeState (PrimState m) -> Mutation -> m (Joints ())
-jointsOf ts mut = case mut of
+jointsOfMut :: PrimMonad m => TypeState (PrimState m) -> Mutation -> m (Joints ())
+jointsOfMut ts mut = case mut of
   AddLeft s0  -> goLeft s0
   AddRight s1 -> goRight s1
   Add2 s0 s1  -> return $ M.singleton (s0,s1) ()
@@ -77,6 +77,17 @@ jointsOf ts mut = case mut of
                  . fmap ((,()) . (,s1))
                  . IS.toAscList
                  . SE._coSymsIn <$> readRight_ ts s1
+
+-- | Conversion (from vectorized) to a pure (map-based) JointType
+toJointType :: PrimMonad m => TypeState (PrimState m) -> m JointType
+toJointType (TS v0 v1) = do
+  u0 <- UT.fromDistinctAscList
+        . fmap fst . filter (SE._isMember . snd) . zip [0..]
+        . V.toList <$> V.freeze v0
+  u1 <- UT.fromDistinctAscList
+        . fmap fst . filter (SE._isMember . snd) . zip [0..]
+        . V.toList <$> V.freeze v1
+  return $ JT u0 u1
 
 -----------------
 -- BOILERPLATE --

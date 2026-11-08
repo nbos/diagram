@@ -103,13 +103,15 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
   let ME mut oldDnsLoss oldDdns oldDnm oldCIs = me
       MEU n'Ils dCor dCIs@(CIs dCIsJT dCIs_ns dCIs_bhd _) = meu
 
+  oldJT <- TS.toJointType oldTS
+  newJT <- TS.toJointType newTS
   str <- D.toList dly
 
   traceM "\n-----------------"
   traceM $ "Applying mut entry update (on " ++ pShow mut ++ "): " ++ pShow me
   traceM $ "\nUpdate: " ++ pShow meu
   traceM $ "\noldCIs = " ++ pShow oldCIs
-  traceM $ pShowStr (oldCIs^.CIs.jointType) str
+  traceM $ pShowStrMut mut (oldCIs^.CIs.jointType) oldJT str
 
   traceM $ "\ndCIs = " ++ pShow dCIs
   traceM $ pShowStr (dCIs^.CIs.jointType) str
@@ -127,7 +129,7 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
       )
 
   traceM $ "\nnew_cis = " ++ pShow newCIs
-  traceM $ pShowStr (newCIs^.CIs.jointType) str
+  traceM $ pShowStrMut mut (newCIs^.CIs.jointType) newJT str
 
   -- dCor' --
   let
@@ -189,13 +191,16 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
 
   let
     -- ddns --
-    newDdns = IM.mergeWithKey (\_ (_, ddn') _ -> nothingIf (==0) ddn')
-               (snd <$>) id ddnsIls oldDdns -- left-biased union
+    udddns = dCIs_ns `imUnion` dCor `imUnion` dCor'
+    dddns -- multiple sign flips reduce ultimately to `negate` iff
+          -- (Add,Del) or (Del,Add)
+      | prevMutType /= thisMutType = udddns
+      | otherwise = negate <$> udddns
+
     ddnsIls = IM.mergeWithKey (\_ ddn d -> Just (ddn, ddn + d))
               (const IM.empty) ((0,) <$>) oldDdns dddns
-    dddns | prevMutType /= thisMutType = udddns
-          | otherwise = negate <$> udddns
-    udddns = dCIs_ns `imUnion` dCor `imUnion` dCor'
+    newDdns = IM.mergeWithKey (\_ (_, ddn') _ -> nothingIf (==0) ddn')
+               (snd <$>) id ddnsIls oldDdns -- left-biased union
 
   traceM $ pShow ("dCIs_ns",dCIs_ns)
   traceM $ pShow ("dCor",dCor)
