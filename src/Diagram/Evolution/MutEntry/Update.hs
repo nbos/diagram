@@ -100,7 +100,7 @@ apply :: forall m. PrimMonad m => TypeState (PrimState m) -> MutType ->
   TypeState (PrimState m) -> (Sym -> Count) -> Doubly (PrimState m) ->
   MutEntry -> Update -> m MutEntry
 apply oldTS prevMutType newTS n'Of dly me meu = do
-  let ME mut oldDnsLoss oldDdns oldDnm oldCIs = me
+  let ME mut oldDnsLoss oldDdns oldDnm oldCIs@(CIs oldMutJT _ _ _) = me
       MEU n'Ils dCor dCIs@(CIs dCIsJT dCIs_ns dCIs_bhd _) = meu
 
   oldJT <- TS.toJointType oldTS
@@ -117,7 +117,7 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
   traceM $ pShowStr (dCIs^.CIs.jointType) str
 
   -- cis --
-  (newCIs@(CIs new_mutJT _ _ _), _) <- case prevMutType of
+  (newCIs@(CIs newMutJT _ _ _), _) <- case prevMutType of
     Add -> return $ CIs.join_ oldCIs dCIs
     Del -> (<$> CIs.difference dly Nothing Nothing oldCIs dCIs) $
       (_1.CIs.jointType %~ case mut of -- manually fix the joint type of CIs
@@ -168,14 +168,15 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
     thisMutType = Mut.typeOfMut mut
     memA = return .: JT.member dCIsJT
     memB s0 s1 = let
-      memNewTS = (<$> TS.member newTS s0 s1)
-      memNewMutJT = JT.member new_mutJT s0 s1
-      mem_dCIsJT = JT.member dCIsJT s0 s1
+      inNewTS = TS.member newTS s0 s1
+      inOldMutJT = JT.member oldMutJT s0 s1
+      inNewMutJT = JT.member newMutJT s0 s1
       in case (prevMutType, thisMutType) of
-        (Add, Add) -> memNewTS (||      memNewMutJT)
-        (Add, Del) -> memNewTS (&& not  memNewMutJT)
-        (Del, Add) -> memNewTS (||     (memNewMutJT && not mem_dCIsJT)) -- old?
-        (Del, Del) -> memNewTS (&& not (memNewMutJT ||     mem_dCIsJT))
+        (Add, Add) -> inNewTS <&> (|| inOldMutJT) -- typ || prevMut || thisMut
+        (Add, Del) -> inNewTS <&> (&& not inNewMutJT) -- (typ || prevMut)
+                                                      -- \\ (thisMut || moved)
+        (Del, Add) -> inNewTS <&> (|| inOldMutJT) -- (typ \\ prevMut) || thisMut
+        (Del, Del) -> inNewTS -- thisMut \\ moved
 
     dCIsL = IM.elems dCIs_bhd
 
