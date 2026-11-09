@@ -168,8 +168,8 @@ superCI dly super sub (CI hd0 shd0 len0 tl0 stl0) = do
                        go phd sphd (len+1) -- continue
           where ci = CI hd shd len tl stl
 
-    goFwd hd shd = goRem [] 1 hd shd -- (len+remLen-1) overlap logic
-      where                          -- requires we start with len 1
+    goFwd hd shd = goRem [] 1 hd shd
+      where
         goRem rems len remHd remShd = go
           where -- a remainder is inside TypeState but outside jt
             go !remLen tl stl = (D.next dly tl >>=) $ \case
@@ -179,7 +179,7 @@ superCI dly super sub (CI hd0 shd0 len0 tl0 stl0) = do
                 True -> -- trace ("rem:super " ++ show (stl,sntl))
                         (sub stl sntl >>=) $ \case
                   True -> -- trace ("rem:sub " ++ show (stl,sntl))
-                          goJT rems' (len+remLen-1) ntl sntl -- switch
+                          goJT rems' (len+remLen) ntl sntl -- switch
                   False -> -- trace ("rem:not sub " ++ show (stl,sntl))
                            go (remLen+1) ntl sntl -- cont.
                 False -> -- trace ("rem:not super " ++ show (stl,sntl))
