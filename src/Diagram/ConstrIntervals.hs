@@ -209,13 +209,16 @@ difference dly memSuper_ memSub_ cisA cisB = do
   -- checkIntervalsIntegrity dly cisA -- (debug)
   -- checkIntervalsIntegrity dly cisB -- (debug)
   -- traceM $ "\n  CIs.difference called, args  = " ++ pShow (cisA, cisB)
+  -- traceM =<< ("memSuper:\n" ++) <$> pShowStream memSuper (D.stream dly)
+  -- traceM =<< ("memSub:\n" ++) <$> pShowStream memSub (D.stream dly)
 
   DiffState bhdC btlC cor <- flip execStateT (DiffState bhdA btlA IM.empty) $
     forM_ (IM.elems bhdB) $ \ci@(CI subHd _ _ subTl _) ->
     (getSuper (traceShowId ci) >>=) $ \case
       Nothing -> do -- super doesn't start here, but ci is inside it
         traceM "super doesn't start here\n"
-        ((diffCor %=) . imUnion) =<< CI.symCounts dly ci
+        ciCounts <- CI.symCounts dly ci
+        diffCor %= imUnion (negate <$> ciCounts)
       Just Nothing -> do -- super is identical, remove indexes, cor is 0
         traceM "super is self\n"
         byHeadRes %= IM.delete subHd

@@ -1,6 +1,6 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
-{-# LANGUAGE BangPatterns, LambdaCase, TypeOperators #-}
+{-# LANGUAGE BangPatterns, LambdaCase, TypeOperators, TupleSections #-}
 {-# LANGUAGE InstanceSigs #-}
 module Diagram.ConstrIntervals.Internal
   (module Diagram.ConstrIntervals.Internal) where
@@ -20,6 +20,7 @@ import qualified Data.IntMap as IM
 import Streaming (Of(..), Stream)
 import qualified Streaming.Prelude as S
 
+import Diagram.Pretty
 import Diagram.String
 import Diagram.Primitive
 
@@ -234,7 +235,12 @@ checkIntervalsIntegrity dly (CIs _ ns bhd btl)
   | otherwise = do
       ns_verif <- IM.unionsWith (+) <$> mapM (CI.symCounts dly) cisL
       when (ns /= ns_verif) $
-        err' $ "sym counts don't match extension's: " ++ show (ns, ns_verif)
+        err' $ "sym counts don't match extension's (got, verif): "
+        ++ pShow ( IM.mergeWithKey (\_ a b -> if a == b then Nothing else
+                                               Just (Just a, Just b))
+                  (fmap $ (, Nothing) . Just)
+                  (fmap $ (Nothing, ) . Just)
+                  ns ns_verif )
   where
     err' = err . ("checkIntegrity: " ++)
     bhdCIs = L.sort $ IM.elems bhd
