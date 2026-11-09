@@ -84,7 +84,7 @@ pShowStreamMark_ mMark mMem str0 = (next str0 >>=) $ \case
 
     -- s0 not yet printed
     goOut s0 str = (next str >>=) $ \case
-      Left r -> return r
+      Left r -> show' red s0 >> return r
       Right (s1, ss) -> (mem s0 s1 >>=) $ \case
         True -> do S.yield '[' >> show' green s0
                    S.yield ' ' >> show' green s1 >> goInEven s1 ss
