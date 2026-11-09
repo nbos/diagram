@@ -169,13 +169,14 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
     memA = return .: JT.member dCIsJT
     memB s0 s1 = let
       inNewTS = TS.member newTS s0 s1
+      inOldTS = TS.member oldTS s0 s1
       inOldMutJT = JT.member oldMutJT s0 s1
       inNewMutJT = JT.member newMutJT s0 s1
       in case (prevMutType, thisMutType) of
         (Add, Add) -> inNewTS <&> (|| inOldMutJT) -- typ || prevMut || thisMut
         (Add, Del) -> inNewTS <&> (&& not inNewMutJT) -- (typ || prevMut)
                                                       -- \\ (thisMut || moved)
-        (Del, Add) -> inNewTS <&> (|| inOldMutJT) -- (typ \\ prevMut) || thisMut
+        (Del, Add) -> inOldTS <&> (|| inNewMutJT) -- typ || (thisMut \\ moved)
         (Del, Del) -> inNewTS -- thisMut \\ moved
 
     dCIsL = IM.elems dCIs_bhd
