@@ -431,6 +431,7 @@ pushMut_n'Ils ns = IM.mergeWithKey col
 
 mkMutEntry :: PrimMonad m => Mutation -> RunT m MutEntry
 mkMutEntry mut = do
+  traceM $ "Intro'ing mut: " ++ pShow mut
   tst <- use typeState
   allCIs <- use jointCIs
   mutCIs <- mfoldTree . M.elems . M.intersection allCIs

@@ -107,9 +107,8 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
   newJT <- TS.toJointType newTS
   str <- D.toList dly
 
-  traceM "\n-----------------"
-  traceM $ "Applying mut entry update (on " ++ pShow mut ++ "): " ++ pShow me
-  traceM $ "\nUpdate: " ++ pShow meu
+  traceM "---"
+  traceM $ "Applying mut entry update (on " ++ pShow mut ++ "): " ++ pShow meu
   traceM $ "\noldCIs = " ++ pShow oldCIs
   traceM $ pShowStrMut mut (oldCIs^.CIs.jointType) oldJT str
 
@@ -177,7 +176,7 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
         (Add, Del) -> inNewTS <&> (&& not inNewMutJT) -- (typ || prevMut)
                                                       -- \\ (thisMut || moved)
         (Del, Add) -> inOldTS <&> (|| inNewMutJT) -- typ || (thisMut \\ moved)
-        (Del, Del) -> inNewTS -- thisMut \\ moved
+        (Del, Del) -> inOldTS <&> (&& not inOldMutJT) -- (???) (by symmetry)
 
     dCIsL = IM.elems dCIs_bhd
 
