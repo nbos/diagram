@@ -184,7 +184,7 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
   dCor' <- case completeOverlap of
     True -> return IM.empty
     False -> ( fmap ( fromMaybe IM.empty . foldTree imUnion -- join
-                      . fmap Cor.onAddMut_ ) -- get Cor
+                      . fmap Cor.fromAddChain_ ) -- get Cor
                . fmap (catMaybes . catMaybes -- no `Nothing` or `Just Nothing`
                        . fmap traceShowId)
                . mapM (compose dly memA memB) ) dCIsL

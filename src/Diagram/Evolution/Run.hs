@@ -352,7 +352,7 @@ pushMutCIs :: forall m. PrimMonad m => Doubly (PrimState m) ->
   m (Map Mutation (IntMap Int), CIs)
 pushMutCIs dly old_tst new_tst me typCIs = fmap toLazy $
   trace ("mutCIs: " ++ pShow mutCIs) $
-  case typeOfMut of -- TODO: factor/unify the two cases
+  case typeOfMut of -- FIXME: TODO: factor/unify the two cases
   Add -> do
     let superCI :: CI -> m (Maybe (Maybe (CI, [CI])))
         superCI = CI.superCI dly super sub

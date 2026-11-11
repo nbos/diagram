@@ -12,7 +12,6 @@ import Control.Monad
 import Control.Monad.State.Strict
 
 import Data.Maybe
-import Data.Functor as Functor
 import qualified Data.List as L
 import Data.List.NonEmpty (NonEmpty(..),(<|))
 import qualified Data.List.NonEmpty as NE
@@ -85,36 +84,49 @@ onAllMuts dly tst ci = do
 deltaOnAllMuts :: forall m. PrimMonad m => Doubly (PrimState m) ->
   (CI, TypeState (PrimState m)) -> ([CI], TypeState (PrimState m)) -> m Cor
 deltaOnAllMuts dly (supCI, supTS) (subCIs, subTS) = do
+  traceM ""
   traceM $ "subs: " ++ pShow subCIs
   traceM $ "sup:  " ++ pShow supCI
-  -- Del Cor
+  -- Del Cor --
   supDelCor <- onDelMuts dly (delMutsOf supTS subTS) supCI
-  traceShowM ("supDelCor",supDelCor)
+  traceShowM ("supDelCor", supDelCor)
   subDelCor <- forM subCIs $ onDelMuts dly (delMutsOf subTS supTS)
-  traceShowM ("subDelCor",subDelCor)
+  traceShowM ("subDelCor", subDelCor)
   let delCorDelta = foldr union supDelCor $ negate <<<$>>> subDelCor
-  -- Add Cor
-  (mSuperAddChains, inters) <-
-    composeAddsSub dly (TS.member supTS) (addMutOf supTS subTS) notInMut supCI
+
+  -- Add Cor --
+  (mSupAddChains, inters) <- composeAddsSub dly memSup supAddMuts notInMut supCI
   traceM $ "inters: " ++ pShow inters
-  traceM $ "mSuperAddChains: " ++ pShow mSuperAddChains
-  intersSupAddCor <- forM inters $
-                     onAddMuts dly (TS.member supTS) (addMutOf supTS subTS)
-  supAddCor <- case mSuperAddChains of
-    Nothing -> onAddMuts dly (TS.member supTS) (addMutOf supTS subTS) supCI
-               <&> (:intersSupAddCor)
-    Just superAddChains -> return $
-      (uc onAddMut <$> superAddChains) ++ intersSupAddCor
-  traceShowM ("supAddCor",supAddCor)
-  subAddCor <- forM (subCIs ++ inters) $
-               onAddMuts dly (TS.member subTS) (addMutOf subTS supTS)
-  traceShowM ("subAddCor",subAddCor)
+  traceM $ "mSuperAddChains: " ++ pShow mSupAddChains
+
+  --
+  mutsSupAddCor :: [Cor] <- case mSupAddChains of
+    Nothing -> sequence [ onSupAddMuts supCI ]
+    Just supAddChains -> return (uc fromAddChain <$> supAddChains)
+  traceShowM ("mutsSupAddCor", mutsSupAddCor)
+  --
+  intersSupAddCor <- mapM onSupAddMuts inters
+  traceM $ "intersSupAddCor: " ++ pShow intersSupAddCor
+  --
+  let supAddCor = mutsSupAddCor ++ intersSupAddCor
+  traceShowM ("supAddCor", supAddCor)
+  --
+  subAddCor <- mapM onSubAddMuts (subCIs ++ inters)
+  traceShowM ("subAddCor", subAddCor)
+
   let addCorDelta = fromMaybe M.empty $ foldTree union $
                     supAddCor ++ (negate <<<$>>> subAddCor)
 
-  return $ M.unionWith (error "impossible: disjoint")
+  return $ M.unionWith (error "impossible (disjoint)")
     addCorDelta delCorDelta
   where
+    memSup = TS.member supTS
+    memSub = TS.member subTS
+    supAddMuts = addMutOf supTS subTS
+    subAddMuts = addMutOf subTS supTS
+    onSupAddMuts = onAddMuts dly memSup supAddMuts
+    onSubAddMuts = onAddMuts dly memSub subAddMuts
+
     -- `inMut` would have different membership between `sup` and `sub`,
     -- so `notInMut` has same membership, i.e. `(==)`. This is subCond.
     notInMut s0 s1 = liftA2 (==) (TS.member subTS s0 s1)
@@ -155,7 +167,7 @@ deltaOnAllMuts dly (supCI, supTS) (subCIs, subTS) = do
 -- injective, with no `sub` predicate.
 onAddMuts :: PrimMonad m => Doubly (PrimState m) ->
   (Sym -> Sym -> m Bool) -> (Sym -> Sym -> m (Maybe Mutation)) -> CI -> m Cor
-onAddMuts = fmap (unions . fmap (uc onAddMut)) .:: composeAdds
+onAddMuts = fmap (unions . fmap (uc fromAddChain)) .:: composeAdds
 
 -- WHERE --
 
@@ -167,15 +179,15 @@ onAddMuts = fmap (unions . fmap (uc onAddMut)) .:: composeAdds
 -- this is not checked. Correction values are signed in order to be
 -- added to the mut's CIs' counts *before* they are added/subtracted
 -- from the type's or string's counts.
-onAddMut :: Mutation -> NonEmpty CI -> Cor
-onAddMut mut cis | IM.null cor = M.empty
-                 | otherwise   = M.singleton mut cor
-  where cor = onAddMut_ cis
+fromAddChain :: Mutation -> NonEmpty CI -> Cor
+fromAddChain mut cis | IM.null cor = M.empty
+                     | otherwise   = M.singleton mut cor
+  where cor = fromAddChain_ cis
 
 -- | Fundamental correction calculation on a set of successive
 -- (colliding) CIs, alternating between two disjoint types
-onAddMut_ :: NonEmpty CI -> IntMap Int
-onAddMut_ cis = clean $ flip execState IM.empty $ do
+fromAddChain_ :: NonEmpty CI -> IntMap Int
+fromAddChain_ cis = clean $ flip execState IM.empty $ do
   forM_ (NE.init cis) $ \(CI _ _ len _ stl) ->
     when (even len) $ modify $ IM.insertWith (+) stl (-1)
   when (d /= 0) $ modify $ IM.insertWith (+) tailSym d
@@ -203,6 +215,9 @@ onAddMut_ cis = clean $ flip execState IM.empty $ do
 -- Returns (snd) all (both left and right) in-intervals that satisfy
 -- `subCond` and don't connect to/touch a non-sub in-intervals
 -- (i.e. "inters") inside non-cancelled chains.
+--
+-- Obervation: Subs returned by left-most non-sub memCI, but Mut-CI
+-- chains are returned by the left-most memCI, including sub
 composeAddsSub :: PrimMonad m => Doubly (PrimState m) ->
   (Sym -> Sym -> m Bool) -> (Sym -> Sym -> m (Maybe Mutation)) ->
   (Sym -> Sym -> m Bool) -> CI -> m (Maybe [(Mutation, NonEmpty CI)], [CI])
