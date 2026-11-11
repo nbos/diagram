@@ -12,10 +12,12 @@ import Control.Monad
 import Control.Monad.State.Strict
 
 import Data.Maybe
+import Data.Functor
 import qualified Data.List as L
 import Data.List.NonEmpty (NonEmpty(..),(<|))
 import qualified Data.List.NonEmpty as NE
 
+import qualified Data.Set as S
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.IntMap.Strict (IntMap)
@@ -105,17 +107,21 @@ deltaOnAllMuts dly (supCI, supTS) (subCIs, subTS) = do
     Just supAddChains -> return (uc fromAddChain <$> supAddChains)
   traceShowM ("mutsSupAddCor", mutsSupAddCor)
   --
-  intersSupAddCor <- mapM onSupAddMuts inters
+  intersSupAddCor <- forM inters $ \(mu,ci) ->
+    onSupAddMuts ci <&> (`M.restrictKeys` S.singleton mu)
   traceM $ "intersSupAddCor: " ++ pShow intersSupAddCor
   --
   let supAddCor = mutsSupAddCor ++ intersSupAddCor
   traceShowM ("supAddCor", supAddCor)
   --
-  subAddCor <- mapM onSubAddMuts (subCIs ++ inters)
+  subAddCor <- forM subCIs onSubAddMuts
   traceShowM ("subAddCor", subAddCor)
+  intersSubAddCor <- forM inters $ \(mu,ci) ->
+    onSubAddMuts ci <&> (`M.restrictKeys` S.singleton mu)
+  traceM $ "intersSubAddCor: " ++ pShow intersSubAddCor
 
   let addCorDelta = fromMaybe M.empty $ foldTree union $
-                    supAddCor ++ (negate <<<$>>> subAddCor)
+        supAddCor ++ (negate <<<$>>> (subAddCor ++ intersSubAddCor))
 
   return $ M.unionWith (error "impossible (disjoint)")
     addCorDelta delCorDelta
@@ -214,35 +220,38 @@ fromAddChain_ cis = clean $ flip execState IM.empty $ do
 --
 -- Returns (snd) all (both left and right) in-intervals that satisfy
 -- `subCond` and don't connect to/touch a non-sub in-intervals
--- (i.e. "inters") inside non-cancelled chains.
+-- (i.e. "inters") inside non-cancelled chains, with the connecting mut.
 --
--- Obervation: Subs returned by left-most non-sub memCI, but Mut-CI
--- chains are returned by the left-most memCI, including sub
+-- Obervation: Subs returned (injective) by left-most non-sub memCI, but
+-- Mut-CI chains are returned (injective) by the left-most memCI,
+-- including sub
 composeAddsSub :: PrimMonad m => Doubly (PrimState m) ->
   (Sym -> Sym -> m Bool) -> (Sym -> Sym -> m (Maybe Mutation)) ->
-  (Sym -> Sym -> m Bool) -> CI -> m (Maybe [(Mutation, NonEmpty CI)], [CI])
+  (Sym -> Sym -> m Bool) -> CI -> m ( Maybe [(Mutation, NonEmpty CI)]
+                                    , [(Mutation, CI)] )
 composeAddsSub dly member addMutOf subCond ci = (<$> results) $ \case
   (Nothing, Nothing)           -> (Just [], [])
   (Just (_, Nothing), Nothing) -> (Just [], [])
-  (Nothing, Just (addMut, nexts, rsubs))
-    -> (Just [(addMut, ci <| nexts)], rsubs)
+  (Nothing, Just (addMut, nexts, rsubs)) -> ( Just [(addMut, ci <| nexts)]
+                                            , (addMut,) <$> rsubs )
 
   (Just (addMut, Just (prvs, lsubs)), Nothing)
-    | null lsubs -> (Just [(addMut, prvs <> (ci:|[]))], [])
-    | otherwise  -> (Nothing, lsubs) -- signal non-canon
+    | null lsubs -> (Just [(addMut, prvs <> (ci:|[]))], []) -- null []
+    | otherwise  -> (Nothing, (addMut,) <$> lsubs) -- signal non-canon
 
   (Just (addMut, Nothing), Just (addMut', nexts, rsubs))
     | addMut == addMut' -> (Just [], []) -- cancels fwd
-    | otherwise -> (Just [(addMut', ci <| nexts)], rsubs)
+    | otherwise -> (Just [(addMut', ci <| nexts)], (addMut',) <$> rsubs)
 
   (Just (addMut, Just (prvs, lsubs)), Just (addMut', nexts, rsubs))
-    | not (null lsubs) -> (Nothing, lsubs ++ rsubs) -- signal non-canon
+    | not (null lsubs) -> (Nothing, ((addMut,) <$> lsubs)
+                                    ++ ((addMut',) <$> rsubs)) -- signal non-canon
     | addMut == addMut' ->
         ( Just [(addMut, prvs <> (ci <| nexts))] -- join
-        , rsubs )
+        , (addMut',) <$> rsubs ) -- (null lsubs)
     | otherwise ->
         ( Just [ (addMut, prvs <> (ci:|[])), (addMut', ci <| nexts) ]
-        , rsubs )
+        , (addMut',) <$> rsubs ) -- (null lsubs)
   where
     prevCIs = prevMutCIsSub dly member addMutOf subCond ci
     nextCIs = nextMutCIs    dly member addMutOf subCond ci
