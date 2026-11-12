@@ -18,7 +18,6 @@ import Data.Bifunctor
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
 
-import Diagram.Pretty
 import Diagram.String
 import Diagram.Primitive
 
@@ -214,29 +213,29 @@ difference dly memSuper_ memSub_ cisA cisB = do
 
   DiffState bhdC btlC cor <- flip execStateT (DiffState bhdA btlA IM.empty) $
     forM_ (IM.elems bhdB) $ \ci@(CI subHd _ _ subTl _) ->
-    (getSuper (traceShowId ci) >>=) $ \case
+    (getSuper ci >>=) $ \case
       Nothing -> do -- super doesn't start here, but ci is inside it
-        traceM "super doesn't start here\n"
+        -- traceM "super doesn't start here\n"
         ciCounts <- CI.symCounts dly ci
         diffCor %= imUnion (negate <$> ciCounts)
       Just Nothing -> do -- super is identical, remove indexes, cor is 0
-        traceM "super is self\n"
+        -- traceM "super is self\n"
         byHeadRes %= IM.delete subHd
         byTailRes %= IM.delete subTl
       Just (Just (super@(CI superHd _ _ superTl _), rems)) -> do -- case super
-        traceM $ "super = " ++ pShow super ++ "\n"
+        -- traceM $ "super = " ++ pShow super ++ "\n"
         byHeadRes %= IM.delete superHd
         byTailRes %= IM.delete superTl
         ciCounts <- CI.symCounts dly ci
         supCounts <- CI.symCounts dly super
-        traceShowM ("negate <$> ciCounts",negate <$> ciCounts)
-        traceShowM ("supCounts",supCounts)
+        -- traceShowM ("negate <$> ciCounts",negate <$> ciCounts)
+        -- traceShowM ("supCounts",supCounts)
         diffCor %= imUnion ((negate <$> ciCounts) `imUnion` supCounts)
         forM_ rems $ \r@(CI remHd _ _ remTl _) -> do
           byHeadRes %= IM.insert remHd r
           byTailRes %= IM.insert remTl r
           remCounts <- CI.symCounts dly r
-          traceShowM ("negate <$> remCounts",negate <$> remCounts)
+          -- traceShowM ("negate <$> remCounts",negate <$> remCounts)
           diffCor %= imUnion (negate <$> remCounts)
 
   -- traceShowM ("cor",cor)

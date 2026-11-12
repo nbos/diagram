@@ -156,10 +156,10 @@ evalAll_ m bigN nm jt (MutBooks als ars a2s dls drs d2s _ _) =
 step :: PrimMonad m => RunT m Bool
 step = do
   es <- evalAll
-  let (_, e@(ME mut loss ddns dnm (CIs mutJT _ _ _))) =
+  let (_, e@(ME mut loss ddns dnm _)) =
         L.minimumBy (compare `on` fst) es
 
-  CIs typJT@(JT u0 u1) _ _ _ <- use typeCIs
+  CIs (JT u0 u1) _ _ _ <- use typeCIs
   traceM ""
   traceM $ "Joint type: " ++ show (UT.toList u0)
   traceM $ "            " ++ show (UT.toList u1)
@@ -167,38 +167,36 @@ step = do
   traceM ""
   traceM $ "  Best mutation: " ++ pShow mut
   traceM $ "  ddnsLoss: " ++ pShow loss
-  traceM $ "  ddns: "     ++ pShow ddns
+  traceM $ "  ddns: "     ++ show ddns
   traceM $ "  dnm: "      ++ pShow dnm
 
   ddInfo <- ddInformation e
   traceM $ "  ddInfo: "      ++ pShow ddInfo
   traceM ""
 
-  str <- D.toList =<< use doubly -- (debug)
-  traceM $ pShowStrMut mut mutJT typJT str
+  -- str <- D.toList =<< use doubly -- (debug)
+  -- traceM $ pShowStrMut mut mutJT typJT str
 
   if ddInfo > 0 then return False else do
     stepNumber += 1 -- inc
-    numRun <- use runNumber
-    numStep <- use stepNumber
-    let msg = "-- Pushing mut " ++ show mut ++ " --"
-        msg_len = length msg
-        bot_bar = replicate msg_len '-'
-        top_bar_label = '[' : show numRun ++ ':' : show numStep ++ [']']
-        label_len = length top_bar_label
-        top_bar_left_side_len = (msg_len - label_len) `div` 2
-        top_bar_left_side = replicate top_bar_left_side_len '-'
-        top_bar_right_side = replicate (msg_len - label_len
-                                        - top_bar_left_side_len) '-'
-
-    traceM $ ' ':(top_bar_left_side ++ top_bar_label ++ top_bar_right_side)
-    traceM $ ' ':msg
-    traceM $ ' ':bot_bar
-    traceM ""
-
+    -- numRun <- use runNumber
+    -- numStep <- use stepNumber
+    -- let msg = "-- Pushing mut " ++ show mut ++ " --"
+    --     msg_len = length msg
+    --     bot_bar = replicate msg_len '-'
+    --     top_bar_label = '[' : show numRun ++ ':' : show numStep ++ [']']
+    --     label_len = length top_bar_label
+    --     top_bar_left_side_len = (msg_len - label_len) `div` 2
+    --     top_bar_left_side = replicate top_bar_left_side_len '-'
+    --     top_bar_right_side = replicate (msg_len - label_len
+    --                                     - top_bar_left_side_len) '-'
+    -- traceM $ ' ':(top_bar_left_side ++ top_bar_label ++ top_bar_right_side)
+    -- traceM $ ' ':msg
+    -- traceM $ ' ':bot_bar
+    -- traceM ""
     pushMut e
-    trace "" traceM $ " -------------------- Finished push "
-      ++ top_bar_label ++ " --------------------"
+    -- trace "" traceM $ " -------------------- Finished push "
+    --   ++ top_bar_label ++ " --------------------"
     return True
 
 ddInformation :: PrimMonad m => MutEntry -> RunT m Double
@@ -261,9 +259,9 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
 
   -- (3/3): Joint coverage changes
   (enabledMuts, expiredMuts, movedJoints) <- TS.deltaMutJoints old_tst mut
-  traceM $ "Enabled muts (insert): " ++ pShow enabledMuts ++ "\n"
-  traceM $ "Expired muts (delete): " ++ pShow expiredMuts ++ "\n"
-  traceM $ "Moved (" ++ show typeOfMut ++ "'d) joints: " ++ pShow movedJoints ++ "\n"
+  -- traceM $ "Enabled muts (insert): " ++ pShow enabledMuts ++ "\n"
+  -- traceM $ "Expired muts (delete): " ++ pShow expiredMuts ++ "\n"
+  -- traceM $ "Moved (" ++ show typeOfMut ++ "'d) joints: " ++ pShow movedJoints ++ "\n"
 
   -- DELETE EXPIRED ENTRIES
   zoom mutBooks $ mapM_ MB.delete $ Set.toList expiredMuts
@@ -351,7 +349,7 @@ pushMutCIs :: forall m. PrimMonad m => Doubly (PrimState m) ->
   TypeState (PrimState m) -> TypeState (PrimState m) -> MutEntry -> CIs ->
   m (Map Mutation (IntMap Int), CIs)
 pushMutCIs dly old_tst new_tst me typCIs = fmap toLazy $
-  trace ("mutCIs: " ++ pShow mutCIs) $
+  -- trace ("mutCIs: " ++ pShow mutCIs) $
   case typeOfMut of -- FIXME: TODO: factor/unify the two cases
   Add -> do
     let superCI :: CI -> m (Maybe (Maybe (CI, [CI])))
@@ -394,7 +392,7 @@ pushMutCIs dly old_tst new_tst me typCIs = fmap toLazy $
           _2 %== foldr (<=<) (delete1 super) -- del first
                              (insert1 <$> rems) -- inserts after
   where
-    ME mut _ _ _ mutCIs@(CIs _ _ mutCIsBhd _) = me
+    ME mut _ _ _ (CIs _ _ mutCIsBhd _) = me
     typeOfMut = Mut.typeOfMut mut
     -- we modify the JT here, and do all the insert-deleting in the loop
     st0 = M.empty :!: cis0
@@ -431,7 +429,7 @@ pushMut_n'Ils ns = IM.mergeWithKey col
 
 mkMutEntry :: PrimMonad m => Mutation -> RunT m MutEntry
 mkMutEntry mut = do
-  traceM $ "Intro'ing mut: " ++ pShow mut
+  -- traceM $ "Intro'ing mut: " ++ pShow mut
   tst <- use typeState
   allCIs <- use jointCIs
   mutCIs <- mfoldTree . M.elems . M.intersection allCIs

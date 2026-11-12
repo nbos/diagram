@@ -44,8 +44,8 @@ searchForever m bigN dly ns allCIs = go 1
       (jt, cis) <- JT.genRandom allCIs2s
       -- report stats, verify properties/integrity
       let indent = (liftIO (putStr "  ") >>)
-      indent $ JT.printInfo (top, allCIs) (jt, cis)
-      liftIO $ putStrLn ""
+      liftIO $ putStrLn "" >> putStrLn ""
+      indent $ JT.printGenInfo (top, allCIs) (jt, cis)
       indent $ JT.printLUB jt cis
       indent $ JT.printSubtyping (top, allCIs) (jt, cis)
       indent $ JT.printConservation (top, allCIs) (jt, cis)

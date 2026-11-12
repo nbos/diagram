@@ -4,7 +4,6 @@
 module Diagram.Evolution.MutEntry.Update (
   module Diagram.Evolution.MutEntry.Update ) where
 
-import Debug.Trace
 import Control.Lens hiding (Index, (<|))
 import Control.Monad.Extra
 
@@ -14,7 +13,6 @@ import qualified Data.IntMap.Strict as IM
 import Data.List.NonEmpty (NonEmpty(..),(<|))
 import qualified Data.List.NonEmpty as NE
 
-import Diagram.Pretty
 import Diagram.String
 import Diagram.Primitive
 
@@ -103,17 +101,15 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
   let ME mut oldDnsLoss oldDdns oldDnm oldCIs@(CIs oldMutJT _ _ _) = me
       MEU n'Ils dCor dCIs@(CIs dCIsJT dCIs_ns dCIs_bhd _) = meu
 
-  oldJT <- TS.toJointType oldTS
-  newJT <- TS.toJointType newTS
-  str <- D.toList dly
-
-  traceM "---"
-  traceM $ "Applying mut entry update (on " ++ pShow mut ++ "): " ++ pShow meu
-  traceM $ "\noldCIs = " ++ pShow oldCIs
-  traceM $ pShowStrMut mut (oldCIs^.CIs.jointType) oldJT str
-
-  traceM $ "\ndCIs = " ++ pShow dCIs
-  traceM $ pShowStr (dCIs^.CIs.jointType) str
+  -- oldJT <- TS.toJointType oldTS
+  -- newJT <- TS.toJointType newTS
+  -- str <- D.toList dly
+  -- traceM "---"
+  -- traceM $ "Applying mut entry update (on " ++ pShow mut ++ "): " ++ pShow meu
+  -- traceM $ "\noldCIs = " ++ pShow oldCIs
+  -- traceM $ pShowStrMut mut (oldCIs^.CIs.jointType) oldJT str
+  -- traceM $ "\ndCIs = " ++ pShow dCIs
+  -- traceM $ pShowStr (dCIs^.CIs.jointType) str
 
   -- cis --
   (newCIs@(CIs newMutJT _ _ _), _) <- case prevMutType of
@@ -127,8 +123,8 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
         _else -> id -- no-op (dCIs should be empty: Add/Del2 only have 1 joint)
       )
 
-  traceM $ "\nnew_cis = " ++ pShow newCIs
-  traceM $ pShowStrMut mut (newCIs^.CIs.jointType) newJT str
+  -- traceM $ "\nnew_cis = " ++ pShow newCIs
+  -- traceM $ pShowStrMut mut (newCIs^.CIs.jointType) newJT str
 
   -- dCor' --
   let
@@ -180,15 +176,14 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
 
     dCIsL = IM.elems dCIs_bhd
 
-  traceM $ "\n dCIsL = " ++ pShow dCIsL
+  -- traceM $ "\n dCIsL = " ++ pShow dCIsL
   dCor' <- case completeOverlap of
     True -> return IM.empty
     False -> ( fmap ( fromMaybe IM.empty . foldTree imUnion -- join
                       . fmap Cor.fromAddChain_ ) -- get Cor
-               . fmap (catMaybes . catMaybes -- no `Nothing` or `Just Nothing`
-                       . fmap traceShowId)
+               . fmap (catMaybes . catMaybes) -- no `Nothing` or `Just Nothing`
                . mapM (compose dly memA memB) ) dCIsL
-  traceM $ "\ndCor' = " ++ pShow dCor'
+  -- traceM $ "\ndCor' = " ++ pShow dCor'
 
   let
     -- ddns --
@@ -203,56 +198,56 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
     newDdns = IM.mergeWithKey (\_ (_, ddn') _ -> nothingIf (==0) ddn')
                (snd <$>) id ddnsIls oldDdns -- left-biased union
 
-  traceM $ pShow ("dCIs_ns",dCIs_ns)
-  traceM $ pShow ("dCor",dCor)
-  traceM $ pShow ("dCor'",dCor')
-  traceM $ pShow ("udddns",udddns)
-  traceM $ pShow ("dddns",dddns)
-  traceM $ pShow ("ddnsIls",ddnsIls)
-  traceM $ pShow ("newDdns",newDdns) ++ "\n"
+  -- traceM $ pShow ("dCIs_ns",dCIs_ns)
+  -- traceM $ pShow ("dCor",dCor)
+  -- traceM $ pShow ("dCor'",dCor')
+  -- traceM $ pShow ("udddns",udddns)
+  -- traceM $ pShow ("dddns",dddns)
+  -- traceM $ pShow ("ddnsIls",ddnsIls)
+  -- traceM $ pShow ("newDdns",newDdns) ++ "\n"
 
   let
     -- dnsLoss --
     newDnsLoss = oldDnsLoss + dDnsLoss
     dDnsLoss = sum $ IM.mergeWithKey
-               ( \s ((old_n', new_n', dLoss), _) (ddn, ddn') -> Just $
+               ( \_ ((old_n', new_n', dLoss), _) (ddn, ddn') -> Just $
                  let old_n'' = old_n' + ddn
                  -- old_loss = logFact old_n' - logFact old_n''
                      new_n'' = new_n' + ddn'
                  -- new_loss = logFact new_n' - logFact new_n''
-                 in traceShow ("s, both",s) $
-                    traceShow ("old_n'",old_n') $
-                    traceShow ("new_n'",new_n') $
-                    traceShow ("dLoss",dLoss) $
-                    traceShow ("ddn",ddn) $
-                    traceShow ("ddn'",ddn') $
-                    traceShow ("old_n''",old_n'') $
-                    traceShow ("new_n''",new_n'') $
-                    trace ""
+                 in -- traceShow ("s, both",s) $
+                    -- traceShow ("old_n'",old_n') $
+                    -- traceShow ("new_n'",new_n') $
+                    -- traceShow ("dLoss",dLoss) $
+                    -- traceShow ("ddn",ddn) $
+                    -- traceShow ("ddn'",ddn') $
+                    -- traceShow ("old_n''",old_n'') $
+                    -- traceShow ("new_n''",new_n'') $
+                    -- trace ""
                     dLoss - logFact new_n'' + logFact old_n'' )
-               ( IM.mapWithKey $ \s ((old_n', new_n', dLoss), ddn) -> -- n'Il only
+               ( IM.mapWithKey $ \_ ((old_n', new_n', dLoss), ddn) -> -- n'Il only
                    let old_n'' = old_n' + ddn
                        new_n'' = new_n' + ddn
-                   in traceShow ("s, n'IlDdns",s) $
-                      traceShow ("old_n'",old_n') $
-                      traceShow ("new_n'",new_n') $
-                      traceShow ("dLoss",dLoss) $
-                      traceShow ("ddn",ddn) $
-                      traceShow ("old_n''",old_n'') $
-                      traceShow ("new_n''",new_n'') $
-                      trace ""
+                   in -- traceShow ("s, n'IlDdns",s) $
+                      -- traceShow ("old_n'",old_n') $
+                      -- traceShow ("new_n'",new_n') $
+                      -- traceShow ("dLoss",dLoss) $
+                      -- traceShow ("ddn",ddn) $
+                      -- traceShow ("old_n''",old_n'') $
+                      -- traceShow ("new_n''",new_n'') $
+                      -- trace ""
                       dLoss - logFact new_n'' + logFact old_n'' )
                ( IM.mapWithKey $ \s (ddn, ddn') -> -- ddns only
                    let n'      = n'Of s -- old_n' == new_n'
                        old_n'' = n' + ddn
                        new_n'' = n' + ddn'
-                   in traceShow ("s, ddnsIls",s) $ -- ("s, ddnsIls",105)
-                      traceShow ("ddn",ddn) $ -- ("ddn",0)
-                      traceShow ("ddn'",ddn') $ -- ("ddn'",-2)
-                      traceShow ("n'", n') $ -- ("n'",0)
-                      traceShow ("old_n''",old_n'') $ -- ("old_n''",0)
-                      traceShow ("new_n''",new_n'') $ -- ("new_n''",-2)
-                      trace ""
+                   in -- traceShow ("s, ddnsIls",s) $ -- ("s, ddnsIls",105)
+                      -- traceShow ("ddn",ddn) $ -- ("ddn",0)
+                      -- traceShow ("ddn'",ddn') $ -- ("ddn'",-2)
+                      -- traceShow ("n'", n') $ -- ("n'",0)
+                      -- traceShow ("old_n''",old_n'') $ -- ("old_n''",0)
+                      -- traceShow ("new_n''",new_n'') $ -- ("new_n''",-2)
+                      -- trace ""
                       logFact old_n'' - logFact new_n'' ) -- ERROR --
 
                n'IlDdns ddnsIls

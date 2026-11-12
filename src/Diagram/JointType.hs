@@ -250,9 +250,9 @@ resolutionLen = ceiling .: resolutionInfo
 -- IO STATS/CHECKS --
 ---------------------
 
-printInfo :: MonadIO m => (JointType, Map (Sym,Sym) a) ->
+printGenInfo :: MonadIO m => (JointType, Map (Sym,Sym) a) ->
              (JointType, Map (Sym,Sym) b) -> m ()
-printInfo (jt,jts) (rjt,rjts) = liftIO $ putStrLn $
+printGenInfo (jt,jts) (rjt,rjts) = liftIO $ putStrLn $
   "Generated type with size "
   ++ show (dims rjt)
   ++ " from "  ++ show (dims jt)

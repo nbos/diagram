@@ -5,7 +5,6 @@
 
 module Diagram.Evolution.Correction (module Diagram.Evolution.Correction) where
 
-import Debug.Trace
 import Prelude hiding (init)
 
 import Control.Monad
@@ -23,7 +22,6 @@ import qualified Data.Map.Strict as M
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
 
-import Diagram.Pretty
 import Diagram.Primitive
 import Diagram.String
 
@@ -86,39 +84,35 @@ onAllMuts dly tst ci = do
 deltaOnAllMuts :: forall m. PrimMonad m => Doubly (PrimState m) ->
   (CI, TypeState (PrimState m)) -> ([CI], TypeState (PrimState m)) -> m Cor
 deltaOnAllMuts dly (supCI, supTS) (subCIs, subTS) = do
-  traceM ""
-  traceM $ "subs: " ++ pShow subCIs
-  traceM $ "sup:  " ++ pShow supCI
+  -- traceM ""
+  -- traceM $ "subs: " ++ pShow subCIs
+  -- traceM $ "sup:  " ++ pShow supCI
+
   -- Del Cor --
   supDelCor <- onDelMuts dly (delMutsOf supTS subTS) supCI
-  traceShowM ("supDelCor", supDelCor)
+  -- traceShowM ("supDelCor", supDelCor)
   subDelCor <- forM subCIs $ onDelMuts dly (delMutsOf subTS supTS)
-  traceShowM ("subDelCor", subDelCor)
+  -- traceShowM ("subDelCor", subDelCor)
   let delCorDelta = foldr union supDelCor $ negate <<<$>>> subDelCor
 
   -- Add Cor --
   (mSupAddChains, inters) <- composeAddsSub dly memSup supAddMuts notInMut supCI
-  traceM $ "mSuperAddChains: " ++ pShow mSupAddChains
-  traceM $ "inters: " ++ pShow inters
-  --
+  -- traceM $ "mSuperAddChains: " ++ pShow mSupAddChains
+  -- traceM $ "inters: " ++ pShow inters
   mutsSupAddCor :: [Cor] <- case mSupAddChains of
     Nothing -> sequence [ onSupAddMuts supCI ]
     Just supAddChains -> return (uc fromAddChain <$> supAddChains)
-  traceShowM ("mutsSupAddCor", mutsSupAddCor)
-  --
+  -- traceShowM ("mutsSupAddCor", mutsSupAddCor)
   intersSupAddCor <- forM inters $ \(mu,ci) ->
     onSupAddMuts ci <&> (`M.restrictKeys` S.singleton mu)
-  traceM $ "intersSupAddCor: " ++ pShow intersSupAddCor
-  --
+  -- traceM $ "intersSupAddCor: " ++ pShow intersSupAddCor
   let supAddCor = mutsSupAddCor ++ intersSupAddCor
-  traceShowM ("supAddCor", supAddCor)
-  --
+  -- traceShowM ("supAddCor", supAddCor)
   subAddCor <- forM subCIs onSubAddMuts
-  traceShowM ("subAddCor", subAddCor)
+  -- traceShowM ("subAddCor", subAddCor)
   intersSubAddCor <- forM inters $ \(mu,ci) ->
     onSubAddMuts ci <&> (`M.restrictKeys` S.singleton mu)
-  traceM $ "intersSubAddCor: " ++ pShow intersSubAddCor
-
+  -- traceM $ "intersSubAddCor: " ++ pShow intersSubAddCor
   let addCorDelta = fromMaybe M.empty $ foldTree union $
         supAddCor ++ (negate <<<$>>> (subAddCor ++ intersSubAddCor))
 
