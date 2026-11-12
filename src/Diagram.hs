@@ -92,11 +92,11 @@ main = do
     Mdl.countAtoms $ S.copy $ -- ns
     withPB bigN "Initializing string" $
     Q.unpack $ Q.fromHandle h
-  putStrLn ""
+  -- putStrLn ""
 
-  str <- D.toList dly
-  putStrLn "String: " >> print str
-  putStrLn ""
+  -- str <- D.toList dly
+  -- putStrLn "String: " >> print str
+  -- putStrLn ""
 
   let m = 256 :: Int
 

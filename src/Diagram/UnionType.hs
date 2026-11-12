@@ -1,12 +1,15 @@
 {-# LANGUAGE InstanceSigs, DeriveGeneric, DeriveAnyClass #-}
+{-# LANGUAGE TypeApplications #-}
 module Diagram.UnionType (module Diagram.UnionType) where
 
-import Prelude as P hiding (length)
+import Prelude as P
 
 import GHC.Generics (Generic)
+import Text.Printf
 
 import Data.Function (on)
 import Data.Hashable (Hashable)
+import qualified Data.Bits as Bits
 import Data.Tuple.Extra (first)
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IS
@@ -37,6 +40,10 @@ instance Monoid UnionType where
   mempty :: UnionType
   mempty = bot
 
+------------------
+-- CONSTRUCTION --
+------------------
+
 singleton :: Sym -> UnionType
 singleton = UT 1 . IS.singleton
 
@@ -59,12 +66,20 @@ toAscList = IS.toAscList . set
 fromSet :: IntSet -> UnionType
 fromSet ss = UT (IS.size ss) ss
 
+-------------
+-- METHODS --
+-------------
+
 -- | Is the symbol a member of the union?
 member :: Sym -> UnionType -> Bool
 member s = IS.member s . set
 
 notMember :: Sym -> UnionType -> Bool
 notMember = not .: member
+
+-------------------
+-- INSERT/DELETE --
+-------------------
 
 disjoint :: UnionType -> UnionType -> Bool
 disjoint = IS.disjoint `on` set
@@ -137,9 +152,9 @@ compare (UT n ss) (UT n' ss') = case P.compare n n' of
   GT | ss' `IS.isSubsetOf` ss -> Just GT
      | otherwise -> Nothing
 
------------------
--- INFORMATION --
------------------
+-----------
+-- CODEC --
+-----------
 
 -- NOTE: we could assume each element appears at least once in the
 -- resolution and shrink the code by like ~O(n), but it's probably too
@@ -164,7 +179,7 @@ bases k = replicate k . fromIntegral . size
 
 -- | For decoding
 fromIdxs :: UnionType -> [Integer] -> [Sym]
-fromIdxs (UT n ss) = fmap $ (v UV.!) . fromInteger
+fromIdxs (UT n ss) = fmap $ (v UV.!) . P.fromInteger
   where v = UV.fromListN n $ IS.toAscList ss
 
 -- | For a count, a type and a code, instantiate the type into specific
@@ -175,6 +190,29 @@ fromIdxs (UT n ss) = fmap $ (v UV.!) . fromInteger
 resolve :: Int -> UnionType -> BitVec -> Maybe ([Sym], BitVec)
 resolve k u bv = first (fromIdxs u) <$> Variety.decode (bases k u) bv
 
+-- | Return a big integer representation of the union, using set bits
+-- for membership. Symbol 0 is the least significant in the returned
+-- Integer (see Bits isntance of Integer). (NOTE: this order is reverse
+-- from `BitVec` given by `variety`).
+toInteger :: UnionType -> Integer
+toInteger (UT _ ss) = IS.foldl' Bits.setBit 0 ss
+
+fromInteger :: Int -> Integer -> UnionType
+fromInteger m n = UT m ss
+  where ss = IS.fromDistinctAscList is
+        is = [ i | i <- [0..m-1], Bits.testBit n i ]
+
+toHex :: Int -> UnionType -> String
+toHex m = printf ("%0" ++ show width ++ "x")
+          . Diagram.UnionType.toInteger
+  where
+    width | m `mod` 4 == 0 = m `div` 4
+          | otherwise = (m `div` 4) + 1
+
+-----------------
+-- INFORMATION --
+-----------------
+
 -- | k log(n)
 resolveInfo :: Int -> UnionType -> Double
 resolveInfo k (UT n _) = fromIntegral k * log2 base
@@ -183,6 +221,10 @@ resolveInfo k (UT n _) = fromIntegral k * log2 base
 -- | Length of a code to instantiate a type into `k` symbols
 resolveLen :: Int -> UnionType -> Int
 resolveLen = ceiling .: resolveInfo
+
+-----------
+-- MISC. --
+-----------
 
 err :: String -> a
 err = error . ("UnionType." ++)

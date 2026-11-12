@@ -86,9 +86,9 @@ extension_ (JT u0 u1) = [ (s0,s1) | s0 <- s0s, s1 <- s1s ]
     s0s = UT.toAscList u0
     s1s = UT.toAscList u1
 
-------------
--- MODIFY --
-------------
+-------------------
+-- INSERT/DELETE --
+-------------------
 
 -- | Safe left insertion
 insertLeft :: Sym -> JointType -> JointType
@@ -222,9 +222,6 @@ resolveIndexes (JT u0 u1) is = zip s0s s1s
                   [l0,l1] -> (l0,l1)
                   _else -> err "resolveIndexes: impossible"
 
-err :: String -> a
-err = error . ("JointType." ++)
-
 -----------------
 -- INFORMATION --
 -----------------
@@ -315,3 +312,6 @@ inRed s = "\ESC[31mError:" ++ s ++ "\ESC[0m"
 
 inGreen :: String -> String
 inGreen s = "\ESC[32m" ++ s ++ "\ESC[0m"
+
+err :: String -> a
+err = error . ("JointType." ++)

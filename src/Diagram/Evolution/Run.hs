@@ -159,10 +159,11 @@ step = do
   let (_, e@(ME mut loss ddns dnm _)) =
         L.minimumBy (compare `on` fst) es
 
+  m <- numSymbols
   CIs (JT u0 u1) _ _ _ <- use typeCIs
   traceM ""
-  traceM $ "Joint type: " ++ show (UT.toList u0)
-  traceM $ "            " ++ show (UT.toList u1)
+  traceM $ "Joint type: ( 0x" ++ UT.toHex m u0
+  traceM $ "            , 0x" ++ UT.toHex m u1 ++ " )"
 
   traceM ""
   traceM $ "  Best mutation: " ++ pShow mut
@@ -171,7 +172,7 @@ step = do
   traceM $ "  dnm: "      ++ pShow dnm
 
   ddInfo <- ddInformation e
-  traceM $ "  ddInfo: "      ++ pShow ddInfo
+  traceM $ "  ddInfo: "      ++ pShow ddInfo ++ " nats"
   traceM ""
 
   -- str <- D.toList =<< use doubly -- (debug)
