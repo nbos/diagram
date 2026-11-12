@@ -280,7 +280,7 @@ deltaMutJoints tst mut = fmap toLazy $
   DelLeft s0 -> do
     SE _ coIn _ coOut <- readL s0
     -- disable addRight for every coOut if s0 was their last coIn
-    forM_ (IS.toList coOut) $ procCoOutFromDelLeft s0 --
+    forM_ (IS.toList coOut) $ procCoOutFromDelLeft IS.null s0 --
     -- enable delRight of a coIn if s0 was its last dependent
     whenJust (trySingleton coIn) $ \s1 -> do
       SE _ _ deps1 _ <- readR s1
@@ -304,7 +304,7 @@ deltaMutJoints tst mut = fmap toLazy $
   DelRight s1 -> do
     SE _ coIn _ coOut <- readR s1
     -- disable addLeft for every coOut if s1 was their last coIn
-    forM_ (IS.toList coOut) $ procCoOutFromDelRight s1 --
+    forM_ (IS.toList coOut) $ procCoOutFromDelRight IS.null s1 --
     -- enable delLeft of a coIn if s1 was its last dependent
     whenJust (trySingleton coIn) $ \s0 -> do
       SE _ _ deps0 _ <- readL s0
@@ -327,12 +327,12 @@ deltaMutJoints tst mut = fmap toLazy $
   Del2 s0 s1 -> do
     SE _ _ _ coOut0 <- readL s0
     forM_ (IS.toList coOut0) $ \s1' -> do
-      procCoOutFromDelLeft s0 s1' --
+      procCoOutFromDelLeft (IS.null . IS.delete s1) s0 s1' --
       SE _ coIn1' _ _ <- readR s1'
       when (coIn1' == IS.singleton s0) $ addMut (Add2 s0 s1') --
     SE _ _ _ coOut1 <- readR s1
     forM_ (IS.toList coOut1) $ \s0' -> do
-      procCoOutFromDelRight s1 s0' --
+      procCoOutFromDelRight (IS.null . IS.delete s0) s1 s0' --
       SE _ coIn0' _ _ <- readL s0'
       when (coIn0' == IS.singleton s1) $ addMut (Add2 s0' s1) --
 
@@ -380,28 +380,28 @@ deltaMutJoints tst mut = fmap toLazy $
     -- | If s1 (which is coOut of s0) had only one coIn (s0), mark
     -- `AddRight s1` as expired (disable), otherwise, remove the (s0,s1)
     -- joint from `AddRight s1`.
-    procCoOutFromDelLeft s0 s1 = do
+    procCoOutFromDelLeft inRightNull s0 s1 = do
       SE _ coIn1 _ coOut1 <- readR s1
       case IS.toList coIn1 of
         [_s0] -> do
           delMut (AddRight s1) --
           forM_ (IS.toList coOut1) $ \s0' -> do
             SE _ coIn0' _ _ <- readL s0'
-            when (IS.null coIn0') $ addMut (Add2 s0' s1) --
+            when (inRightNull coIn0') $ addMut (Add2 s0' s1) --
         (_:_:_) -> delMutJoint (AddRight s1) s0 --
         [] -> error "impossible: s0 `mem` coIn1 is assumed"
 
     -- | If s0 (which is coOut of s1) had only one coIn (s1), mark
     -- `AddLeft s0` as expired (disable), otherwise, remove the (s1,s0)
     -- joint from `AddLeft s0`. Arg order is `s0 s1`
-    procCoOutFromDelRight s1 s0 = do
+    procCoOutFromDelRight inLeftNull s1 s0 = do
       SE _ coIn0 _ coOut0 <- readL s0
       case IS.toList coIn0 of
         [_s1] -> do
           delMut (AddLeft s0) --
           forM_ (IS.toList coOut0) $ \s1' -> do
             SE _ coIn1' _ _ <- readR s1'
-            when (IS.null coIn1') $ addMut (Add2 s0 s1') --
+            when (inLeftNull coIn1') $ addMut (Add2 s0 s1') --
         (_:_:_) -> delMutJoint (AddLeft s0) s1 --
         [] -> error "impossible: s1 `mem` coIn0 is assumed"
 
