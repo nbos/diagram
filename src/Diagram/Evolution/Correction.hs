@@ -98,9 +98,8 @@ deltaOnAllMuts dly (supCI, supTS) (subCIs, subTS) = do
 
   -- Add Cor --
   (mSupAddChains, inters) <- composeAddsSub dly memSup supAddMuts notInMut supCI
-  traceM $ "inters: " ++ pShow inters
   traceM $ "mSuperAddChains: " ++ pShow mSupAddChains
-
+  traceM $ "inters: " ++ pShow inters
   --
   mutsSupAddCor :: [Cor] <- case mSupAddChains of
     Nothing -> sequence [ onSupAddMuts supCI ]
@@ -446,7 +445,7 @@ nextMutCIs dly member addMutOf subCond (CI _ _ _ i0 s0) = (next0 >>=) $ \case
             Nothing -> return res -- hit end of string
             Just (ntl,sntl) -> (member stl sntl >>=) $ \case
               True -> (subCond stl sntl >>=) $ \case
-                True -> goSub True acc subs mkCI' mkCI 2 2 ntl sntl
+                True -> goSub True acc subs mkCI mkCI' (len+1) 2 ntl sntl
                 False -> go (len+1) ntl sntl -- keep going
               False -> (addMutOf stl sntl >>=) $ \case
                 Just addMut' | addMut' == addMut ->
@@ -461,12 +460,12 @@ nextMutCIs dly member addMutOf subCond (CI _ _ _ i0 s0) = (next0 >>=) $ \case
         goSub :: Bool -> [CI] -> [CI] -> (Len -> Index -> Sym -> CI) ->
                  (Len -> Index -> Sym -> CI) -> Len -> Len ->
                  Index -> Sym -> m (NonEmpty CI, [CI])
-        goSub fromIn acc subs mkSub mkCI = go where
-          go !subLen !len tl stl = (D.next dly tl >>=) $ \case
+        goSub fromIn acc subs mkCI mkSub = go where
+          go !len !subLen tl stl = (D.next dly tl >>=) $ \case
             Nothing -> return res -- hit end of string
             Just (ntl,sntl) -> (member stl sntl >>=) $ \case
               True -> (subCond stl sntl >>=) $ \case
-                True -> go (subLen+1) (len+1) ntl sntl -- keep going
+                True -> go (len+1) (subLen+1) ntl sntl -- keep going
                 False -> -- sub is not inter-, don't cons
                   goIn acc subs mkCI (len+1) ntl sntl
               False -> (addMutOf stl sntl >>=) $ \case
