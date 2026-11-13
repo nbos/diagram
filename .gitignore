@@ -1,5 +1,7 @@
 dist/
 dist-*
 data/
+*.prof
 *.png
+*.svg
 local/

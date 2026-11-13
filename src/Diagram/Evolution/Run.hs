@@ -16,8 +16,6 @@ import Control.Lens hiding (both,last1,Index,(:>),index)
 import Control.Monad.State.Strict
 
 import Data.Maybe
-import Data.Function
-import qualified Data.List as L
 import Data.Strict.Tuple (Pair(..))
 import Data.Strict.Classes (toLazy)
 
@@ -32,7 +30,11 @@ import qualified Data.IntMap.Strict as IM
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 
+import Streaming
+import qualified Streaming.Prelude as S
+
 import Diagram.Pretty
+import Diagram.Progress
 import Diagram.Primitive
 
 import Diagram.Joints (Joints)
@@ -123,18 +125,20 @@ getSymCountIntervals = do
 -- EVAL --
 
 -- | Enumerate all available mutations with their loss. Unsorted.
-evalAll :: Monad m => RunT m [(Double, MutEntry)]
-evalAll = evalAll_ <$> numSymbols -- m
-                   <*> use stringLen -- N
-                   <*> use jointCount -- nm
-                   <*> jointType -- JointType
-                   <*> use mutBooks -- Books
+streamLosses :: MonadIO m => Stream (Of (Double, MutEntry)) (RunT m) ()
+streamLosses = join $ streamLosses_ <$> lift numSymbols -- m
+                                    <*> lift (use stringLen) -- N
+                                    <*> lift (use jointCount) -- nm
+                                    <*> lift jointType -- JointType
+                                    <*> lift (use mutBooks) -- Books
 
-evalAll_ :: Int -> Int -> Int -> JointType -> MutBooks s ->
-            [(Double, MutEntry)]
-evalAll_ m bigN nm jt (MutBooks als ars a2s dls drs d2s _ _) =
-  concat $ zipWith (fmap . toFst) lossFns entries
+streamLosses_ :: forall m s. MonadIO m => Int -> Int -> Int -> JointType ->
+                 MutBooks s -> Stream (Of (Double, MutEntry)) m ()
+streamLosses_ m bigN nm jt (MutBooks als ars a2s dls drs d2s allMuts _) =
+  withPB booksSize "Evaluating losses" $
+  sequence_ $ zipWith (S.map . toFst) lossFns entries
   where
+    booksSize = M.size allMuts
     (sz0,sz1) = JT.dims jt
     vm = sz0 * sz1
     lossFns :: [MutEntry -> Double]
@@ -146,34 +150,33 @@ evalAll_ m bigN nm jt (MutBooks als ars a2s dls drs d2s _ _) =
            , vm - sz0 -- delRight
            , vm - sz0 - sz1 + 1 ] :: [Int] -- del2
 
-    entries :: [[MutEntry]]
-    entries = flatten <$> [ als, ars, a2s, dls, drs, d2s ]
-    flatten = concatMap (concatMap M.elems . M.elems)
-              . IM.elems
+    -- TODO: optimize only walking through necessary start of maps
+    entries :: [Stream (Of MutEntry) m ()]
+    entries = S.each . flatten <$> [ als, ars, a2s, dls, drs, d2s ]
+    flatten = concatMap (concatMap M.elems . M.elems) . IM.elems
 
 -- EXEC --
 
-step :: PrimMonad m => RunT m Bool
+step :: (PrimMonad m, MonadIO m) => RunT m Bool
 step = do
-  es <- evalAll
-  let (_, e@(ME mut loss ddns dnm _)) =
-        L.minimumBy (compare `on` fst) es
-
   m <- numSymbols
   CIs (JT u0 u1) _ _ _ <- use typeCIs
   traceM ""
   traceM $ "Joint type: ( 0x" ++ UT.toHex m u0
   traceM $ "            , 0x" ++ UT.toHex m u1 ++ " )"
+  traceM ""
 
+  e@(ME mut loss ddns dnm _) <- (S.next streamLosses >>=) $ \case
+    Left () -> err "step: empty books"
+    Right (lme0,mes) -> flip3 S.fold_ lme0 snd mes $ \lme lme' ->
+      if fst lme' < fst lme then lme' else lme
   traceM ""
   traceM $ "  Best mutation: " ++ pShow mut
   traceM $ "  ddnsLoss: " ++ pShow loss
   traceM $ "  ddns: "     ++ show ddns
   traceM $ "  dnm: "      ++ pShow dnm
-
   ddInfo <- ddInformation e
   traceM $ "  ddInfo: "      ++ pShow ddInfo ++ " nats"
-  traceM ""
 
   -- str <- D.toList =<< use doubly -- (debug)
   -- traceM $ pShowStrMut mut mutJT typJT str

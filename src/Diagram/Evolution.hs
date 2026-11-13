@@ -44,7 +44,7 @@ searchForever m bigN dly ns allCIs = go 1
       (jt, cis) <- JT.genRandom allCIs2s
       -- report stats, verify properties/integrity
       let indent = (liftIO (putStr "  ") >>)
-      liftIO $ putStrLn "" >> putStrLn ""
+      liftIO $ putStrLn ""
       indent $ JT.printGenInfo (top, allCIs) (jt, cis)
       indent $ JT.printLUB jt cis
       indent $ JT.printSubtyping (top, allCIs) (jt, cis)
@@ -61,7 +61,7 @@ searchForever m bigN dly ns allCIs = go 1
 -- symbols), N (string length), the string, symbol counts, constructive
 -- intervals of all joints in the string and a joint type with its CIs
 -- indexed by joint.
-hillClimb :: PrimMonad m => Int -> Int -> Doubly (PrimState m) ->
+hillClimb :: (PrimMonad m, MonadIO m) => Int -> Int -> Doubly (PrimState m) ->
   U.Vector Int -> Joints CIs -> Int -> (JointType, Joints CIs) -> m JointType
 hillClimb m bigN dly ns allCIs num jt = do
   st <- Run.init_ m bigN dly ns allCIs num jt
