@@ -115,8 +115,8 @@ iJointExtension str (CI hd shd len _ _)
 -- a strictly larger CI in the super-type to return.
 --
 -- Returns the superCI (fst) as well as the remainder CIs from taking
--- aways all of the given JointType's intervals from the superCI (snd),
--- in left-to-right order.
+-- aways all of the sub intervals from the superCI (snd), in
+-- left-to-right order.
 superCI :: forall m. PrimMonad m => Doubly (PrimState m) ->
            (Sym -> Sym -> m Bool) -> (Sym -> Sym -> m Bool) ->
            CI -> m (Maybe (Maybe (CI, [CI])))

@@ -16,7 +16,7 @@ import Control.Lens hiding (both,last1,Index,(:>),index)
 import Control.Monad.State.Strict
 
 import Data.Maybe
-import Data.Strict.Tuple (Pair(..))
+import Data.Strict.Tuple (Pair(..),(:!:))
 import Data.Strict.Classes (toLazy)
 
 import Data.Set (Set)
@@ -166,17 +166,18 @@ step = do
   traceM $ "            , 0x" ++ UT.toHex m u1 ++ " )"
   traceM ""
 
-  e@(ME mut loss ddns dnm _) <- (S.next streamLosses >>=) $ \case
+  e@(ME mut loss _ddns dnm _) <- (S.next streamLosses >>=) $ \case
     Left () -> err "step: empty books"
     Right (lme0,mes) -> flip3 S.fold_ lme0 snd mes $ \lme lme' ->
       if fst lme' < fst lme then lme' else lme
   traceM ""
   traceM $ "  Best mutation: " ++ pShow mut
   traceM $ "  ddnsLoss: " ++ pShow loss
-  traceM $ "  ddns: "     ++ show ddns
+  -- traceM $ "  ddns: "     ++ show ddns
   traceM $ "  dnm: "      ++ pShow dnm
   ddInfo <- ddInformation e
   traceM $ "  ddInfo: "      ++ pShow ddInfo ++ " nats"
+  traceM ""
 
   -- str <- D.toList =<< use doubly -- (debug)
   -- traceM $ pShowStrMut mut mutJT typJT str
@@ -242,7 +243,7 @@ getMutCountIntervals ddns = do
 ------------
 
 -- | Apply a mutation, update books.
-pushMut :: forall m. PrimMonad m => MutEntry -> RunT m ()
+pushMut :: forall m. (PrimMonad m, MonadIO m) => MutEntry -> RunT m ()
 pushMut me@(ME mut _ mutDdns mutDnm _) = do
 
   -- Application of a Mutation affects other MutEntries in three ways:
@@ -312,8 +313,8 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
         mutEntryUpdates_01 (fmap getCIs movedJointss)
 
   -- (debug)
-  CIs newTypJT ndns _ _ <- use typeCIs
-  str <- use doubly >>= D.toList
+  CIs _newTypJT ndns _ _ <- use typeCIs
+  -- str <- use doubly >>= D.toList
   let n'Of s = maybe n (n-) $ IM.lookup s ndns
         where n = ns U.! s
   --
@@ -321,7 +322,7 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   -- APPLY ENTRY UPDATES
   mutEntries <- use $ mutBooks.byMut
   let update :: MutEntry -> Update -> StateT (MutBooks (PrimState m)) m ()
-      update = MB.update . ME.validate newTypJT str n'Of <==< apply
+      update = MB.update <==< apply -- . ME.validate newTypJT str n'Of
       apply :: MutEntry -> Update -> StateT (MutBooks (PrimState m)) m MutEntry
       apply = MEU.apply old_tst typeOfMut new_tst n'Of dly
 
@@ -335,7 +336,7 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
   --
 
   jointCount += mutDnm -- apply delta nm
-  get >>= validate -- (debug)
+  -- get >>= validate -- (debug)
 
   where
     typeOfMut = Mut.typeOfMut mut
@@ -349,60 +350,54 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
 -- mutations (may include erroneous corrections on newly enabled muts
 -- (Add case) or newly expired muts (Del case), which need to be
 -- computed explicitly anyway, but remember to filter them out)
-pushMutCIs :: forall m. PrimMonad m => Doubly (PrimState m) ->
+pushMutCIs :: forall m. (PrimMonad m, MonadIO m) => Doubly (PrimState m) ->
   TypeState (PrimState m) -> TypeState (PrimState m) -> MutEntry -> CIs ->
   m (Map Mutation (IntMap Int), CIs)
-pushMutCIs dly old_tst new_tst me typCIs = fmap toLazy $
-  -- trace ("mutCIs: " ++ pShow mutCIs) $
-  case typeOfMut of -- FIXME: TODO: factor/unify the two cases
-  Add -> do
-    let superCI :: CI -> m (Maybe (Maybe (CI, [CI])))
-        superCI = CI.superCI dly super sub
-          where super = TS.member new_tst
-                sub = fmap not .: TS.member old_tst
-                -- (return .: JT.member mutJT)
-
-        getDelta :: CI -> [CI] -> m (Map Mutation (IntMap Int))
-        getDelta super subs = Cor.deltaOnAllMuts dly
-                              (super, new_tst) (subs, old_tst)
-
-    flip execStateT st0 $ forM_ mutCIsL $
-      \mutCI -> (lift (superCI mutCI) >>=) $ flip whenJust $ \case
-        Nothing -> do -- super == ci
-          (_1 %=) . Cor.union =<< lift (getDelta mutCI [])
-          _2 %== insert1 mutCI
-        Just (super, subs) -> do -- super > ci
-          (_1 %=) . Cor.union =<< lift (getDelta super subs)
-          _2 %== foldr (>=>) (insert1 super) -- insert after
-                             (delete1 <$> subs) -- dels first
-  Del -> do
-    let superCI :: CI -> m (Maybe (Maybe (CI, [CI])))
-        superCI = CI.superCI dly super sub
-          where super = TS.member old_tst
-                sub = fmap not .: TS.member new_tst
-                -- return .: JT.member mutJT
-
-        getDelta :: CI -> [CI] -> m (Map Mutation (IntMap Int))
-        getDelta super rems = Cor.deltaOnAllMuts dly
-                              (super, old_tst) (rems, new_tst)
-
-    flip execStateT st0 $ forM_ mutCIsL $
-      \mutCI -> (lift (superCI mutCI) >>=) $ flip whenJust $ \case
-        Nothing -> do -- super == ci
-          (_1 %=) . Cor.union =<< lift (getDelta mutCI [])
-          _2 %== delete1 mutCI
-        Just (super, rems) -> do -- super > ci
-          (_1 %=) . Cor.union =<< lift (getDelta super rems)
-          _2 %== foldr (<=<) (delete1 super) -- del first
-                             (insert1 <$> rems) -- inserts after
+pushMutCIs dly old_tst new_tst me typCIs =
+  fmap toLazy $ S.effects $ flip execStateT st0 $
+  distribute $ S.mapM procMutCI $
+  withPB mutCIsCount "Applying mutation to type CIs" $
+  S.each $ IM.elems mutCIsBhd
   where
     ME mut _ _ _ (CIs _ _ mutCIsBhd _) = me
-    typeOfMut = Mut.typeOfMut mut
-    -- we modify the JT here, and do all the insert-deleting in the loop
+    (procMutCI, sub_tst, sup_tst) = case Mut.typeOfMut mut of
+      Add -> (procAddMutCI, old_tst, new_tst)
+      Del -> (procDelMutCI, new_tst, old_tst)
+
+    superCI :: CI -> m (Maybe (Maybe (CI, [CI])))
+    superCI = CI.superCI dly memSup memMut
+      where memSup = TS.member sup_tst
+            memMut = fmap not .: TS.member sub_tst
+
+    getDelta :: CI -> [CI] -> m (Map Mutation (IntMap Int))
+    getDelta super subs = Cor.deltaOnAllMuts dly
+                          (super, sup_tst) (subs, sub_tst)
+
+    procAddMutCI :: CI -> StateT (Map Mutation (IntMap Int) :!: CIs) m ()
+    procAddMutCI mutCI = (lift (superCI mutCI) >>=) $ flip whenJust $ \case
+      Nothing -> do -- super == ci
+        (_1 %=) . Cor.union =<< lift (getDelta mutCI [])
+        _2 %== insert1 mutCI
+      Just (super, subs) -> do -- super > ci
+        (_1 %=) . Cor.union =<< lift (getDelta super subs)
+        _2 %== foldr (>=>) (insert1 super) -- insert after
+                           (delete1 <$> subs) -- dels first
+
+    procDelMutCI :: CI -> StateT (Map Mutation (IntMap Int) :!: CIs) m ()
+    procDelMutCI mutCI = (lift (superCI mutCI) >>=) $ flip whenJust $ \case
+      Nothing -> do -- super == ci
+        (_1 %=) . Cor.union =<< lift (getDelta mutCI [])
+        _2 %== delete1 mutCI
+      Just (super, subs) -> do -- super > ci
+        (_1 %=) . Cor.union =<< lift (getDelta super subs)
+        _2 %== foldr (<=<) (delete1 super) -- del first
+                           (insert1 <$> subs) -- inserts after
+
+    -- we modify the JT here, and do all the insert-deleting in procs
     st0 = M.empty :!: cis0
     cis0 = over CIs.jointType (Mut.unsafeApply mut) typCIs
 
-    mutCIsL = IM.elems mutCIsBhd
+    mutCIsCount = IM.size mutCIsBhd -- TODO: bookkeep?
     insert1 = CIs.insertDisjoint dly
     delete1 = CIs.deleteExisting dly
 
@@ -439,8 +434,8 @@ mkMutEntry mut = do
   mutCIs <- mfoldTree . M.elems . M.intersection allCIs
             <$> TS.jointsOfMut tst mut
 
-  typCIs@(CIs jt ndns _ _) <- use typeCIs
-  str <- D.toList =<< use doubly -- (debug)
+  typCIs@(CIs _jt ndns _ _) <- use typeCIs
+  -- str <- D.toList =<< use doubly -- (debug)
   ns <- use symCounts
   cor <- case Mut.typeOfMut mut of
     Add -> return $ snd $ CIs.join_ typCIs mutCIs
@@ -449,7 +444,7 @@ mkMutEntry mut = do
       fmap snd $ CIs.difference dly (Just $ TS.member tst)
          Nothing typCIs mutCIs
 
-  return $ ME.validate jt str (n'Of ns ndns) $ -- (debug)
+  return $ -- ME.validate jt str (n'Of ns ndns) $ -- (debug)
     ME.fromParamsWithCor (n'Of ns ndns) mut mutCIs cor
 
   where
@@ -478,12 +473,12 @@ init_ m bigN dly ns allCIs num (jt, memJointCIs) = do
   -- TODO: switch back to non-debug CIs.join --
   cisByMut <- joinByMutM tst (CIs.debug_join dly) $ M.toList allCIs
   corByMut <- Cor.unions <$> mapM (Cor.onAllMuts dly tst) memCIsL
-  str <- D.toList dly -- TODO: rm
+  -- str <- D.toList dly -- TODO: rm
 
-  let es = M.mergeWithKey ( Just . ME.validate jt str n'Of
-                               .:. ME.fromParamsWithCor n'Of ) -- CIs * cor
-        (M.mapWithKey $
-          ME.validate jt str n'Of .: ME.fromParams n'Of) -- only CIs
+  let es = M.mergeWithKey ( Just -- . ME.validate jt str n'Of
+                            .:. ME.fromParamsWithCor n'Of ) -- CIs * cor
+        (M.mapWithKey $ -- ME.validate jt str n'Of .:
+          ME.fromParams n'Of) -- only CIs
         (M.mapWithKey $ -- note: mergeWithKey can pass empty maps, so map errs
           err' . ("have cor, but CIs missing: " ++) . show .: (,)) -- only cor
         cisByMut corByMut

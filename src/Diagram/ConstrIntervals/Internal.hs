@@ -136,48 +136,39 @@ fromStream_0 is0@(i0,s0) ss !m = (S.next ss >>=) $ \case
 -- be messed up if the CI is not member of the of set. Doesn't modify
 -- the joint type.
 deleteExisting :: PrimMonad m => Doubly (PrimState m) -> CI -> CIs -> m CIs
-deleteExisting dly (CI hd shd 2 tl stl) (CIs jt ns bhd btl) = do
-  checkIntervalsIntegrity dly res -- (debug)
-  pure res
-  where
-    res = CIs{ _jointType = jt
-             , _symCounts = IM.update (nothingIf (== 0) . (+(-1))) shd $
-                            IM.update (nothingIf (== 0) . (+(-1))) stl ns
-             , _byHead = IM.delete hd bhd
-             , _byTail = IM.delete tl btl }
+deleteExisting _ (CI hd shd 2 tl stl) (CIs jt ns bhd btl) = pure $
+  CIs{ _jointType = jt
+     , _symCounts = IM.update (nothingIf (== 0) . (+(-1))) shd $
+                    IM.update (nothingIf (== 0) . (+(-1))) stl ns
+     , _byHead = IM.delete hd bhd
+     , _byTail = IM.delete tl btl }
 
 deleteExisting dly ci@(CI hd _ _ tl _) (CIs jt ns bhd btl) = do
   ndns <- CI.symCounts dly ci
-  let res = CIs{ _jointType = jt
-               , _symCounts = flip2 IM.differenceWith ns ndns $
-                              nothingIf (== 0) .: (-)
-               , _byHead = IM.delete hd bhd
-               , _byTail = IM.delete tl btl }
-  checkIntervalsIntegrity dly res -- (debug)
-  return res
+  return $ CIs{ _jointType = jt
+              , _symCounts = flip2 IM.differenceWith ns ndns $
+                             nothingIf (== 0) .: (-)
+              , _byHead = IM.delete hd bhd
+              , _byTail = IM.delete tl btl }
 
 -- | Insert a CI which is not present, nor overlapping with any interval
 -- (including point contact, or end-to-end-touching) in the
 -- set. Invariants break if the condition doesn't hold. Doesn't modify
 -- the joint type.
 insertDisjoint :: PrimMonad m => Doubly (PrimState m) -> CI -> CIs -> m CIs
-insertDisjoint dly ci@(CI hd shd 2 tl stl) (CIs jt ns bhd btl) = do
-  checkIntervalsIntegrity dly res -- (debug)
-  pure res
-  where
-    res = CIs{ _jointType = jt
-             , _symCounts = IM.insertWith (+) shd 1 $
-                            IM.insertWith (+) stl 1 ns
-             , _byHead = IM.insert hd ci bhd
-             , _byTail = IM.insert tl ci btl }
+insertDisjoint _ ci@(CI hd shd 2 tl stl) (CIs jt ns bhd btl) = pure $
+  CIs{ _jointType = jt
+     , _symCounts = IM.insertWith (+) shd 1 $
+                    IM.insertWith (+) stl 1 ns
+     , _byHead = IM.insert hd ci bhd
+     , _byTail = IM.insert tl ci btl }
+
 insertDisjoint dly ci@(CI hd _ _ tl _) (CIs jt ns bhd btl) = do
   dns <- CI.symCounts dly ci
-  let res = CIs{ _jointType = jt
-               , _symCounts = IM.unionWith (+) dns ns
-               , _byHead = IM.insert hd ci bhd
-               , _byTail = IM.insert tl ci btl }
-  checkIntervalsIntegrity dly res -- (debug)
-  return res
+  return $ CIs{ _jointType = jt
+              , _symCounts = IM.unionWith (+) dns ns
+              , _byHead = IM.insert hd ci bhd
+              , _byTail = IM.insert tl ci btl }
 
 err :: String -> a
 err = error . ("ConstrIntervals." ++)
