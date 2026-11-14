@@ -5,7 +5,6 @@ module Diagram.Evolution (module Diagram.Evolution) where
 
 import System.Random (StdGen)
 
-import Control.Monad.Extra
 import Control.Monad.State.Strict
 import Control.Monad.Trans.Random.Lazy (RandT)
 import Control.Lens hiding (both,last1,Index,(:>),index)
@@ -28,7 +27,7 @@ import qualified Diagram.ConstrIntervals.Internal as CIs
 import Diagram.Evolution.Run ()
 import qualified Diagram.Evolution.Run as Run
 
-data EvolutionState
+data EvolutionState = EvolutionState
 
 -- | Keep generating random JointTypes and hill-climbing to minima,
 -- printing results.
@@ -52,7 +51,7 @@ searchForever m bigN dly ns allCIs = go 1
       indent $ JT.printMembership allCIs (jt, cis)
       liftIO $ putStrLn ""
 
-      (JT u0' u1') <- hillClimb m bigN dly ns allCIs num (jt, cis)
+      (JT u0' u1') <- hillClimb m bigN dly ns allCIs (jt, cis)
       liftIO $ putStrLn $ "Minimal type achieved: ( 0x" ++ UT.toHex m u0'
       liftIO $ putStrLn $ "                       , 0x" ++ UT.toHex m u1' ++ " )"
       go (num+1) -- repeat
@@ -62,8 +61,11 @@ searchForever m bigN dly ns allCIs = go 1
 -- intervals of all joints in the string and a joint type with its CIs
 -- indexed by joint.
 hillClimb :: (PrimMonad m, MonadIO m) => Int -> Int -> Doubly (PrimState m) ->
-  U.Vector Int -> Joints CIs -> Int -> (JointType, Joints CIs) -> m JointType
-hillClimb m bigN dly ns allCIs num jt = do
-  st <- Run.init_ m bigN dly ns allCIs num jt
-  res <- execStateT (whileM Run.step) st
-  return (res^.Run.typeCIs.CIs.jointType)
+             U.Vector Int -> Joints CIs -> (JointType, Joints CIs) -> m JointType
+hillClimb m bigN dly ns allCIs jt =
+  Run.init_ m bigN dly ns allCIs jt >>= go
+  where
+    go st = do
+      (ddInfo, me) <- Run.bestMut st
+      if ddInfo <= 0 then go =<< execStateT (Run.pushMut me) st
+        else return $ st^.Run.typeCIs.CIs.jointType

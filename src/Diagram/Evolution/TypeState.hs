@@ -51,8 +51,8 @@ data TypeState s = TS
 makeLenses ''TypeState
 
 -- | m
-numSymbols :: Monad m => TypeT m Int
-numSymbols = leftSyms `uses` MV.length
+numSymbols :: TypeState s -> Int
+numSymbols = MV.length . _leftSyms
 
 -- | Clones state
 clone :: PrimMonad m => TypeState (PrimState m) -> m (TypeState (PrimState m))

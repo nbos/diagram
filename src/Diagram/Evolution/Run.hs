@@ -15,6 +15,7 @@ import Control.Lens hiding (both,last1,Index,(:>),index)
 import Control.Monad.State.Strict
 
 import Data.Maybe
+import Data.Hashable
 import qualified Data.List as L
 import Data.Strict.Tuple (Pair(..),(:!:))
 import Data.Strict.Classes (toLazy)
@@ -38,8 +39,7 @@ import Diagram.Progress
 import Diagram.Primitive
 
 import Diagram.Joints (Joints)
-import qualified Diagram.UnionType as UT
-import Diagram.JointType (JointType(JT))
+import Diagram.JointType (JointType)
 import qualified Diagram.JointType as JT
 import Diagram.String
 import qualified Diagram.ConstrInterval as CI
@@ -70,14 +70,13 @@ import Diagram.Util
 
 type RunT m = StateT (RunState (PrimState m)) m
 -- | Run state of a JointType in a given string
-data RunState s = RunState
+data RunState s = RS
   -- string state (static)
   { _stringLen :: !Int -- N, bigN
   , _doubly    :: !(Doubly s) -- dly :: underlying string :: [N]Sym
   , _symCounts :: !(U.Vector Count) -- ns :: symbol counts (TODO: dyn vec?)
   , _jointCIs  :: !(Joints CIs) -- allCIs :: (s0,s1) -> CIs
 
-  , _runNumber  :: !Int -- number of times (re-)initialized
   -- type state attributes (evolve/mutate)
   , _stepNumber :: !Int -- number of steps taken (mutations applied)
   , _typeState  :: !(TypeState s) -- sym entries :: [(mem, coIn, deps, coOut)]
@@ -91,54 +90,102 @@ makeLenses ''RunState
 -- GETTERS --
 
 -- | m
-numSymbols :: Monad m => RunT m Int
-numSymbols = zoom typeState TS.numSymbols
+numSymbols :: RunState s -> Int
+numSymbols = typeState `views` TS.numSymbols
 
-jointType :: Monad m => RunT m JointType
-jointType = use $ typeCIs.CIs.jointType
+jointType :: RunState s -> JointType
+jointType = view $ typeCIs.CIs.jointType
 
 -- | vm = sz0 * sz1
-variety :: Monad m => RunT m Int
-variety = JT.variety <$> jointType
+variety :: RunState s -> Int
+variety = JT.variety . jointType
+
+-- | Quick hashing function for state of run, without any of the
+-- book-keeping, i.e. the hash of the minimal canonical representation,
+-- i.e. the joint type
+hashTypeState :: RunState s -> Int
+hashTypeState = hash . CIs._jointType . _typeCIs
 
 -- | Compute the difference in information/code length incurred by the
 -- introduction of the current joint type (i.e. no further mutation)
-getIntroInfo :: PrimMonad m => RunT m Double
+getIntroInfo :: RunState s -> Double
 getIntroInfo = Math.dInfo <$> numSymbols -- m
-                          <*> use stringLen -- N
-                          <*> use jointCount -- nm
+                          <*> view stringLen -- N
+                          <*> view jointCount -- nm
                           <*> getCountIntervals -- [(n,n')]
                           <*> variety -- vm
 
-getCountIntervals :: PrimMonad m => RunT m [(Count,Count)]
+getCountIntervals :: RunState s -> [(Count,Count)]
 getCountIntervals = snd <<$>> getSymCountIntervals
 
-getSymCountIntervals :: Monad m => RunT m [(Sym,(Count,Count))]
+getSymCountIntervals :: RunState s -> [(Sym,(Count,Count))]
 getSymCountIntervals = do
-  ns <- use symCounts
-  CIs _ ndns _ _ <- use typeCIs
+  ns <- view symCounts
+  CIs _ ndns _ _ <- view typeCIs
   return $ IM.toList $ flip IM.mapWithKey ndns $ \s ndn ->
     let n = ns U.! s
         n' = n - ndn
     in seq n' (n,n')
 
--- EVAL --
+--------------------------
+-- EVAL MUTS (READONLY) --
+--------------------------
+
+bestMut :: (PrimMonad m, MonadIO m) => RunState (PrimState m) -> m (Double, MutEntry)
+bestMut st = do
+  e@(ME mut loss _ddns dnm _) <- (S.next (streamLosses st) >>=) $ \case
+    Left () -> err "step: empty books"
+    Right (lme0,mes) -> flip3 S.fold_ lme0 snd mes $ \lme lme' ->
+      if fst lme' < fst lme then lme' else lme
+  liftIO $ putStrLn $ "  Best mutation: " ++ pShow mut
+  liftIO $ putStrLn $ "  ddnsLoss: " ++ pShow loss
+  liftIO $ putStrLn $ "  dnm: "      ++ pShow dnm
+  let ddInfo = ddInformation st e
+  liftIO $ putStrLn $ "  ddInfo: "      ++ pShow ddInfo ++ " nats\n"
+  return (ddInfo, e)
+
+ddInformation :: RunState s -> MutEntry -> Double
+ddInformation st@(RS bigN _ _ _ _ tst memCIs nm _) (ME mut _ ddns dnm _) =
+  let m = TS.numSymbols tst
+      ils = getMutCountIntervals st ddns
+      jt = memCIs^.CIs.jointType
+      (sz0, sz1) = JT.dims jt
+      vm = JT.variety jt
+      vm' = case mut of
+        AddLeft _  -> vm + sz1
+        AddRight _ -> vm + sz0
+        Add2 _ _   -> vm + sz0 + sz1 + 1
+        DelLeft _  -> vm - sz1
+        DelRight _ -> vm - sz0
+        Del2 _ _   -> vm - sz0 - sz1 + 1
+
+  in Math.ddInfo m bigN ils (nm, nm+dnm) (vm, vm')
+
+-- | Return the updated count-intervals of symbols whose counts are
+-- affected by a mut, given the delta-delta-symbol-counts of the mut
+getMutCountIntervals :: RunState s -> IntMap Int -> [(Count,Count)]
+getMutCountIntervals (RS _ _ ns _ _ _ (CIs _ ndns _ _) _ _) ddns =
+  IM.elems $ IM.mergeWithKey (Just .:. f)
+  (const IM.empty) (IM.mapWithKey $ flip f 0)
+  ndns ddns
+  where
+    f s ndn ddn = seq n'' (n',n'')
+      where n = ns U.! s
+            n' = n - ndn
+            n'' = n' + ddn
 
 -- | Enumerate all available mutations with their loss. Unsorted.
-streamLosses :: MonadIO m => Stream (Of (Double, MutEntry)) (RunT m) ()
-streamLosses = join $ streamLosses_ <$> lift numSymbols -- m
-                                    <*> lift (use stringLen) -- N
-                                    <*> lift (use jointCount) -- nm
-                                    <*> lift jointType -- JointType
-                                    <*> lift (use mutBooks) -- Books
-
-streamLosses_ :: forall m s. MonadIO m => Int -> Int -> Int -> JointType ->
-                 MutBooks s -> Stream (Of (Double, MutEntry)) m ()
-streamLosses_ m bigN nm jt (MutBooks als ars a2s dls drs d2s allMuts _) = do
+streamLosses :: forall m. MonadIO m => RunState (PrimState m) ->
+                Stream (Of (Double, MutEntry)) m ()
+streamLosses (RS bigN _ _ _ _ tst memCIs nm books) =
   withPB booksSize "Evaluating losses" $
     sequence_ $ zipWith (S.map . toFst) lossFns entries
   where
+    m = TS.numSymbols tst
+    jt = memCIs^.CIs.jointType
+    MutBooks als ars a2s dls drs d2s allMuts _ = books
     booksSize = M.size allMuts
+
     (sz0,sz1) = JT.dims jt
     vm = sz0 * sz1
     lossFns :: [MutEntry -> Double]
@@ -155,92 +202,14 @@ streamLosses_ m bigN nm jt (MutBooks als ars a2s dls drs d2s allMuts _) = do
     entries = S.each . flatten <$> [ als, ars, a2s, dls, drs, d2s ]
     flatten = concatMap (concatMap M.elems . M.elems) . IM.elems
 
--- EXEC --
-
-step :: (PrimMonad m, MonadIO m) => RunT m Bool
-step = do
-  m <- numSymbols
-  CIs (JT u0 u1) _ _ _ <- use typeCIs
-  liftIO $ putStrLn $ "\nJoint type: ( 0x" ++ UT.toHex m u0
-  liftIO $ putStrLn $   "            , 0x" ++ UT.toHex m u1 ++ " )\n"
-
-  e@(ME mut loss _ddns dnm _) <- (S.next streamLosses >>=) $ \case
-    Left () -> err "step: empty books"
-    Right (lme0,mes) -> flip3 S.fold_ lme0 snd mes $ \lme lme' ->
-      if fst lme' < fst lme then lme' else lme
-  liftIO $ putStrLn $ "\n  Best mutation: " ++ pShow mut
-  liftIO $ putStrLn $ "  ddnsLoss: " ++ pShow loss
-  -- liftIO $ putStrLn $ "  ddns: "     ++ show ddns
-  liftIO $ putStrLn $ "  dnm: "      ++ pShow dnm
-  ddInfo <- ddInformation e
-  liftIO $ putStrLn $ "  ddInfo: "      ++ pShow ddInfo ++ " nats\n"
-
-  -- str <- D.toList =<< use doubly -- (debug)
-  -- liftIO $ putStrLn $ pShowStrMut mut mutJT typJT str
-
-  if ddInfo > 0 then return False else do
-    stepNumber += 1 -- inc
-    -- numRun <- use runNumber
-    -- numStep <- use stepNumber
-    -- let msg = "-- Pushing mut " ++ show mut ++ " --"
-    --     msg_len = length msg
-    --     bot_bar = replicate msg_len '-'
-    --     top_bar_label = '[' : show numRun ++ ':' : show numStep ++ [']']
-    --     label_len = length top_bar_label
-    --     top_bar_left_side_len = (msg_len - label_len) `div` 2
-    --     top_bar_left_side = replicate top_bar_left_side_len '-'
-    --     top_bar_right_side = replicate (msg_len - label_len
-    --                                     - top_bar_left_side_len) '-'
-    -- liftIO $ putStrLn $ ' ':(top_bar_left_side ++ top_bar_label ++ top_bar_right_side)
-    -- liftIO $ putStrLn $ ' ':msg
-    -- liftIO $ putStrLn $ ' ':bot_bar
-    -- liftIO $ putStrLn ""
-    pushMut e
-    -- trace "" liftIO $ putStrLn $ " -------------------- Finished push "
-    --   ++ top_bar_label ++ " --------------------"
-    return True
-
-ddInformation :: PrimMonad m => MutEntry -> RunT m Double
-ddInformation (ME mut _ ddns dnm _) = do
-  m <- numSymbols
-  bigN <- use stringLen
-  ils <- getMutCountIntervals ddns
-  nm <- use jointCount
-
-  vm <- variety
-  (sz0, sz1) <- JT.dims <$> jointType
-  let vm' = case mut of
-        AddLeft _  -> vm + sz1
-        AddRight _ -> vm + sz0
-        Add2 _ _   -> vm + sz0 + sz1 + 1
-        DelLeft _  -> vm - sz1
-        DelRight _ -> vm - sz0
-        Del2 _ _   -> vm - sz0 - sz1 + 1
-
-  return $ Math.ddInfo m bigN ils (nm, nm+dnm) (vm, vm')
-
--- | Return the updated count-intervals of symbols whose counts are
--- affected by a mut, given the delta-delta-symbol-counts of the mut
-getMutCountIntervals :: PrimMonad m => IntMap Int -> RunT m [(Count,Count)]
-getMutCountIntervals ddns = do
-  ns <- use symCounts
-  CIs _ ndns _ _ <- use typeCIs
-  return $ IM.elems $ IM.mergeWithKey (Just .:. f ns)
-    (const IM.empty) (IM.mapWithKey $ flip (f ns) 0)
-    ndns ddns
-  where
-    f ns s ndn ddn = seq n'' (n',n'')
-      where n = ns U.! s
-            n' = n - ndn
-            n'' = n' + ddn
-
-------------
--- UPDATE --
-------------
+---------------
+-- APPLY MUT --
+---------------
 
 -- | Apply a mutation, update books.
 pushMut :: forall m. (PrimMonad m, MonadIO m) => MutEntry -> RunT m ()
 pushMut me@(ME mut _ mutDdns mutDnm _) = do
+  stepNumber += 1 -- inc
 
   -- Application of a Mutation affects other MutEntries in three ways:
   -- (1) the post-intro count of symbols (n') changes, affecting mut
@@ -456,9 +425,8 @@ mkMutEntry mut = do
 
 -- | Initialize a new RunState
 init :: (PrimMonad m, MonadIO m) => Int -> Int -> Doubly (PrimState m) ->
-  U.Vector Int -> Joints CIs -> Int -> JointType -> m (RunState (PrimState m))
-init m bigN dly ns allCIs num jt = init_ m bigN dly ns
-                                   allCIs num (jt, memJointCIs)
+  U.Vector Int -> Joints CIs -> JointType -> m (RunState (PrimState m))
+init m bigN dly ns allCIs jt = init_ m bigN dly ns allCIs (jt, memJointCIs)
   where
     memJointCIs = M.filterWithKey (const . uc (JT.member jt)) allCIs
 
@@ -466,9 +434,9 @@ init m bigN dly ns allCIs num jt = init_ m bigN dly ns
 -- subset of the first set and corresponds exactly to its entries for
 -- each joint that falls under the given type.
 init_ :: forall m. (PrimMonad m, MonadIO m) => Int -> Int ->
-         Doubly (PrimState m) -> U.Vector Int -> Joints CIs -> Int ->
+         Doubly (PrimState m) -> U.Vector Int -> Joints CIs ->
          (JointType, Joints CIs) -> m (RunState (PrimState m))
-init_ m bigN dly ns allCIs num (jt, memJointCIs) = do
+init_ m bigN dly ns allCIs (jt, memJointCIs) = do
   tst <- TS.init m allJoints jt
 
   let jointsCount = M.size allCIs
@@ -492,11 +460,10 @@ init_ m bigN dly ns allCIs num (jt, memJointCIs) = do
         cisByMut corByMut
 
   books <- MB.fromList m $ M.elems es
-  return $ RunState { _stringLen  = bigN
+  return $ RS { _stringLen  = bigN
                     , _doubly     = dly
                     , _symCounts  = ns
                     , _jointCIs   = allCIs
-                    , _runNumber  = num
                     , _stepNumber = 0
                     , _typeState  = tst
                     , _typeCIs    = memCIs
@@ -550,9 +517,9 @@ fromListWithM f = foldM g M.empty
 -----------
 
 validate :: (PrimMonad m, MonadIO m) => RunState (PrimState m) -> m ()
-validate (RunState bigN dly ns allCIs _ _ tst memCIs nm books) = do
-  st' <- init m bigN dly ns allCIs 0 jt
-  let RunState _ _ _ _ _ _ tst' memCIs' nm' books' = st'
+validate (RS bigN dly ns allCIs _ tst memCIs nm books) = do
+  st' <- init m bigN dly ns allCIs jt
+  let RS _ _ _ _ _ tst' memCIs' nm' books' = st'
 
   unless (nm == nm') $
     err'' "joint counts (total)" (nm, nm')
