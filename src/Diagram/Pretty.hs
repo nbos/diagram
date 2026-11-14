@@ -11,7 +11,7 @@ import qualified Streaming.Prelude as S
 import Diagram.String
 import Diagram.JointType (JointType)
 import qualified Diagram.JointType as JT
-import Diagram.Evolution.Mutation (Mutation)
+import Diagram.Evolution.Mutation (Mutation(..))
 import qualified Diagram.Evolution.Mutation as Mut
 
 import Diagram.Util
@@ -20,8 +20,11 @@ pShow :: Show a => a -> [Char]
 pShow = unpack . pShowOpt defaultOutputOptionsDarkBg
   { outputOptionsCompact       = True
   , outputOptionsCompactParens = True -- keeps parens inline too
-  , outputOptionsIndentAmount  = 2
-  }
+  , outputOptionsIndentAmount  = 2 }
+
+---------------------
+-- TYPES ON STRING --
+---------------------
 
 pShowStrMut :: Mutation -> JointType -> JointType -> [Sym] -> [Char]
 pShowStrMut mut mutJT typJT str =
@@ -103,6 +106,41 @@ pShowStreamMark_ mMark mMem str0 = (next str0 >>=) $ \case
     show' color s = do
       whenM (mark s) (S.yield '*')
       S.each color >> S.each (show s) >> S.each reset
+
+---------------
+-- MUTATIONS --
+---------------
+
+pShowMut :: Mutation -> String
+pShowMut = pShowMut_ 3 -- for 3-char numbers, [100..999]
+
+pShowMut_ :: Int -> Mutation -> String
+pShowMut_ width (AddLeft  s0) = "AddLeft  " ++ green ++ str0 ++ reset ++ pad
+  where str0 = show s0
+        pad = replicate (width - length str0) ' '
+pShowMut_ width (AddRight s1) = "AddRight " ++ green ++ str1 ++ reset ++ pad
+  where str1 = show s1
+        pad = replicate (width - length str1) ' '
+pShowMut_ width (Add2  s0 s1) = "Add2 " ++ green ++ str0 ++ pad
+                                ++ ' ':str1 ++ reset
+  where str0 = show s0
+        str1 = show s1
+        pad = replicate (width - length str0) ' '
+pShowMut_ width (DelLeft  s0) = "DelLeft  " ++ red ++ str0 ++ reset ++ pad
+  where str0 = show s0
+        pad = replicate (width - length str0) ' '
+pShowMut_ width (DelRight s1) = "DelRight " ++ red ++ str1 ++ reset ++ pad
+  where str1 = show s1
+        pad = replicate (width - length str1) ' '
+pShowMut_ width (Del2  s0 s1) = "Del2 " ++ red ++ str0 ++ pad
+                                ++ ' ':str1 ++ reset
+  where str0 = show s0
+        str1 = show s1
+        pad = replicate (width - length str0) ' '
+
+----------
+-- ANSI --
+----------
 
 reset :: String
 reset = "\ESC[0m"

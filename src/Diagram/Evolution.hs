@@ -26,6 +26,7 @@ import Diagram.Joints (Joints)
 import qualified Diagram.Joints as Jts
 import Diagram.ConstrIntervals.Internal (CIs)
 import qualified Diagram.ConstrIntervals.Internal as CIs
+
 import Diagram.Evolution.MutEntry (MutEntry(ME))
 
 import Diagram.Evolution.Run (RunState)
@@ -73,7 +74,7 @@ hillClimb = Run.init_ >======> go
       if ddInfo <= 0
         then do
         liftIO $ putStr   $ "" ++ gray ++ h ++ reset ++ " "
-        liftIO $ putStr   $ printf "%-14s" (show mut)
+        liftIO $ putStr   $ printf "%-22s" (pShowMut mut)
         liftIO $ putStrLn $ printf "%-11.4e" ddInfo
         execStateT (Run.pushMut me) st >>= go
 
