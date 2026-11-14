@@ -263,7 +263,7 @@ apply oldTS prevMutType newTS n'Of dly me meu = do
       if even r then r `div` 2
       else err' $ "expected even number: " ++ show (r, dddns)
 
-  CIs.checkIntegrityM dly newCIs -- (debug)
+  -- CIs.checkIntegrityM dly newCIs -- (debug)
   return $ ME mut newDnsLoss newDdns newDnm newCIs
 
   where

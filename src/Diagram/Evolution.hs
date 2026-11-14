@@ -50,11 +50,11 @@ searchForever m bigN dly ns allCIs = go 1
       indent $ JT.printSubtyping (top, allCIs) (jt, cis)
       indent $ JT.printConservation (top, allCIs) (jt, cis)
       indent $ JT.printMembership allCIs (jt, cis)
+      liftIO $ putStrLn ""
 
       (JT u0' u1') <- hillClimb m bigN dly ns allCIs num (jt, cis)
-      liftIO $ putStr "Minimal type achieved: " >> print (UT.toAscList u0')
-      liftIO $ putStr "                       " >> print (UT.toAscList u1')
-
+      liftIO $ putStrLn $ "Minimal type achieved: ( 0x" ++ UT.toHex m u0'
+      liftIO $ putStrLn $ "                       , 0x" ++ UT.toHex m u1' ++ " )"
       go (num+1) -- repeat
 
 -- | Hill climb to a local minimum, given parameters m (number of

@@ -8,7 +8,6 @@
 module Diagram.Evolution.Run (module Diagram.Evolution.Run) where
 
 import Prelude hiding (init)
-import Debug.Trace
 
 import Control.Monad
 import Control.Monad.Extra
@@ -16,6 +15,7 @@ import Control.Lens hiding (both,last1,Index,(:>),index)
 import Control.Monad.State.Strict
 
 import Data.Maybe
+import qualified Data.List as L
 import Data.Strict.Tuple (Pair(..),(:!:))
 import Data.Strict.Classes (toLazy)
 
@@ -134,9 +134,9 @@ streamLosses = join $ streamLosses_ <$> lift numSymbols -- m
 
 streamLosses_ :: forall m s. MonadIO m => Int -> Int -> Int -> JointType ->
                  MutBooks s -> Stream (Of (Double, MutEntry)) m ()
-streamLosses_ m bigN nm jt (MutBooks als ars a2s dls drs d2s allMuts _) =
+streamLosses_ m bigN nm jt (MutBooks als ars a2s dls drs d2s allMuts _) = do
   withPB booksSize "Evaluating losses" $
-  sequence_ $ zipWith (S.map . toFst) lossFns entries
+    sequence_ $ zipWith (S.map . toFst) lossFns entries
   where
     booksSize = M.size allMuts
     (sz0,sz1) = JT.dims jt
@@ -161,26 +161,22 @@ step :: (PrimMonad m, MonadIO m) => RunT m Bool
 step = do
   m <- numSymbols
   CIs (JT u0 u1) _ _ _ <- use typeCIs
-  traceM ""
-  traceM $ "Joint type: ( 0x" ++ UT.toHex m u0
-  traceM $ "            , 0x" ++ UT.toHex m u1 ++ " )"
-  traceM ""
+  liftIO $ putStrLn $ "\nJoint type: ( 0x" ++ UT.toHex m u0
+  liftIO $ putStrLn $   "            , 0x" ++ UT.toHex m u1 ++ " )\n"
 
   e@(ME mut loss _ddns dnm _) <- (S.next streamLosses >>=) $ \case
     Left () -> err "step: empty books"
     Right (lme0,mes) -> flip3 S.fold_ lme0 snd mes $ \lme lme' ->
       if fst lme' < fst lme then lme' else lme
-  traceM ""
-  traceM $ "  Best mutation: " ++ pShow mut
-  traceM $ "  ddnsLoss: " ++ pShow loss
-  -- traceM $ "  ddns: "     ++ show ddns
-  traceM $ "  dnm: "      ++ pShow dnm
+  liftIO $ putStrLn $ "\n  Best mutation: " ++ pShow mut
+  liftIO $ putStrLn $ "  ddnsLoss: " ++ pShow loss
+  -- liftIO $ putStrLn $ "  ddns: "     ++ show ddns
+  liftIO $ putStrLn $ "  dnm: "      ++ pShow dnm
   ddInfo <- ddInformation e
-  traceM $ "  ddInfo: "      ++ pShow ddInfo ++ " nats"
-  traceM ""
+  liftIO $ putStrLn $ "  ddInfo: "      ++ pShow ddInfo ++ " nats\n"
 
   -- str <- D.toList =<< use doubly -- (debug)
-  -- traceM $ pShowStrMut mut mutJT typJT str
+  -- liftIO $ putStrLn $ pShowStrMut mut mutJT typJT str
 
   if ddInfo > 0 then return False else do
     stepNumber += 1 -- inc
@@ -195,12 +191,12 @@ step = do
     --     top_bar_left_side = replicate top_bar_left_side_len '-'
     --     top_bar_right_side = replicate (msg_len - label_len
     --                                     - top_bar_left_side_len) '-'
-    -- traceM $ ' ':(top_bar_left_side ++ top_bar_label ++ top_bar_right_side)
-    -- traceM $ ' ':msg
-    -- traceM $ ' ':bot_bar
-    -- traceM ""
+    -- liftIO $ putStrLn $ ' ':(top_bar_left_side ++ top_bar_label ++ top_bar_right_side)
+    -- liftIO $ putStrLn $ ' ':msg
+    -- liftIO $ putStrLn $ ' ':bot_bar
+    -- liftIO $ putStrLn ""
     pushMut e
-    -- trace "" traceM $ " -------------------- Finished push "
+    -- trace "" liftIO $ putStrLn $ " -------------------- Finished push "
     --   ++ top_bar_label ++ " --------------------"
     return True
 
@@ -321,10 +317,13 @@ pushMut me@(ME mut _ mutDdns mutDnm _) = do
 
   -- APPLY ENTRY UPDATES
   mutEntries <- use $ mutBooks.byMut
-  let update :: MutEntry -> Update -> StateT (MutBooks (PrimState m)) m ()
-      update = MB.update <==< apply -- . ME.validate newTypJT str n'Of
-      apply :: MutEntry -> Update -> StateT (MutBooks (PrimState m)) m MutEntry
+  let mutEntryUpdatesCount = M.size mutEntryUpdates
+  pb <- liftIO $ newPB mutEntryUpdatesCount "Updating affected mutation entries"
+  let apply :: MutEntry -> Update -> StateT (MutBooks (PrimState m)) m MutEntry
       apply = MEU.apply old_tst typeOfMut new_tst n'Of dly
+      update :: MutEntry -> Update -> StateT (MutBooks (PrimState m)) m ()
+      update = apply >==> MB.update >=> const (liftIO $ incPB pb)
+      -- . ME.validate newTypJT str n'Of
 
   zoom mutBooks $ sequence_ $ M.intersectionWith update
     mutEntries mutEntryUpdates
@@ -456,24 +455,33 @@ mkMutEntry mut = do
 ----------
 
 -- | Initialize a new RunState
-init :: PrimMonad m => Int -> Int -> Doubly (PrimState m) -> U.Vector Int ->
-        Joints CIs -> Int -> JointType -> m (RunState (PrimState m))
-init m bigN dly ns allCIs num jt = init_ m bigN dly ns allCIs num (jt, memJointCIs)
-  where memJointCIs = M.filterWithKey (const . uc (JT.member jt)) allCIs
+init :: (PrimMonad m, MonadIO m) => Int -> Int -> Doubly (PrimState m) ->
+  U.Vector Int -> Joints CIs -> Int -> JointType -> m (RunState (PrimState m))
+init m bigN dly ns allCIs num jt = init_ m bigN dly ns
+                                   allCIs num (jt, memJointCIs)
+  where
+    memJointCIs = M.filterWithKey (const . uc (JT.member jt)) allCIs
 
 -- | Construct a new RunState where the second set of CIs given is a
 -- subset of the first set and corresponds exactly to its entries for
 -- each joint that falls under the given type.
-init_ :: forall m. PrimMonad m => Int -> Int -> Doubly (PrimState m) ->
-         U.Vector Int -> Joints CIs -> Int -> (JointType, Joints CIs) ->
-         m (RunState (PrimState m))
+init_ :: forall m. (PrimMonad m, MonadIO m) => Int -> Int ->
+         Doubly (PrimState m) -> U.Vector Int -> Joints CIs -> Int ->
+         (JointType, Joints CIs) -> m (RunState (PrimState m))
 init_ m bigN dly ns allCIs num (jt, memJointCIs) = do
   tst <- TS.init m allJoints jt
 
-  -- TODO: switch back to non-debug CIs.join --
-  cisByMut <- joinByMutM tst (CIs.debug_join dly) $ M.toList allCIs
-  corByMut <- Cor.unions <$> mapM (Cor.onAllMuts dly tst) memCIsL
-  -- str <- D.toList dly -- TODO: rm
+  let jointsCount = M.size allCIs
+      insertByMut = flip $ uc $ uc $ insertByMutWith tst CIs.join
+  cisByMut <- S.foldM_ insertByMut (return M.empty) return $
+              withPB jointsCount "Merging CIs by mutation" $
+              S.each $ M.toList allCIs
+
+  let memCIsCount = IM.size $ memCIs^.CIs.byHead -- TODO: bookkeep size?
+      insertCor ci = (Cor.onAllMuts dly tst ci <&>) . Cor.union
+  corByMut <- S.foldM_ (flip insertCor) (return M.empty) return $
+              withPB memCIsCount "Counting all correction terms" $
+              S.each $ CIs.toList memCIs
 
   let es = M.mergeWithKey ( Just -- . ME.validate jt str n'Of
                             .:. ME.fromParamsWithCor n'Of ) -- CIs * cor
@@ -497,7 +505,6 @@ init_ m bigN dly ns allCIs num (jt, memJointCIs) = do
   where
     allJoints = M.keys allCIs
     memCIs@(CIs _ ndns _ _) = mfoldTree $ M.elems memJointCIs
-    memCIsL = CIs.toList memCIs
     n'Of s = maybe n (n-) $ IM.lookup s ndns
       where n = ns U.! s
     err' = err . ("init: " ++)
@@ -508,35 +515,41 @@ init_ m bigN dly ns allCIs num (jt, memJointCIs) = do
 
 -- WHERE --
 
+-- | Insert at every mutation of the given joint, given a combining
+-- function
+insertByMutWith :: forall m a. PrimMonad m => TypeState (PrimState m) ->
+  (a -> a -> a) -> Sym -> Sym -> a -> Map Mutation a -> m (Map Mutation a)
+insertByMutWith tst f s0 s1 a = (TS.mutsOf tst s0 s1 <&>) . L.foldl' g
+  where g :: Map Mutation a -> Mutation -> Map Mutation a
+        g m mu = M.insertWith f mu a m
+
 -- | Combine values keyed by joints flipped (in/out) by the same
 -- mutation together, given a combining function
-joinByMut :: forall m a. PrimMonad m => TypeState (PrimState m) ->
-             (a -> a -> a) -> [((Sym,Sym), a)] -> m (Map Mutation a)
-joinByMut tst f = fmap (M.fromListWith f . concat) . mapM g
-  where
-    g :: ((Sym,Sym), a) -> m [(Mutation, a)]
-    g ((s0,s1), a) = (,a) <<$>> TS.mutsOf tst s0 s1
+joinByMutWith :: forall m a. PrimMonad m => TypeState (PrimState m) ->
+                 (a -> a -> a) -> [((Sym,Sym), a)] -> m (Map Mutation a)
+joinByMutWith tst f = fmap (M.fromListWith f . concat) . mapM g
+  where g :: ((Sym,Sym), a) -> m [(Mutation, a)]
+        g ((s0,s1), a) = (,a) <<$>> TS.mutsOf tst s0 s1
 
--- | joinByMut, but monadic
-joinByMutM :: forall m a. PrimMonad m => TypeState (PrimState m) ->
-  (a -> a -> m a) -> [((Sym,Sym), a)] -> m (Map Mutation a)
-joinByMutM tst f = (fromListWithM f . concat) <=< mapM g
-  where
-    g :: ((Sym,Sym), a) -> m [(Mutation, a)]
-    g ((s0,s1), a) = (,a) <<$>> TS.mutsOf tst s0 s1
+-- | joinByMutWith, but monadic, was used for CIs.debug_join
+joinByMutWithM :: forall m a. PrimMonad m => TypeState (PrimState m) ->
+                  (a -> a -> m a) -> [((Sym,Sym), a)] -> m (Map Mutation a)
+joinByMutWithM tst f = (fromListWithM f . concat) <=< mapM g
+  where g :: ((Sym,Sym), a) -> m [(Mutation, a)]
+        g ((s0,s1), a) = (,a) <<$>> TS.mutsOf tst s0 s1
 
 -- | Data.Map.fromListWith, but monadic
 fromListWithM :: (Ord k, Monad m) => (a -> a -> m a) -> [(k, a)] -> m (Map k a)
 fromListWithM f = foldM g M.empty
-  where
-    g m (k,v) = M.alterF (comb v) k m
-    comb new Nothing    = pure (Just new)
-    comb new (Just old) = Just <$> f new old
+  where g m (k,v) = M.alterF (comb v) k m
+        comb new Nothing    = pure (Just new)
+        comb new (Just old) = Just <$> f new old
 
-err :: String -> a
-err = error . ("Run." ++)
+-----------
+-- DEBUG --
+-----------
 
-validate :: PrimMonad m => RunState (PrimState m) -> m ()
+validate :: (PrimMonad m, MonadIO m) => RunState (PrimState m) -> m ()
 validate (RunState bigN dly ns allCIs _ _ tst memCIs nm books) = do
   st' <- init m bigN dly ns allCIs 0 jt
   let RunState _ _ _ _ _ _ tst' memCIs' nm' books' = st'
@@ -600,3 +613,6 @@ validateCIs msg (CIs jt ndns bhd btl) (CIs jt' ndns' bhd' btl')
     err' name = err . ((msg ++ name ++ " don't check out: ") ++) . show
     imKeyDiff im im' = (im IM.\\ im', im' IM.\\ im)
     imValDiff im im' = IM.unionWith (+) im (negate <$> im')
+
+err :: String -> a
+err = error . ("Run." ++)

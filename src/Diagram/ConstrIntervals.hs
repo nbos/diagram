@@ -94,10 +94,9 @@ join_ ciAs ciBs = flip evalState (JoinState ciAs ciBs IM.empty) $ do
   let ns' = -- L.foldl' (flip $ uc alter) ns (IM.toList dns)
         IM.mergeWithKey (\_ n dn -> nothingIf (==0) (n + dn))
         id id ns cor
-      res = CIs jt ns' bhd btl
 
   -- traceM $ "res = " ++ pShow res
-  return ( checkIntegrityId res -- (debug)
+  return ( CIs jt ns' bhd btl -- checkIntegrityId -- (debug)
          , cor )
 
   where
@@ -242,7 +241,7 @@ difference dly memSuper_ memSub_ cisA cisB = do
   let nsC = nsA `imUnion` (negate <$> (nsB `imUnion` cor))
       res = CIs jtA nsC bhdC btlC
   -- traceM $ "  res = " ++ pShow res
-  checkIntervalsIntegrity dly res -- (debug)
+  -- checkIntervalsIntegrity dly res -- (debug)
   return (res, cor)
 
   where

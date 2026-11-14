@@ -66,6 +66,7 @@ optionsParser = Options
 main :: IO ()
 main = do
   hSetBuffering stdout NoBuffering
+  putStrLn "This is diagram"
   opts <- execParser $ info (optionsParser <**> helper)
     ( fullDesc
       <> progDesc "Chunking with joints and unions"
@@ -90,7 +91,7 @@ main = do
     S.map fromEnum $ -- i8 -> i64
     fmap fst $ -- discard ()
     Mdl.countAtoms $ S.copy $ -- ns
-    withPB bigN "Initializing string" $
+    withPB bigN "Gathering joint counts and positions in the string" $
     Q.unpack $ Q.fromHandle h
   -- putStrLn ""
 
