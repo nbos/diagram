@@ -41,34 +41,36 @@ newPB n message = newProgressBar style 10 (Progress 0 n ())
     nLen = length $ show n
     exactLen = 2*nLen + 1
     message' = padOrTruncate (width - exactLen) message
-    style = defStyle{
-      stylePrefix = msg (Text.pack message' <> " ") <> exact
-                    <> msg " " <> percentage,
-                    -- <> msg " ETA: " <> remainingTime renderDuration "00"
-                    -- <> msg " DUR: " <> elapsedTime renderDuration,
-      stylePostfix = mempty,
-      styleDone = '#',
-      styleCurrent = '#',
-      styleTodo = '-' }
+    style = defStyle
+      { stylePrefix = msg (Text.pack message' <> " ") <> exact
+                      <> msg " " <> percentage
+                   -- <> msg " ETA: " <> remainingTime renderDuration "00"
+                   -- <> msg " DUR: " <> elapsedTime renderDuration
+      , stylePostfix = mempty
+      , styleDone = '#'
+      , styleCurrent = '#'
+      , styleTodo = '-'
+      , styleOnComplete = Clear }
 
 -- | Create a new ProgressBar for an undetermined amount of work to do
 -- given a label
 newPB' :: String -> IO (ProgressBar ())
 newPB' message = newProgressBar style 10 (Progress 0 (2^(28::Int)) ())
   where
-    style = defStyle{
-      stylePrefix = msg (Text.pack message <> " ") <> customExact
-                    <> msg " " <> customPercentage,
-                    -- <> msg " ETA: " <> customETA
-                    -- <> msg " DUR: " <> elapsedTime renderDuration,
-      stylePostfix = mempty,
-      styleDone = '#',
-      styleCurrent = '#',
-      styleTodo = '-' }
-    
-    customExact = Label $ \progress _ -> 
+    style = defStyle
+      { stylePrefix = msg (Text.pack message <> " ") <> customExact
+                      <> msg " " <> customPercentage
+                   -- <> msg " ETA: " <> customETA
+                   -- <> msg " DUR: " <> elapsedTime renderDuration
+      , stylePostfix = mempty
+      , styleDone = '#'
+      , styleCurrent = '#'
+      , styleTodo = '-'
+      , styleOnComplete = Clear }
+
+    customExact = Label $ \progress _ ->
       Text.pack $ show (progressDone progress) ++ "/??"
-    
+
     customPercentage = Label $ \_ _ -> "??"
     -- customETA = Label $ \_ _ -> "∞"
 
