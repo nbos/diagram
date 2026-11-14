@@ -60,11 +60,6 @@ pShowStrMark mark jt (hd:tl) = goOut hd tl
 
     show' color s = (if mark s then "*" else "")
                     ++ color ++ show s ++ reset
-    -- ansi codes
-    reset  = "\ESC[0m"
-    green  = "\ESC[32m"
-    red    = "\ESC[91m"
-    yellow = "\ESC[93m"
 
 -- | Streaming + monadic version of pShowStr
 pShowStream :: Monad m => (Sym -> Sym -> m Bool) ->
@@ -109,8 +104,20 @@ pShowStreamMark_ mMark mMem str0 = (next str0 >>=) $ \case
       whenM (mark s) (S.yield '*')
       S.each color >> S.each (show s) >> S.each reset
 
-    -- ansi codes
-    reset  = "\ESC[0m"
-    green  = "\ESC[32m"
-    red    = "\ESC[91m"
-    yellow = "\ESC[93m"
+reset :: String
+reset = "\ESC[0m"
+
+green :: String
+green = "\ESC[32m"
+
+red :: String
+red = "\ESC[91m"
+
+yellow :: String
+yellow = "\ESC[93m"
+
+white :: String
+white = "\ESC[37m"
+
+gray :: String
+gray = "\ESC[90m"

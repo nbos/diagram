@@ -15,7 +15,6 @@ import Control.Lens hiding (both,last1,Index,(:>),index)
 import Control.Monad.State.Strict
 
 import Data.Maybe
-import Data.Hashable
 import qualified Data.List as L
 import Data.Strict.Tuple (Pair(..),(:!:))
 import Data.Strict.Classes (toLazy)
@@ -100,12 +99,6 @@ jointType = view $ typeCIs.CIs.jointType
 variety :: RunState s -> Int
 variety = JT.variety . jointType
 
--- | Quick hashing function for state of run, without any of the
--- book-keeping, i.e. the hash of the minimal canonical representation,
--- i.e. the joint type
-hashTypeState :: RunState s -> Int
-hashTypeState = hash . CIs._jointType . _typeCIs
-
 -- | Compute the difference in information/code length incurred by the
 -- introduction of the current joint type (i.e. no further mutation)
 getIntroInfo :: RunState s -> Double
@@ -133,16 +126,11 @@ getSymCountIntervals = do
 
 bestMut :: (PrimMonad m, MonadIO m) => RunState (PrimState m) -> m (Double, MutEntry)
 bestMut st = do
-  e@(ME mut loss _ddns dnm _) <- (S.next (streamLosses st) >>=) $ \case
+  e <- (S.next (streamLosses st) >>=) $ \case
     Left () -> err "step: empty books"
     Right (lme0,mes) -> flip3 S.fold_ lme0 snd mes $ \lme lme' ->
       if fst lme' < fst lme then lme' else lme
-  liftIO $ putStrLn $ "  Best mutation: " ++ pShow mut
-  liftIO $ putStrLn $ "  ddnsLoss: " ++ pShow loss
-  liftIO $ putStrLn $ "  dnm: "      ++ pShow dnm
-  let ddInfo = ddInformation st e
-  liftIO $ putStrLn $ "  ddInfo: "      ++ pShow ddInfo ++ " nats\n"
-  return (ddInfo, e)
+  return $ toFst (ddInformation st) e
 
 ddInformation :: RunState s -> MutEntry -> Double
 ddInformation st@(RS bigN _ _ _ _ tst memCIs nm _) (ME mut _ ddns dnm _) =
