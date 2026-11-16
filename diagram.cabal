@@ -111,6 +111,7 @@ executable diagram
                     , primitive
                     , streaming
                     , containers
+                    , bytestring
                     , MonadRandom
                     , pretty-simple
                     , random-shuffle

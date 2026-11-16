@@ -78,6 +78,12 @@ jointsOfMut ts mut = case mut of
                  . IS.toAscList
                  . SE._coSymsIn <$> readRight_ ts s1
 
+toJoints :: PrimMonad m => TypeState (PrimState m) -> m [(Sym, Sym)]
+toJoints (TS u0 _) = MV.ifoldr f [] u0
+  where f s0 (SE mem0 coIn0 _ _) l
+          | mem0 = ((s0,) <$> IS.toAscList coIn0) ++ l
+          | otherwise = l
+
 -- | Conversion (from vectorized) to a pure (map-based) JointType
 toJointType :: PrimMonad m => TypeState (PrimState m) -> m JointType
 toJointType (TS v0 v1) = do
