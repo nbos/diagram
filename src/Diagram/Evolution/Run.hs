@@ -63,9 +63,9 @@ import qualified Diagram.Evolution.MutBooks as MB
 
 import Diagram.Util
 
-----------------
--- RUN STATE  --
-----------------
+--------------------
+-- STATE OF A RUN --
+--------------------
 
 type RunT m = StateT (RunState (PrimState m)) m
 -- | Run state of a JointType in a given string

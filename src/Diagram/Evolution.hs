@@ -106,7 +106,7 @@ searchForever m bigN dly ns allCIs = evalStateT go . init =<< newRun
           then do -- step case
             liftIO $ putStr $ "" ++ gray ++ h ++ reset ++ " "
             liftIO $ putStr $ printf "%-22s" (pShowMut mut)
-            liftIO $ putStr $ printf "%-11.4e" ddInfo
+            liftIO $ putStr $ printf "%-10.3e" ddInfo
             mutJts <- flip TS.jointsOfMut mut =<< use (run.Run.typeState)
             let maxMutJts = sortJointsDesc mutJts
             liftIO $ putStrLn $ showSomeJoints 60 maxMutJts
