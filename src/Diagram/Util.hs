@@ -520,6 +520,18 @@ uc :: (a -> b -> c) -> (a, b) -> c
 uc = uncurry
 {-# INLINE uc #-}
 
+uncurry3 :: (a -> b -> c -> d) -> (a, b, c) -> d
+uncurry3 f (a, b, c) = f a b c
+{-# INLINE uncurry3 #-}
+
+uncurry4 :: (a -> b -> c -> d -> e) -> (a, b, c, d) -> e
+uncurry4 f (a, b, c, d) = f a b c d
+{-# INLINE uncurry4 #-}
+
+uncurry5 :: (a -> b -> c -> d -> e -> f) -> (a, b, c, d, e) -> f
+uncurry5 f (a, b, c, d, e) = f a b c d e
+{-# INLINE uncurry5 #-}
+
 -- Compose w/ two arguments
 (.:) :: (b -> c) -> (a1 -> a2 -> b) -> a1 -> a2 -> c
 (.:) = (.).(.)

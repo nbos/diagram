@@ -29,6 +29,7 @@ import Options.Applicative
 
 import qualified System.Random as R
 
+import Control.Monad
 import Control.Monad.Trans.Random.Lazy (evalRand,evalRandT)
 import Control.Monad.Random.Class (MonadRandom(getRandom))
 
@@ -101,5 +102,5 @@ main = do
 
   let m = 256 :: Int
 
-  flip evalRandT stdGen $ -- go
-    searchForever m bigN dly ns allCIs
+  void $ flip evalRandT stdGen $ -- go
+    hillClimbN 10 m bigN dly ns allCIs

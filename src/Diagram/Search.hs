@@ -1,6 +1,8 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables, RankNTypes #-}
-{-# LANGUAGE LambdaCase, TupleSections, BangPatterns #-}
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TupleSections #-}
 
 module Diagram.Search (module Diagram.Search) where
 
@@ -37,7 +39,7 @@ import qualified Diagram.UnionType as UT
 import Diagram.JointType (JointType(JT))
 import qualified Diagram.JointType.Random as JT
 
-import Diagram.Joints (Joints)
+import Diagram.Joints (Joints, Joints2S)
 import qualified Diagram.Joints as Jts
 import Diagram.ConstrIntervals.Internal (CIs)
 import qualified Diagram.ConstrIntervals.Internal as CIs
@@ -45,40 +47,88 @@ import qualified Diagram.ConstrIntervals.Internal as CIs
 import Diagram.Evolution.MutEntry (MutEntry(ME))
 import qualified Diagram.Evolution.TypeState as TS
 import Diagram.Evolution (EvolutionState)
-import qualified Diagram.Evolution as Evo
+import qualified Diagram.Evolution as Run
 
 type SearchT m = StateT (SearchState (PrimState m)) m
 data SearchState s = SearchState
   { _initsCount    :: !Int
   , _visitedStates :: !(HashMap JointType (Either Double JointType))
   , _minimalStates :: !(Map Double (JointType, Count))
-  , _run           :: !(EvolutionState s) } -- runState was taken
+  , _run           :: !(EvolutionState s) -- runState was taken
+  , _jointsIndex   :: !(Joints2S CIs) } -- two-way sized index for gen
 makeLenses ''SearchState
 
-init :: EvolutionState s -> SearchState s
-init = SearchState 1 HM.empty M.empty
+-- GETTERS --
 
--- | Keep generating random JointTypes and hill-climbing to minima,
--- given parameters m (number of symbols), N (string length), the
--- string, symbol counts, constructive intervals of all joints in the
--- string and a joint type with its CIs indexed by joint.
-searchForever :: forall m. (MonadIO m, PrimMonad m) => Int -> Int ->
-  Doubly (PrimState m) -> U.Vector Int -> Joints CIs -> RandT StdGen m ()
-searchForever m bigN dly ns allCIs = evalStateT go . init =<< newRun
+numSymbols :: Monad m => SearchT m Int
+numSymbols = run `uses` Run.numSymbols
+
+getBest :: SearchState s -> (Double, JointType)
+getBest = minimalStates `views` (fmap fst . M.findMin)
+
+-----------
+-- ENTRY --
+-----------
+
+-- | Given parameters, run hill-climbing NUM times, return the best type
+hillClimbN :: (PrimMonad m, MonadIO m) => Int -> Int -> Int ->
+              Doubly (PrimState m) -> U.Vector Int -> Joints CIs ->
+              RandT StdGen m (Double, JointType)
+hillClimbN num m bigN dly ns allCIs = init m bigN dly ns allCIs
+                                      >>= evalStateT go
+  where go = do
+          hillClimb
+          i <- use initsCount
+          if i < num then reinit >> go else
+            minimalStates `uses` (fmap fst . M.findMin)
+
+-- | Initialize given the right parameters
+init :: (PrimMonad m, MonadIO m) => Int -> Int -> Doubly (PrimState m) ->
+        U.Vector Int -> Joints CIs -> RandT StdGen m (SearchState (PrimState m))
+init m bigN dly ns allCIs = do
+  (jt, jtCIs) <- JT.genRandom jtx
+  liftIO $ printGen m jt
+  flip (SearchState 1 HM.empty M.empty) jtx
+    <$> lift (Run.init_ m bigN dly ns allCIs (jt,jtCIs))
   where
-    allCIs2s = Jts.sized $ Jts.doubleIndex m allCIs
+    jtx = Jts.sized $ Jts.doubleIndex m allCIs
 
-    newRun :: RandT StdGen m (EvolutionState (PrimState m))
-    newRun = do
-      (jt@(JT u0 u1), cis) <- JT.genRandom allCIs2s -- new joint type
-      liftIO $ putStrLn $ "Generated random type [" ++ shortHashStr jt ++ "]:"
-      liftIO $ putStrLn $ "( 0x" ++ UT.toHex m u0
-      liftIO $ putStrLn $ ", 0x" ++ UT.toHex m u1 ++ " )"
-      Evo.init_ m bigN dly ns allCIs (jt, cis) -- new run state
+-- | Re-initialize run state with a freshly sampled random JointType
+reinit :: (PrimMonad m, MonadIO m) => SearchT (RandT StdGen m) ()
+reinit = do
+  initsCount += 1
+  run <~ (lift . newRun =<< get)
 
-    go :: SearchT (RandT StdGen m) ()
+newRun :: (PrimMonad m, MonadIO m) => SearchState (PrimState m) ->
+          RandT StdGen m (EvolutionState (PrimState m))
+newRun (SearchState _ _ _ rst jtx) = do
+  (jt, jtCIs) <- JT.genRandom jtx
+  liftIO $ printGen m jt
+  lift $ Run.init_ m bigN dly ns allCIs (jt, jtCIs)
+  where
+    m = Run.numSymbols rst
+    bigN   = rst^.Run.stringLen
+    dly    = rst^.Run.doubly
+    ns     = rst^.Run.symCounts
+    allCIs = rst^.Run.jointCIs
+
+printGen :: Int -> JointType -> IO ()
+printGen m jt@(JT u0 u1) = do
+  putStrLn $ "Generated random type [" ++ shortHashStr jt ++ "]:"
+  putStrLn $ "( 0x" ++ UT.toHex m u0
+  putStrLn $ ", 0x" ++ UT.toHex m u1 ++ " )"
+
+-------------------
+-- HILL-CLIMBING --
+-------------------
+
+hillClimb :: forall m. (MonadIO m, PrimMonad m) => SearchT (RandT StdGen m) ()
+hillClimb = do
+  m <- numSymbols
+  allCIs <- use (run.Run.jointCIs)
+  let
     go = do
-      jt@(JT u0 u1) <- run `uses` Evo.jointType
+      jt@(JT u0 u1) <- run `uses` Run.jointType
       let h = shortHashStr jt
       (visitedStates `uses` HM.lookup jt >>=) $ \case
 
@@ -99,49 +149,48 @@ searchForever m bigN dly ns allCIs = evalStateT go . init =<< newRun
           liftIO $ putStrLn "" -- end space
 
           minimalStates %= M.adjust (second (+1)) dInfo -- +1 visits
-          reinit >> go -- restart
+          return ()
 
-        Nothing -> (use run >>= Evo.bestMut >>=) $
+        Nothing -> (use run >>= Run.bestMut >>=) $
           \(ddInfo, me@(ME mut _ _ _ _)) -> if ddInfo <= 0
           then do -- step case
             liftIO $ putStr $ "" ++ gray ++ h ++ reset ++ " "
             liftIO $ putStr $ printf "%-22s" (pShowMut mut)
             liftIO $ putStr $ printf "%-10.3e" ddInfo
-            mutJts <- flip TS.jointsOfMut mut =<< use (run.Evo.typeState)
+            mutJts <- flip TS.jointsOfMut mut =<< use (run.Run.typeState)
             let maxMutJts = sortJointsDesc mutJts
             liftIO $ putStrLn $ showSomeJoints 60 maxMutJts
-            zoom run (Evo.pushMut me)
+            zoom run (Run.pushMut me)
 
-            jt' <- run `uses` Evo.jointType
+            jt' <- run `uses` Run.jointType
             visitedStates %= HM.insert jt (Right jt')
             go
 
           else do -- end/reset case
             liftIO $ putStr $ "Minimal type achieved [" ++ h ++ "]. Loss is "
-            dInfo <- run `uses` Evo.getIntroInfo
+            dInfo <- run `uses` Run.getIntroInfo
             liftIO $ putStrLn $ pShow dInfo ++ "."
 
             liftIO $ putStrLn $ "( 0x" ++ UT.toHex m u0
             liftIO $ putStrLn $ ", 0x" ++ UT.toHex m u1 ++ " )"
-            typJts <- use (run.Evo.typeState) >>= TS.toJoints
+            typJts <- use (run.Run.typeState) >>= TS.toJoints
             let maxTypJts = sortJointsDesc $ M.fromList $ fmap (,()) typJts
             liftIO $ putStrLn $ showSomeJoints 999 maxTypJts
             liftIO $ putStrLn "" -- end space
 
             visitedStates %= HM.insert jt (Left dInfo)
             minimalStates %= M.insert dInfo (jt, 1)
-            reinit >> go -- restart
-
-    -- increment counter, reinitialize run
-    reinit :: SearchT (RandT StdGen m) ()
-    reinit = do
-      initsCount += 1
-      run <~ lift newRun
+            return ()
 
     -- sort joints from high to low joints count (uses allCIs for counts)
     sortJointsDesc :: Map (Sym, Sym) b -> [(Sym, Sym)]
     sortJointsDesc = fmap snd . L.sortOn (Down . fst) . fmap swap . M.toList
                      . M.intersectionWith (const . CIs.jointCount) allCIs
+  go
+
+--------------
+-- PRINTING --
+--------------
 
 hashStr :: Hashable a => a -> String
 hashStr = printf ("%016x") . hash
